@@ -86,3 +86,62 @@ def test_four_module_jobs() -> None:
             ),
         )
         assert material["result"]["outsideMaskPolicy"] == "source_pixels_preserved"
+
+
+def test_v02_floorplan_to_scene_flow() -> None:
+    source = image_bytes()
+    with TestClient(app) as client:
+        analysis_job = completed_job(
+            client,
+            client.post(
+                "/v1/floorplans/analyze",
+                files={"source_image": ("floorplan.png", source, "image/png")},
+                data={"plan_width_mm": "6000", "plan_depth_mm": "4000"},
+            ),
+        )
+        analysis = analysis_job["result"]
+        assert analysis["schemaVersion"] == "0.2"
+        assert analysis["quality"]["candidateCount"] >= 4
+        assert analysis["quality"]["requiresUserConfirmation"] is True
+
+        bounds = analysis["detectedBounds"]
+        walls = [
+            {
+                "id": wall["id"],
+                "x1": wall["x1"],
+                "y1": wall["y1"],
+                "x2": wall["x2"],
+                "y2": wall["y2"],
+                "source": wall["source"],
+            }
+            for wall in analysis["wallCandidates"][:16]
+        ]
+        scene_job = completed_job(
+            client,
+            client.post(
+                "/v1/floorplan-scenes",
+                json={
+                    "schemaVersion": "0.2",
+                    "sourceImageUrl": analysis["sourceImageUrl"],
+                    "imageWidth": analysis["imageWidth"],
+                    "imageHeight": analysis["imageHeight"],
+                    "planWidthMm": 6000,
+                    "planDepthMm": 4000,
+                    "detectedBounds": bounds,
+                    "walls": walls,
+                    "roomSelection": {
+                        "x": bounds["x"],
+                        "y": bounds["y"],
+                        "width": bounds["width"],
+                        "height": bounds["height"],
+                    },
+                    "roomName": "测试客厅",
+                    "useBlender": False,
+                },
+            ),
+        )
+        scene = scene_job["result"]
+        assert scene["provider"] == "local-floorplan-fallback"
+        assert scene["room"]["name"] == "测试客厅"
+        assert scene["structureCheck"]["wallCount"] == len(walls)
+        assert scene["structureCheck"]["requiresUserConfirmation"] is True

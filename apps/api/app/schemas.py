@@ -66,6 +66,41 @@ class EffectRenderRequest(APIModel):
     use_blender: bool = True
 
 
+class PixelBounds(APIModel):
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+
+
+class FloorplanWall(APIModel):
+    id: str = Field(min_length=1, max_length=80)
+    x1: float = Field(ge=0)
+    y1: float = Field(ge=0)
+    x2: float = Field(ge=0)
+    y2: float = Field(ge=0)
+    source: Literal["auto", "manual"] = "auto"
+
+
+class FloorplanSceneRequest(APIModel):
+    project_id: str | None = None
+    schema_version: Literal["0.2"] = "0.2"
+    source_image_url: str
+    image_width: int = Field(ge=320, le=10000)
+    image_height: int = Field(ge=240, le=10000)
+    plan_width_mm: int = Field(ge=2400, le=30000)
+    plan_depth_mm: int = Field(ge=2400, le=30000)
+    ceiling_height_mm: int = Field(default=2800, ge=2200, le=4500)
+    wall_thickness_mm: int = Field(default=100, ge=60, le=500)
+    detected_bounds: PixelBounds
+    walls: list[FloorplanWall] = Field(min_length=4, max_length=160)
+    room_selection: PixelBounds
+    room_name: str = Field(default="客餐厅", min_length=1, max_length=40)
+    style_preset_id: str = "modern_warm_v1"
+    camera_preset_id: str = "corner_01"
+    use_blender: bool = True
+
+
 class CameraPreset(APIModel):
     id: str
     name: str

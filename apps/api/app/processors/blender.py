@@ -40,3 +40,42 @@ def render_with_blender(payload: dict) -> Path | None:
         return None
     return output_path
 
+
+def render_floorplan_with_blender(
+    payload: dict,
+    *,
+    view_mode: str,
+) -> Path | None:
+    blender = Path(settings.blender_bin)
+    script = API_ROOT / "app" / "processors" / "blender_floorplan_scene.py"
+    if not settings.blender_enabled or not blender.exists() or not script.exists():
+        return None
+
+    input_path = artifact_path(f"floorplan-{view_mode}-scene", ".json")
+    output_path = artifact_path(f"floorplan-{view_mode}-render", ".png")
+    input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    command = [
+        str(blender),
+        "--background",
+        "--factory-startup",
+        "--python",
+        str(script),
+        "--",
+        str(input_path),
+        str(output_path),
+        view_mode,
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=75,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0 or not output_path.exists():
+        return None
+    return output_path
+

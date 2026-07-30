@@ -12,11 +12,17 @@ from app.processors.image import (
     run_material_replace,
     run_white_model,
 )
+from app.processors.floorplan import (
+    run_floorplan_analyze,
+    run_floorplan_scene,
+)
 from app.processors.layout import run_layout
 
 
 Processor = Callable[[dict[str, Any]], dict[str, Any]]
 PROCESSORS: dict[str, Processor] = {
+    "FLOORPLAN_ANALYZE": run_floorplan_analyze,
+    "FLOORPLAN_SCENE": run_floorplan_scene,
     "LAYOUT": run_layout,
     "WHITE_MODEL_RENDER": run_white_model,
     "EFFECT_RENDER": run_effect_render,

@@ -25,6 +25,7 @@ from app.models import Job, Project
 from app.schemas import (
     CameraPreset,
     EffectRenderRequest,
+    FloorplanSceneRequest,
     JobRead,
     LayoutRequest,
     ProjectCreate,
@@ -41,7 +42,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -65,7 +66,7 @@ def health() -> dict:
     return {
         "status": "ok",
         "service": settings.app_name,
-        "version": "0.1.0",
+        "version": "0.2.0",
         "blenderEnabled": settings.blender_enabled,
     }
 
@@ -86,6 +87,55 @@ def create_project(payload: ProjectCreate, session: SessionDep) -> Project:
 @app.get(f"{settings.api_prefix}/projects", response_model=list[ProjectRead])
 def list_projects(session: SessionDep) -> list[Project]:
     return list(session.scalars(select(Project).order_by(Project.created_at.desc())))
+
+
+@app.post(
+    f"{settings.api_prefix}/floorplans/analyze",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def analyze_floorplan(
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+    source_image: UploadFile = File(...),
+    plan_width_mm: int = Form(..., ge=2400, le=30000),
+    plan_depth_mm: int = Form(..., ge=2400, le=30000),
+    project_id: str | None = Form(None),
+) -> Job:
+    source = await save_upload(source_image)
+    payload = {
+        "source_path": str(source),
+        "plan_width_mm": plan_width_mm,
+        "plan_depth_mm": plan_depth_mm,
+    }
+    job = create_job(
+        session,
+        job_type="FLOORPLAN_ANALYZE",
+        payload=payload,
+        project_id=project_id,
+    )
+    background_tasks.add_task(run_job, job.id)
+    return job
+
+
+@app.post(
+    f"{settings.api_prefix}/floorplan-scenes",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_floorplan_scene(
+    payload: FloorplanSceneRequest,
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+) -> Job:
+    job = create_job(
+        session,
+        job_type="FLOORPLAN_SCENE",
+        payload=payload.model_dump(),
+        project_id=payload.project_id,
+    )
+    background_tasks.add_task(run_job, job.id)
+    return job
 
 
 @app.post(

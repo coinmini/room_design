@@ -7,9 +7,16 @@ import {
   pollJob,
   type Job,
 } from './api'
+import FloorplanModule from './FloorplanModule'
 import './App.css'
 
-type ModuleId = 'overview' | 'layout' | 'white' | 'effect' | 'material'
+type ModuleId =
+  | 'overview'
+  | 'floorplan'
+  | 'layout'
+  | 'white'
+  | 'effect'
+  | 'material'
 
 const modules: Array<{
   id: ModuleId
@@ -17,11 +24,17 @@ const modules: Array<{
   title: string
   short: string
 }> = [
-  { id: 'overview', number: '00', title: '项目总览', short: 'MVP Control' },
-  { id: 'layout', number: '01', title: 'AI 平面布局', short: 'Layout Solver' },
-  { id: 'white', number: '02', title: '白模渲染', short: 'White Model' },
-  { id: 'effect', number: '03', title: '平面图生效果图', short: '3D Render' },
-  { id: 'material', number: '04', title: '多材质替换', short: 'Material Edit' },
+  { id: 'overview', number: '00', title: '项目总览', short: 'V0.2 Control' },
+  {
+    id: 'floorplan',
+    number: '01',
+    title: '平面图结构化',
+    short: 'Floorplan Lab',
+  },
+  { id: 'layout', number: '02', title: 'AI 平面布局', short: 'Layout Solver' },
+  { id: 'white', number: '03', title: '白模渲染', short: 'White Model' },
+  { id: 'effect', number: '04', title: '参数化效果图', short: '3D Render' },
+  { id: 'material', number: '05', title: '多材质替换', short: 'Material Edit' },
 ]
 
 function useJobRunner() {
@@ -114,15 +127,15 @@ function Overview() {
   return (
     <div className="page">
       <header className="hero-header">
-        <span className="eyebrow">LOCAL MVP · V0.1</span>
+        <span className="eyebrow">LOCAL PILOT · V0.2</span>
         <h1>
           从空间数据到
           <br />
           可沟通的设计意向
         </h1>
         <p>
-          四个模块共享项目、任务与版本协议。当前版本用于验证本地业务闭环，
-          生成模型由可替换适配器承载。
+          在 V0.1 四模块之上增加平面图结构化工作台，打通真实户型图、可校正结构、
+          三维相机与概念效果图的完整验证闭环。
         </p>
         <div className="hero-actions">
           <span className={`service-dot ${health ? 'online' : ''}`} />
@@ -136,7 +149,7 @@ function Overview() {
 
       <section className="metric-grid">
         <article>
-          <strong>4</strong>
+          <strong>5</strong>
           <span>功能模块</span>
         </article>
         <article>
@@ -159,7 +172,7 @@ function Overview() {
           <h2>最小业务链路</h2>
         </div>
         <div className="flow">
-          {['确认户型', '家具布局', '3D 与机位', '概念效果图', '材质替换'].map(
+          {['识别墙线', '人工校正', '框选房间', '3D 与机位', '效果增强'].map(
             (item, index) => (
               <div className="flow-step" key={item}>
                 <small>{String(index + 1).padStart(2, '0')}</small>
@@ -228,7 +241,7 @@ function LayoutModule({
   return (
     <div className="page">
       <ModuleHeader
-        index="01"
+        index="02"
         title="AI 家装平面布局"
         description="在固定房间边界内生成两套无硬碰撞的家具布局，并返回可追溯指标。"
         job={runner.job}
@@ -359,7 +372,7 @@ function WhiteModelModule() {
   return (
     <div className="page">
       <ModuleHeader
-        index="02"
+        index="03"
         title="AI 白模渲染"
         description="上传单空间白模截图，提取 Canny 结构控制并生成两张固定风格候选图。"
         job={runner.job}
@@ -469,9 +482,9 @@ function EffectModule({ sceneDraft }: { sceneDraft: SceneDraft | null }) {
   return (
     <div className="page">
       <ModuleHeader
-        index="03"
-        title="平面图生效果图"
-        description="由结构化房间创建真实三维相机和基础场景，再执行可替换的写实增强。"
+        index="04"
+        title="参数化效果图"
+        description="从结构化房间参数或家具布局创建真实三维相机和基础场景。"
         job={runner.job}
       />
       <div className="workspace">
@@ -722,7 +735,7 @@ function MaterialModule() {
   return (
     <div className="page">
       <ModuleHeader
-        index="04"
+        index="05"
         title="多材质替换"
         description="用画笔指定墙面与地面区域，分别生成材质并在原图上羽化合成。"
         job={runner.job}
@@ -866,6 +879,7 @@ function App() {
           </div>
         </div>
         {active === 'overview' && <Overview />}
+        {active === 'floorplan' && <FloorplanModule />}
         {active === 'layout' && (
           <LayoutModule
             onUseInEffect={(scene) => {
