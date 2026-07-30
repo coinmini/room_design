@@ -1,0 +1,32 @@
+[project]
+name = "room-design-mvp-api"
+version = "0.1.0"
+description = "AI 室内设计四模块最小 MVP 本地 API"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi[standard-no-fastapi-cloud-cli]>=0.139,<0.140",
+  "pydantic-settings>=2.10",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.2",
+  "shapely>=2.1",
+  "ortools>=9.14",
+  "opencv-python-headless>=4.11",
+  "numpy>=2.0",
+  "python-multipart>=0.0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9",
+  "pytest-cov>=7",
+  "ruff>=0.15",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
