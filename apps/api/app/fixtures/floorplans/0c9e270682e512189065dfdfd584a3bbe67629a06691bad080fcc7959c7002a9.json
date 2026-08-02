@@ -1,0 +1,128 @@
+{
+  "sourceSha256": "0c9e270682e512189065dfdfd584a3bbe67629a06691bad080fcc7959c7002a9",
+  "semanticLayout": {
+    "version": "0.4",
+    "profileId": "cn_two_bedroom_8150x6060_v1",
+    "sourceSha256": "0c9e270682e512189065dfdfd584a3bbe67629a06691bad080fcc7959c7002a9",
+    "coordinateSystem": {
+      "unit": "mm",
+      "origin": "top_left",
+      "xAxis": "right",
+      "yAxis": "down"
+    },
+    "plan": {
+      "widthMm": 8150,
+      "depthMm": 6060,
+      "ceilingHeightMm": 2800
+    },
+    "rooms": [
+      {
+        "id": "room_bedroom_west",
+        "type": "bedroom",
+        "name": "次卧",
+        "rect": {"xMm": 100, "yMm": 100, "widthMm": 2860, "depthMm": 2580},
+        "polygon": [
+          {"xMm": 100, "yMm": 100},
+          {"xMm": 2960, "yMm": 100},
+          {"xMm": 2960, "yMm": 2680},
+          {"xMm": 100, "yMm": 2680}
+        ]
+      },
+      {
+        "id": "room_bedroom_center",
+        "type": "bedroom",
+        "name": "主卧",
+        "rect": {"xMm": 2960, "yMm": 100, "widthMm": 3020, "depthMm": 2580},
+        "polygon": [
+          {"xMm": 2960, "yMm": 100},
+          {"xMm": 5980, "yMm": 100},
+          {"xMm": 5980, "yMm": 2680},
+          {"xMm": 2960, "yMm": 2680}
+        ]
+      },
+      {
+        "id": "room_bathroom",
+        "type": "bathroom",
+        "name": "卫生间",
+        "rect": {"xMm": 5980, "yMm": 100, "widthMm": 2070, "depthMm": 2580},
+        "polygon": [
+          {"xMm": 5980, "yMm": 100},
+          {"xMm": 8050, "yMm": 100},
+          {"xMm": 8050, "yMm": 2680},
+          {"xMm": 5980, "yMm": 2680}
+        ]
+      },
+      {
+        "id": "room_living_dining",
+        "type": "living_dining",
+        "name": "客餐厅",
+        "rect": {"xMm": 100, "yMm": 2680, "widthMm": 6960, "depthMm": 3280},
+        "polygon": [
+          {"xMm": 100, "yMm": 2680},
+          {"xMm": 7060, "yMm": 2680},
+          {"xMm": 7060, "yMm": 5960},
+          {"xMm": 100, "yMm": 5960}
+        ]
+      },
+      {
+        "id": "room_kitchen",
+        "type": "kitchen",
+        "name": "厨房",
+        "rect": {"xMm": 7060, "yMm": 2680, "widthMm": 990, "depthMm": 3280},
+        "polygon": [
+          {"xMm": 7060, "yMm": 2680},
+          {"xMm": 8050, "yMm": 2680},
+          {"xMm": 8050, "yMm": 5960},
+          {"xMm": 7060, "yMm": 5960}
+        ]
+      }
+    ],
+    "walls": [
+      {"id": "wall_top_01", "kind": "exterior", "start": {"xMm": 0, "yMm": 0}, "end": {"xMm": 500, "yMm": 0}, "thicknessMm": 100},
+      {"id": "wall_top_02", "kind": "exterior", "start": {"xMm": 2100, "yMm": 0}, "end": {"xMm": 3600, "yMm": 0}, "thicknessMm": 100},
+      {"id": "wall_top_03", "kind": "exterior", "start": {"xMm": 5200, "yMm": 0}, "end": {"xMm": 8150, "yMm": 0}, "thicknessMm": 100},
+      {"id": "wall_right_01", "kind": "exterior", "start": {"xMm": 8150, "yMm": 0}, "end": {"xMm": 8150, "yMm": 3820}, "thicknessMm": 100},
+      {"id": "wall_right_02", "kind": "exterior", "start": {"xMm": 8150, "yMm": 5020}, "end": {"xMm": 8150, "yMm": 6060}, "thicknessMm": 100},
+      {"id": "wall_bottom_01", "kind": "exterior", "start": {"xMm": 0, "yMm": 6060}, "end": {"xMm": 2000, "yMm": 6060}, "thicknessMm": 100},
+      {"id": "wall_bottom_02", "kind": "exterior", "start": {"xMm": 3200, "yMm": 6060}, "end": {"xMm": 4200, "yMm": 6060}, "thicknessMm": 100},
+      {"id": "wall_bottom_03", "kind": "exterior", "start": {"xMm": 5500, "yMm": 6060}, "end": {"xMm": 8150, "yMm": 6060}, "thicknessMm": 100},
+      {"id": "wall_left", "kind": "exterior", "start": {"xMm": 0, "yMm": 0}, "end": {"xMm": 0, "yMm": 6060}, "thicknessMm": 100},
+      {"id": "wall_bedroom_west_divider", "kind": "interior", "start": {"xMm": 2960, "yMm": 0}, "end": {"xMm": 2960, "yMm": 2680}, "thicknessMm": 100},
+      {"id": "wall_bathroom_divider", "kind": "interior", "start": {"xMm": 5980, "yMm": 0}, "end": {"xMm": 5980, "yMm": 2680}, "thicknessMm": 100},
+      {"id": "wall_bedroom_west_lower_01", "kind": "interior", "start": {"xMm": 0, "yMm": 2680}, "end": {"xMm": 2200, "yMm": 2680}, "thicknessMm": 100},
+      {"id": "wall_bedroom_center_lower_01", "kind": "interior", "start": {"xMm": 2960, "yMm": 2680}, "end": {"xMm": 5100, "yMm": 2680}, "thicknessMm": 100},
+      {"id": "wall_bedroom_center_lower_02", "kind": "interior", "start": {"xMm": 5900, "yMm": 2680}, "end": {"xMm": 6200, "yMm": 2680}, "thicknessMm": 100},
+      {"id": "wall_bathroom_lower", "kind": "interior", "start": {"xMm": 7000, "yMm": 2680}, "end": {"xMm": 8150, "yMm": 2680}, "thicknessMm": 100},
+      {"id": "wall_kitchen_01", "kind": "interior", "start": {"xMm": 7060, "yMm": 2680}, "end": {"xMm": 7060, "yMm": 4500}, "thicknessMm": 100},
+      {"id": "wall_kitchen_02", "kind": "interior", "start": {"xMm": 7060, "yMm": 5300}, "end": {"xMm": 7060, "yMm": 6060}, "thicknessMm": 100}
+    ],
+    "openings": [
+      {"id": "window_bedroom_west", "type": "window", "wallAxis": "horizontal", "segment": {"start": {"xMm": 500, "yMm": 0}, "end": {"xMm": 2100, "yMm": 0}}, "widthMm": 1600, "roomIds": ["room_bedroom_west"]},
+      {"id": "window_bedroom_center", "type": "window", "wallAxis": "horizontal", "segment": {"start": {"xMm": 3600, "yMm": 0}, "end": {"xMm": 5200, "yMm": 0}}, "widthMm": 1600, "roomIds": ["room_bedroom_center"]},
+      {"id": "window_kitchen", "type": "window", "wallAxis": "vertical", "segment": {"start": {"xMm": 8150, "yMm": 3820}, "end": {"xMm": 8150, "yMm": 5020}}, "widthMm": 1200, "roomIds": ["room_kitchen"]},
+      {"id": "window_living", "type": "window", "wallAxis": "horizontal", "segment": {"start": {"xMm": 2000, "yMm": 6060}, "end": {"xMm": 3200, "yMm": 6060}}, "widthMm": 1200, "roomIds": ["room_living_dining"]},
+      {"id": "door_entry", "type": "door", "wallAxis": "horizontal", "segment": {"start": {"xMm": 4200, "yMm": 6060}, "end": {"xMm": 5500, "yMm": 6060}}, "widthMm": 1300, "roomIds": ["room_living_dining"]},
+      {"id": "door_bedroom_west", "type": "door", "wallAxis": "horizontal", "segment": {"start": {"xMm": 2200, "yMm": 2680}, "end": {"xMm": 2960, "yMm": 2680}}, "widthMm": 760, "roomIds": ["room_bedroom_west", "room_living_dining"]},
+      {"id": "door_bedroom_center", "type": "door", "wallAxis": "horizontal", "segment": {"start": {"xMm": 5100, "yMm": 2680}, "end": {"xMm": 5900, "yMm": 2680}}, "widthMm": 800, "roomIds": ["room_bedroom_center", "room_living_dining"]},
+      {"id": "door_bathroom", "type": "door", "wallAxis": "horizontal", "segment": {"start": {"xMm": 6200, "yMm": 2680}, "end": {"xMm": 7000, "yMm": 2680}}, "widthMm": 800, "roomIds": ["room_bathroom", "room_living_dining"]},
+      {"id": "door_kitchen", "type": "door", "wallAxis": "vertical", "segment": {"start": {"xMm": 7060, "yMm": 4500}, "end": {"xMm": 7060, "yMm": 5300}}, "widthMm": 800, "roomIds": ["room_living_dining", "room_kitchen"]}
+    ],
+    "furniture": [
+      {"id": "bed_west", "type": "bed", "center": {"xMm": 1600, "yMm": 1500}, "size": {"widthMm": 1500, "depthMm": 1900, "heightMm": 550}, "rotationDeg": 0, "roomId": "room_bedroom_west"},
+      {"id": "nightstand_west_left", "type": "nightstand", "center": {"xMm": 550, "yMm": 750}, "size": {"widthMm": 450, "depthMm": 420, "heightMm": 500}, "rotationDeg": 0, "roomId": "room_bedroom_west"},
+      {"id": "nightstand_west_right", "type": "nightstand", "center": {"xMm": 2650, "yMm": 750}, "size": {"widthMm": 450, "depthMm": 420, "heightMm": 500}, "rotationDeg": 0, "roomId": "room_bedroom_west"},
+      {"id": "bed_center", "type": "bed", "center": {"xMm": 4480, "yMm": 1500}, "size": {"widthMm": 1500, "depthMm": 1900, "heightMm": 550}, "rotationDeg": 0, "roomId": "room_bedroom_center"},
+      {"id": "nightstand_center_left", "type": "nightstand", "center": {"xMm": 3500, "yMm": 750}, "size": {"widthMm": 450, "depthMm": 420, "heightMm": 500}, "rotationDeg": 0, "roomId": "room_bedroom_center"},
+      {"id": "nightstand_center_right", "type": "nightstand", "center": {"xMm": 5550, "yMm": 750}, "size": {"widthMm": 450, "depthMm": 420, "heightMm": 500}, "rotationDeg": 0, "roomId": "room_bedroom_center"},
+      {"id": "bathtub", "type": "bathtub", "center": {"xMm": 7060, "yMm": 720}, "size": {"widthMm": 1800, "depthMm": 760, "heightMm": 600}, "rotationDeg": 0, "roomId": "room_bathroom"},
+      {"id": "bathroom_vanity", "type": "vanity", "center": {"xMm": 6280, "yMm": 1740}, "size": {"widthMm": 650, "depthMm": 520, "heightMm": 850}, "rotationDeg": 90, "roomId": "room_bathroom"},
+      {"id": "toilet", "type": "toilet", "center": {"xMm": 7780, "yMm": 2080}, "size": {"widthMm": 420, "depthMm": 700, "heightMm": 760}, "rotationDeg": 90, "roomId": "room_bathroom"},
+      {"id": "sectional_sofa", "type": "sectional_sofa", "center": {"xMm": 2850, "yMm": 4150}, "size": {"widthMm": 2300, "depthMm": 1450, "heightMm": 850}, "rotationDeg": 90, "roomId": "room_living_dining"},
+      {"id": "coffee_table", "type": "coffee_table", "center": {"xMm": 2200, "yMm": 4550}, "size": {"widthMm": 1050, "depthMm": 600, "heightMm": 420}, "rotationDeg": 90, "roomId": "room_living_dining"},
+      {"id": "tv_console", "type": "tv_console", "center": {"xMm": 520, "yMm": 4250}, "size": {"widthMm": 1900, "depthMm": 450, "heightMm": 620}, "rotationDeg": 90, "roomId": "room_living_dining"},
+      {"id": "dining_table", "type": "dining_table", "center": {"xMm": 6250, "yMm": 4200}, "size": {"widthMm": 1600, "depthMm": 900, "heightMm": 760}, "rotationDeg": 90, "roomId": "room_living_dining"},
+      {"id": "kitchen_sink_cabinet", "type": "sink_cabinet", "center": {"xMm": 7770, "yMm": 4200}, "size": {"widthMm": 600, "depthMm": 1700, "heightMm": 900}, "rotationDeg": 0, "roomId": "room_kitchen"},
+      {"id": "kitchen_cooktop", "type": "cooktop_cabinet", "center": {"xMm": 7770, "yMm": 5620}, "size": {"widthMm": 600, "depthMm": 650, "heightMm": 900}, "rotationDeg": 0, "roomId": "room_kitchen"}
+    ]
+  }
+}

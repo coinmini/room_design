@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
+from app.assets import ensure_scene_asset
 from app.database import SessionLocal
 from app.models import Job
 from app.processors.common import ProcessorError
@@ -16,14 +17,14 @@ from app.processors.floorplan import (
     run_floorplan_analyze,
     run_floorplan_scene,
 )
-from app.processors.layout import run_layout
+from app.processors.layout import run_ai_layout
 
 
 Processor = Callable[[dict[str, Any]], dict[str, Any]]
 PROCESSORS: dict[str, Processor] = {
     "FLOORPLAN_ANALYZE": run_floorplan_analyze,
     "FLOORPLAN_SCENE": run_floorplan_scene,
-    "LAYOUT": run_layout,
+    "LAYOUT_AI": run_ai_layout,
     "WHITE_MODEL_RENDER": run_white_model,
     "EFFECT_RENDER": run_effect_render,
     "MATERIAL_REPLACEMENT": run_material_replace,
@@ -63,6 +64,8 @@ def run_job(job_id: str) -> None:
         job.status = "SUCCEEDED"
         job.error_code = None
         job.error_message = None
+        session.flush()
+        ensure_scene_asset(session, job)
         session.commit()
     except ProcessorError as exc:
         if "job" in locals() and job is not None:
@@ -78,4 +81,3 @@ def run_job(job_id: str) -> None:
             session.commit()
     finally:
         session.close()
-

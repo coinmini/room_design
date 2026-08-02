@@ -65,17 +65,17 @@ def render_floorplan_with_blender(
         str(output_path),
         view_mode,
     ]
+    timeout_seconds = 180 if payload.get("render_quality") == "final" else 90
     try:
         completed = subprocess.run(
             command,
             check=False,
             capture_output=True,
             text=True,
-            timeout=75,
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0 or not output_path.exists():
         return None
     return output_path
-

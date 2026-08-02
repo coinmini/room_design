@@ -66,3 +66,44 @@ class Job(Base):
         onupdate=utc_now,
     )
 
+
+class SceneAsset(Base):
+    __tablename__ = "scene_assets"
+
+    id: Mapped[str] = mapped_column(
+        String(40),
+        primary_key=True,
+        default=lambda: new_id("asset"),
+    )
+    owner_id: Mapped[str] = mapped_column(String(80), index=True)
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("projects.id"),
+        nullable=True,
+        index=True,
+    )
+    job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id"),
+        unique=True,
+        index=True,
+    )
+    parent_asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_assets.id"),
+        nullable=True,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(160))
+    generation_mode: Mapped[str] = mapped_column(String(32), index=True)
+    asset_type: Mapped[str] = mapped_column(String(48))
+    thumbnail_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    deliverables: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column("metadata", JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        index=True,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+    )

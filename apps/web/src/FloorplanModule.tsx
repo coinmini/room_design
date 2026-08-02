@@ -3,6 +3,8 @@ import type { PointerEvent as ReactPointerEvent } from 'react'
 import { apiFetch, assetUrl, pollJob, type Job } from './api'
 
 type EditorMode = 'review' | 'draw-wall' | 'select-room'
+type RenderQuality = 'preview' | 'base' | 'final'
+type GenerationMode = 'ai_direct' | 'structured_3d'
 
 type Point = {
   x: number
@@ -23,12 +25,156 @@ type FloorplanWall = {
   y2: number
   thicknessPx: number
   confidence: number
-  source: 'auto' | 'manual'
+  source: 'auto' | 'manual' | 'semantic'
   enabled: boolean
 }
 
+type SemanticPoint = {
+  xMm: number
+  yMm: number
+}
+
+type SemanticRect = {
+  xMm: number
+  yMm: number
+  widthMm: number
+  depthMm: number
+}
+
+type SemanticRoom = {
+  id: string
+  type: string
+  name: string
+  rect: SemanticRect
+  polygon: SemanticPoint[]
+  confidence?: number
+}
+
+type SemanticWall = {
+  id: string
+  kind?: 'exterior' | 'interior' | string
+  start: SemanticPoint
+  end: SemanticPoint
+  thicknessMm?: number
+  confidence?: number
+  source?: string
+}
+
+type SemanticOpening = {
+  id: string
+  type: 'door' | 'window' | string
+  wallAxis?: 'horizontal' | 'vertical'
+  segment: {
+    start: SemanticPoint
+    end: SemanticPoint
+  }
+  widthMm?: number
+  roomIds?: string[]
+  confidence?: number
+}
+
+type SemanticFurniture = {
+  id: string
+  type: string
+  center: SemanticPoint
+  size: {
+    widthMm: number
+    depthMm: number
+    heightMm?: number
+  }
+  rotationDeg?: number
+  roomId?: string
+  confidence?: number
+}
+
+type SemanticLayout = {
+  version: '0.4' | '0.5'
+  profileId?: string
+  sourceSha256?: string
+  source?: {
+    provider?: string
+    model?: string
+    promptVersion?: string
+  }
+  validation?: Record<string, unknown>
+  plan: {
+    widthMm: number
+    depthMm: number
+    ceilingHeightMm?: number
+  }
+  rooms: SemanticRoom[]
+  walls: SemanticWall[]
+  openings: SemanticOpening[]
+  furniture: SemanticFurniture[]
+  confidence?: number
+  warnings?: string[]
+}
+
+type SelectedSemanticEntity = {
+  kind: 'room' | 'opening' | 'furniture'
+  id: string
+}
+
+type FurnitureNumericField =
+  | {
+      group: 'center'
+      key: keyof SemanticPoint
+      label: string
+      min: number
+      max: number
+    }
+  | {
+      group: 'size'
+      key: 'widthMm' | 'depthMm' | 'heightMm'
+      label: string
+      min: number
+      max: number
+    }
+
+const ROOM_TYPE_OPTIONS = [
+  ['living_room', '客厅'],
+  ['dining_room', '餐厅'],
+  ['living_dining', '客餐厅'],
+  ['bedroom', '卧室'],
+  ['kitchen', '厨房'],
+  ['bathroom', '卫生间'],
+  ['balcony', '阳台'],
+  ['entrance', '玄关'],
+  ['corridor', '走廊'],
+  ['study', '书房'],
+  ['laundry', '家政间'],
+  ['storage', '储藏室'],
+  ['closet', '衣帽间'],
+  ['other', '其他'],
+] as const
+
+const FURNITURE_TYPE_OPTIONS = [
+  'bed',
+  'nightstand',
+  'wardrobe',
+  'desk',
+  'chair',
+  'sofa',
+  'sectional_sofa',
+  'coffee_table',
+  'tv_console',
+  'dining_table',
+  'dining_chair',
+  'kitchen_cabinet',
+  'sink_cabinet',
+  'cooktop_cabinet',
+  'refrigerator',
+  'bathtub',
+  'shower',
+  'toilet',
+  'vanity',
+  'washing_machine',
+  'shelf',
+  'other',
+] as const
+
 type FloorplanAnalysis = {
-  schemaVersion: '0.2'
+  schemaVersion: '0.2' | '0.3' | '0.4' | '0.5'
   sourceImageUrl: string
   overlayPreviewUrl: string
   imageWidth: number
@@ -39,20 +185,67 @@ type FloorplanAnalysis = {
   scaleY: number
   detectedBounds: PixelBounds
   wallCandidates: Array<Omit<FloorplanWall, 'enabled'>>
+  semanticLayout?: SemanticLayout | null
   quality: {
     candidateCount: number
     orthogonalRatio: number
     scaleDeltaRatio: number
     scaleWarning: boolean
+    recognitionMode?: string
+    provider?: string
+    model?: string
+    cacheHit?: boolean
+    confidence?: number
+    dimensionSource?: string
+    dimensionConfidence?: number
+    dimensionEvidence?: string[]
+    warnings?: string[]
+    visionConfigured?: boolean
+    semanticProfileId?: string | null
+    roomCount?: number
+    openingCount?: number
+    furnitureCount?: number
     requiresUserConfirmation: boolean
   }
 }
 
 type FloorplanScene = {
   provider: string
+  renderType: string
+  layoutMode?: string
+  generationMode?: GenerationMode
+  semanticProfileId?: string | null
   topDownUrl: string
   roomPreviewUrl: string
+  dollhouseUrl?: string
   effectUrl: string
+  baseRenderUrl?: string
+  finalRenderUrl?: string
+  controlImages?: {
+    edgeUrl?: string
+    depthUrl?: string
+    normalUrl?: string
+    semanticUrl?: string
+  }
+  enhancement?: {
+    provider: string
+    modelRevision: string
+    notice: string
+    requested: boolean
+    seed?: number
+    mode?: string
+    controlImage?: string | null
+    controlModel?: string | null
+    rejectedProvider?: string | null
+  }
+  renderInfo?: {
+    quality: RenderQuality
+    width: number
+    height: number
+    samples: number
+    enhancementProvider: string
+    durationMs: number
+  }
   room: {
     name: string
     widthMm: number
@@ -64,13 +257,134 @@ type FloorplanScene = {
     scaleConsistent: boolean
     roomInsideBounds: boolean
     cameraInsideRoom: boolean
+    furnitureIsSuggestion: boolean
+    semanticLayoutValidated?: boolean
+    semanticProfileId?: string | null
+    roomCount?: number
+    openingCount?: number
+    furnitureCount?: number
+    outputSizeMatches?: boolean
+    edgeRetention?: number
+    layoutDriftScore?: number
+    wallsPreserved?: boolean
+    validationErrors?: string[]
+    validationWarnings?: string[]
     requiresUserConfirmation: boolean
   }
+}
+
+type FloorplanEnhancementCapability = {
+  configured?: boolean
+  reachable?: boolean | null
+  provider?: string
+  mode?: string
+  controlNetReady?: boolean | null
+  detail?: string
+}
+
+type FloorplanVisionCapability = {
+  configured?: boolean
+  provider?: string
+  model?: string
+  detail?: string
 }
 
 type ApiCompatibility = {
   state: 'checking' | 'ready' | 'outdated' | 'offline'
   version?: string
+  aiConfigured?: boolean
+  visionConfigured?: boolean
+  floorplanVision?: FloorplanVisionCapability
+  floorplanEnhancement?: FloorplanEnhancementCapability
+}
+
+type EnhancementCapabilityView = {
+  tone: 'connected' | 'warning' | 'fallback'
+  label: string
+  detail: string
+}
+
+const SEMANTIC_WARNING_LABELS: Record<string, string> = {
+  wall_topology_not_closed: '复杂户型墙线未完全闭合，已按房间边界继续建模，请复核',
+  opening_not_on_wall: '门窗已自动吸附最近墙线，请复核位置',
+  invalid_furniture_placement: '部分家具跨越所属房间边界，请复核摆位',
+  furniture_wall_collision: '部分家具与墙体相交，请复核摆位',
+  furniture_overlap: '部分家具发生重叠，请复核摆位',
+  door_clearance_blocked: '部分家具占用开门范围，请复核摆位',
+}
+
+function describeEnhancementCapability(
+  compatibility: ApiCompatibility,
+): EnhancementCapabilityView {
+  const capability = compatibility.floorplanEnhancement
+  const configured = capability?.configured ?? compatibility.aiConfigured ?? false
+  const provider = capability?.provider?.toLowerCase() ?? ''
+  const mode = capability?.mode?.toLowerCase() ?? ''
+  const isComfyUi = provider.includes('comfy') || mode.includes('comfy')
+
+  if (configured && capability?.reachable === false) {
+    return {
+      tone: 'warning',
+      label: '增强服务已配置，但当前不可达',
+      detail:
+        capability.detail ??
+        '最终结果将使用本地结构保真回退；请检查增强服务地址和进程状态。',
+    }
+  }
+
+  if (configured && capability?.reachable === true && isComfyUi) {
+    if (capability.controlNetReady === false) {
+      return {
+        tone: 'warning',
+        label: 'ComfyUI 已连接 · ControlNet 待安装',
+        detail:
+          capability.detail ??
+          '当前仅可执行 SDXL img2img，安装 ControlNet 模型后可启用边缘和深度结构约束。',
+      }
+    }
+    return {
+      tone: 'connected',
+      label: 'ComfyUI 已连接',
+      detail:
+        capability.detail ??
+        '受控增强服务可用，将使用结构控制图生成最终效果。',
+    }
+  }
+
+  if (configured && capability?.reachable === true) {
+    if (capability.controlNetReady === false) {
+      return {
+        tone: 'warning',
+        label: '仅 SDXL img2img · ControlNet 待安装',
+        detail:
+          capability.detail ??
+          '增强服务已连接，但结构控制模型尚未就绪；当前结果可能退回基础图。',
+      }
+    }
+    return {
+      tone: 'connected',
+      label: '受控增强服务已连接',
+      detail: capability.detail ?? '本地写实增强能力已就绪。',
+    }
+  }
+
+  if (configured) {
+    return {
+      tone: 'warning',
+      label: '增强服务已配置 · 等待检测',
+      detail:
+        capability?.detail ??
+        '后端尚未返回连通性结果；失败时会自动使用本地结构保真回退。',
+    }
+  }
+
+  return {
+    tone: 'fallback',
+    label: '本地结构保真回退',
+    detail:
+      capability?.detail ??
+      '未配置外部增强服务，最终图沿用通过结构校验的 Blender 基础渲染。',
+  }
 }
 
 function supportsFloorplanApi(version: string) {
@@ -78,18 +392,31 @@ function supportsFloorplanApi(version: string) {
     .split('.')
     .slice(0, 2)
     .map((value) => Number(value))
-  return major > 0 || (major === 0 && minor >= 2)
+  return major > 0 || (major === 0 && minor >= 5)
 }
 
 async function detectApiCompatibility(): Promise<ApiCompatibility> {
   try {
     const response = await apiFetch('/health')
     if (!response.ok) throw new Error(`API ${response.status}`)
-    const health = (await response.json()) as { version?: string }
+    const health = (await response.json()) as {
+      version?: string
+      floorplanAiConfigured?: boolean
+      floorplanVisionConfigured?: boolean
+      floorplanVision?: FloorplanVisionCapability
+      floorplanEnhancement?: FloorplanEnhancementCapability
+    }
     const version = health.version ?? 'unknown'
     return {
       state: supportsFloorplanApi(version) ? 'ready' : 'outdated',
       version,
+      aiConfigured: health.floorplanAiConfigured ?? false,
+      visionConfigured:
+        health.floorplanVisionConfigured ??
+        health.floorplanVision?.configured ??
+        false,
+      floorplanVision: health.floorplanVision,
+      floorplanEnhancement: health.floorplanEnhancement,
     }
   } catch {
     return { state: 'offline' }
@@ -101,6 +428,15 @@ function useFloorplanJob() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  const waitForCompletion = async (jobId: string) => {
+    const completed = await pollJob(jobId, setJob)
+    setJob(completed)
+    if (completed.status === 'FAILED') {
+      throw new Error(completed.errorMessage ?? '任务执行失败')
+    }
+    return completed
+  }
+
   const run = async (request: Promise<Response>) => {
     setBusy(true)
     setError('')
@@ -108,19 +444,14 @@ function useFloorplanJob() {
       const response = await request
       if (!response.ok) {
         if (response.status === 404) {
-          throw new Error('API 未加载 V0.2 路由，请停止旧服务并重新启动后端')
+          throw new Error('API 未加载 V0.5 视觉语义户型路由，请停止旧服务并重新启动后端')
         }
         const data = await response.json().catch(() => null)
         throw new Error(data?.detail ?? `请求失败：${response.status}`)
       }
       const created = (await response.json()) as Job
       setJob(created)
-      const completed = await pollJob(created.id, setJob)
-      setJob(completed)
-      if (completed.status === 'FAILED') {
-        throw new Error(completed.errorMessage ?? '任务执行失败')
-      }
-      return completed
+      return await waitForCompletion(created.id)
     } catch (value) {
       const message = value instanceof Error ? value.message : '未知错误'
       setError(message)
@@ -130,7 +461,22 @@ function useFloorplanJob() {
     }
   }
 
-  return { job, busy, error, run }
+  const resume = async () => {
+    if (!job) return null
+    setBusy(true)
+    setError('')
+    try {
+      return await waitForCompletion(job.id)
+    } catch (value) {
+      const message = value instanceof Error ? value.message : '未知错误'
+      setError(message)
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return { job, busy, error, run, resume }
 }
 
 function roomFromBounds(bounds: PixelBounds): PixelBounds {
@@ -142,11 +488,249 @@ function roomFromBounds(bounds: PixelBounds): PixelBounds {
   }
 }
 
+function cloneSemanticLayout(layout: SemanticLayout): SemanticLayout {
+  return JSON.parse(JSON.stringify(layout)) as SemanticLayout
+}
+
+function semanticRoomBounds(
+  analysis: FloorplanAnalysis,
+  layout: SemanticLayout | null | undefined = analysis.semanticLayout,
+): PixelBounds {
+  const rooms = layout?.rooms ?? []
+  const preferredRoom =
+    rooms.find((room) =>
+      ['living_dining', 'living_room', 'living'].includes(room.type),
+    ) ?? rooms[0]
+  if (!preferredRoom) return roomFromBounds(analysis.detectedBounds)
+  const plan = layout?.plan
+  if (!plan?.widthMm || !plan.depthMm) {
+    return roomFromBounds(analysis.detectedBounds)
+  }
+  const x =
+    analysis.detectedBounds.x +
+    (preferredRoom.rect.xMm / plan.widthMm) * analysis.detectedBounds.width
+  const y =
+    analysis.detectedBounds.y +
+    (preferredRoom.rect.yMm / plan.depthMm) * analysis.detectedBounds.height
+  return {
+    x: Math.round(x),
+    y: Math.round(y),
+    width: Math.max(
+      1,
+      Math.round(
+        (preferredRoom.rect.widthMm / plan.widthMm) *
+          analysis.detectedBounds.width,
+      ),
+    ),
+    height: Math.max(
+      1,
+      Math.round(
+        (preferredRoom.rect.depthMm / plan.depthMm) *
+          analysis.detectedBounds.height,
+      ),
+    ),
+  }
+}
+
+function semanticPointToPixel(
+  analysis: FloorplanAnalysis,
+  layout: SemanticLayout,
+  point: SemanticPoint,
+): Point {
+  const plan = layout.plan
+  if (!plan?.widthMm || !plan.depthMm) return { x: 0, y: 0 }
+  return {
+    x:
+      analysis.detectedBounds.x +
+      (point.xMm / plan.widthMm) * analysis.detectedBounds.width,
+    y:
+      analysis.detectedBounds.y +
+      (point.yMm / plan.depthMm) * analysis.detectedBounds.height,
+  }
+}
+
+function pixelPointToSemantic(
+  analysis: FloorplanAnalysis,
+  layout: SemanticLayout,
+  point: Point,
+): SemanticPoint {
+  const { detectedBounds: bounds } = analysis
+  return {
+    xMm: Math.round(
+      Math.max(
+        0,
+        Math.min(
+          layout.plan.widthMm,
+          ((point.x - bounds.x) / bounds.width) * layout.plan.widthMm,
+        ),
+      ),
+    ),
+    yMm: Math.round(
+      Math.max(
+        0,
+        Math.min(
+          layout.plan.depthMm,
+          ((point.y - bounds.y) / bounds.height) * layout.plan.depthMm,
+        ),
+      ),
+    ),
+  }
+}
+
+function semanticRoomPolygon(room: SemanticRoom): SemanticPoint[] {
+  if (room.polygon.length >= 3) return room.polygon
+  const { xMm, yMm, widthMm, depthMm } = room.rect
+  return [
+    { xMm, yMm },
+    { xMm: xMm + widthMm, yMm },
+    { xMm: xMm + widthMm, yMm: yMm + depthMm },
+    { xMm, yMm: yMm + depthMm },
+  ]
+}
+
+function semanticRectFromPolygon(polygon: SemanticPoint[]): SemanticRect {
+  const xValues = polygon.map((point) => point.xMm)
+  const yValues = polygon.map((point) => point.yMm)
+  const minX = Math.min(...xValues)
+  const maxX = Math.max(...xValues)
+  const minY = Math.min(...yValues)
+  const maxY = Math.max(...yValues)
+  return {
+    xMm: minX,
+    yMm: minY,
+    widthMm: Math.max(1, maxX - minX),
+    depthMm: Math.max(1, maxY - minY),
+  }
+}
+
+function boundedInteger(
+  value: number,
+  min: number,
+  max: number,
+  fallback = min,
+) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.round(Math.max(min, Math.min(max, value)))
+}
+
+function normalizeSemanticOpening(opening: SemanticOpening): SemanticOpening {
+  const xDistance = Math.abs(
+    opening.segment.end.xMm - opening.segment.start.xMm,
+  )
+  const yDistance = Math.abs(
+    opening.segment.end.yMm - opening.segment.start.yMm,
+  )
+  const wallAxis = xDistance >= yDistance ? 'horizontal' : 'vertical'
+  return {
+    ...opening,
+    wallAxis,
+    widthMm: Math.max(1, wallAxis === 'horizontal' ? xDistance : yDistance),
+  }
+}
+
+function semanticWallToEditor(
+  analysis: FloorplanAnalysis,
+  layout: SemanticLayout,
+  wall: SemanticWall,
+): FloorplanWall {
+  const start = semanticPointToPixel(analysis, layout, wall.start)
+  const end = semanticPointToPixel(analysis, layout, wall.end)
+  const horizontal = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y)
+  const pxPerMm = horizontal
+    ? analysis.detectedBounds.height / layout.plan.depthMm
+    : analysis.detectedBounds.width / layout.plan.widthMm
+  return {
+    id: wall.id,
+    orientation: horizontal ? 'horizontal' : 'vertical',
+    x1: start.x,
+    y1: start.y,
+    x2: end.x,
+    y2: end.y,
+    thicknessPx: Math.max(3, Math.round((wall.thicknessMm ?? 100) * pxPerMm)),
+    confidence: wall.confidence ?? layout.confidence ?? 1,
+    source: 'semantic',
+    enabled: true,
+  }
+}
+
+function buildEditorWalls(
+  analysis: FloorplanAnalysis,
+  layout: SemanticLayout | null,
+): FloorplanWall[] {
+  const candidates: FloorplanWall[] = analysis.wallCandidates.map(
+    (wall, index) => ({
+      ...wall,
+      enabled:
+        wall.source === 'semantic' || wall.confidence >= 0.62 || index < 12,
+    }),
+  )
+  if (!layout) return candidates
+
+  const candidateIds = new Set(candidates.map((wall) => wall.id))
+  return [
+    ...candidates,
+    ...layout.walls
+      .filter((wall) => !candidateIds.has(wall.id))
+      .map((wall) => semanticWallToEditor(analysis, layout, wall)),
+  ]
+}
+
+function editorWallsToSemantic(
+  analysis: FloorplanAnalysis,
+  layout: SemanticLayout,
+  editorWalls: FloorplanWall[],
+  defaultThicknessMm: number,
+): SemanticWall[] {
+  const originalWalls = new Map(
+    (analysis.semanticLayout?.walls ?? []).map((wall) => [wall.id, wall]),
+  )
+  return editorWalls
+    .filter((wall) => wall.enabled)
+    .map((wall) => {
+      const original = originalWalls.get(wall.id)
+      return {
+        ...original,
+        id: wall.id,
+        kind: original?.kind ?? 'interior',
+        start: pixelPointToSemantic(analysis, layout, {
+          x: wall.x1,
+          y: wall.y1,
+        }),
+        end: pixelPointToSemantic(analysis, layout, {
+          x: wall.x2,
+          y: wall.y2,
+        }),
+        thicknessMm: original?.thicknessMm ?? defaultThicknessMm,
+        confidence: original?.confidence ?? wall.confidence,
+        source: original?.source ?? wall.source,
+      }
+    })
+}
+
+function isLowConfidence(
+  confidence: number | undefined,
+  fallback: number | undefined,
+) {
+  return (confidence ?? fallback ?? 1) < 0.9
+}
+
 function floorplanPoint(
   event: ReactPointerEvent<SVGSVGElement>,
   width: number,
   height: number,
 ): Point {
+  const matrix = event.currentTarget.getScreenCTM()
+  if (matrix) {
+    const screenPoint = event.currentTarget.createSVGPoint()
+    screenPoint.x = event.clientX
+    screenPoint.y = event.clientY
+    const localPoint = screenPoint.matrixTransform(matrix.inverse())
+    return {
+      x: Math.max(0, Math.min(width, localPoint.x)),
+      y: Math.max(0, Math.min(height, localPoint.y)),
+    }
+  }
+
   const bounds = event.currentTarget.getBoundingClientRect()
   return {
     x: Math.max(
@@ -158,6 +742,10 @@ function floorplanPoint(
       Math.min(height, ((event.clientY - bounds.top) / bounds.height) * height),
     ),
   }
+}
+
+function integerInRange(value: number, min: number, max: number) {
+  return Number.isInteger(value) && value >= min && value <= max
 }
 
 function clampPoint(point: Point, bounds: PixelBounds): Point {
@@ -183,15 +771,24 @@ export default function FloorplanModule() {
     state: 'checking',
   })
   const [file, setFile] = useState<File | null>(null)
-  const [planWidth, setPlanWidth] = useState(8150)
-  const [planDepth, setPlanDepth] = useState(6060)
+  const [planWidth, setPlanWidth] = useState(0)
+  const [planDepth, setPlanDepth] = useState(0)
   const [ceilingHeight, setCeilingHeight] = useState(2800)
   const [wallThickness, setWallThickness] = useState(100)
   const [roomName, setRoomName] = useState('客餐厅')
   const [style, setStyle] = useState('modern_warm_v1')
   const [camera, setCamera] = useState('corner_02')
-  const [useBlender, setUseBlender] = useState(true)
+  const [layoutPreset, setLayoutPreset] = useState('auto')
+  const [generationMode, setGenerationMode] =
+    useState<GenerationMode>('ai_direct')
+  const [renderQuality, setRenderQuality] = useState<RenderQuality>('final')
+  const [designPrompt, setDesignPrompt] = useState('')
+  const [enhancementStrength, setEnhancementStrength] = useState(0.62)
   const [analysis, setAnalysis] = useState<FloorplanAnalysis | null>(null)
+  const [semanticDraft, setSemanticDraft] = useState<SemanticLayout | null>(null)
+  const [semanticReviewConfirmed, setSemanticReviewConfirmed] = useState(false)
+  const [selectedSemanticEntity, setSelectedSemanticEntity] =
+    useState<SelectedSemanticEntity | null>(null)
   const [scene, setScene] = useState<FloorplanScene | null>(null)
   const [walls, setWalls] = useState<FloorplanWall[]>([])
   const [roomSelection, setRoomSelection] = useState<PixelBounds | null>(null)
@@ -199,6 +796,9 @@ export default function FloorplanModule() {
   const [dragStart, setDragStart] = useState<Point | null>(null)
   const [dragCurrent, setDragCurrent] = useState<Point | null>(null)
   const manualCounter = useRef(1)
+  const manualEntityCounter = useRef(1)
+  const resultsRef = useRef<HTMLElement | null>(null)
+  const semanticEditorRef = useRef<HTMLDetailsElement | null>(null)
 
   const checkApiCompatibility = useCallback(async () => {
     setApiCompatibility({ state: 'checking' })
@@ -215,6 +815,42 @@ export default function FloorplanModule() {
     }
   }, [])
 
+  const planDimensionsValid =
+    integerInRange(planWidth, 2400, 30000) &&
+    integerInRange(planDepth, 2400, 30000)
+  const planDimensionsSubmittable =
+    (planWidth === 0 || integerInRange(planWidth, 2400, 30000)) &&
+    (planDepth === 0 || integerInRange(planDepth, 2400, 30000))
+  const sceneDimensionsValid =
+    integerInRange(ceilingHeight, 2200, 4500) &&
+    integerInRange(wallThickness, 60, 500)
+  const visionReady =
+    apiCompatibility.state === 'ready' &&
+    apiCompatibility.visionConfigured === true
+  const semanticScaleMatches = Boolean(
+    analysis &&
+      semanticDraft &&
+      analysis.planWidthMm === planWidth &&
+      analysis.planDepthMm === planDepth &&
+      semanticDraft.plan.widthMm === planWidth &&
+      semanticDraft.plan.depthMm === planDepth,
+  )
+  const canAnalyze = Boolean(
+    file && visionReady && planDimensionsSubmittable && !runner.busy,
+  )
+  const clearRecognizedPlan = () => {
+    setAnalysis(null)
+    setSemanticDraft(null)
+    setSemanticReviewConfirmed(false)
+    setSelectedSemanticEntity(null)
+    setWalls([])
+    setRoomSelection(null)
+    setScene(null)
+    setMode('review')
+    setDragStart(null)
+    setDragCurrent(null)
+  }
+
   const enabledCount = useMemo(
     () => walls.filter((wall) => wall.enabled).length,
     [walls],
@@ -223,46 +859,386 @@ export default function FloorplanModule() {
     () => walls.filter((wall) => wall.source === 'manual').length,
     [walls],
   )
+  const finalImageConfigured =
+    apiCompatibility.floorplanEnhancement?.configured ??
+    apiCompatibility.aiConfigured ??
+    false
+  const canCreateScene = Boolean(
+    analysis &&
+      semanticDraft &&
+      visionReady &&
+      planDimensionsValid &&
+      sceneDimensionsValid &&
+      semanticScaleMatches &&
+      semanticReviewConfirmed &&
+      enabledCount >= 4 &&
+      roomSelection &&
+      (generationMode !== 'ai_direct' || finalImageConfigured) &&
+      !runner.busy,
+  )
+  const enhancementCapability = useMemo(
+    () => describeEnhancementCapability(apiCompatibility),
+    [apiCompatibility],
+  )
+  const recognitionWarnings = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...(analysis?.quality.warnings ?? []),
+          ...(semanticDraft?.warnings ?? []),
+        ]),
+      ),
+    [analysis, semanticDraft],
+  )
+  const recognitionProvider = analysis
+    ? (analysis.quality.provider ??
+      semanticDraft?.source?.provider ??
+      (analysis.quality.recognitionMode?.includes('fixture')
+        ? 'reviewed-fixture'
+        : 'local'))
+    : apiCompatibility.floorplanVision?.provider
+  const recognitionModel = analysis
+    ? (analysis.quality.model ??
+      semanticDraft?.source?.model ??
+      (analysis.quality.recognitionMode?.includes('fixture')
+        ? semanticDraft?.profileId
+        : 'geometric-fallback'))
+    : apiCompatibility.floorplanVision?.model
+  const recognitionConfidence =
+    analysis?.quality.confidence ?? semanticDraft?.confidence
+
+  const requireSemanticReview = (draft: SemanticLayout): SemanticLayout => ({
+    ...draft,
+    validation: {
+      ...(draft.validation ?? {}),
+      status: 'review_required',
+      humanConfirmed: false,
+    },
+  })
+
+  const commitSemanticDraft = (
+    update: (current: SemanticLayout) => SemanticLayout,
+  ) => {
+    setSemanticDraft((current) =>
+      current ? requireSemanticReview(update(current)) : null,
+    )
+    setSemanticReviewConfirmed(false)
+    setScene(null)
+  }
+
+  const selectSemanticEntity = (
+    kind: SelectedSemanticEntity['kind'],
+    id: string,
+  ) => {
+    setSelectedSemanticEntity({ kind, id })
+    if (semanticEditorRef.current) semanticEditorRef.current.open = true
+  }
+
+  const nextManualEntityId = (prefix: string) => {
+    const knownIds = new Set(
+      semanticDraft
+        ? [
+            ...semanticDraft.rooms,
+            ...semanticDraft.walls,
+            ...semanticDraft.openings,
+            ...semanticDraft.furniture,
+          ].map((item) => item.id)
+        : [],
+    )
+    let id: string
+    do {
+      id = `${prefix}_manual_${manualEntityCounter.current++}`
+    } while (knownIds.has(id))
+    return id
+  }
+
+  const updateEditorWalls = (
+    nextWalls: FloorplanWall[],
+    thicknessMm = wallThickness,
+  ) => {
+    setWalls(nextWalls)
+    setScene(null)
+    setSemanticReviewConfirmed(false)
+    if (!analysis) return
+    setSemanticDraft((current) =>
+      current
+        ? requireSemanticReview({
+            ...current,
+            walls: editorWallsToSemantic(
+              analysis,
+              current,
+              nextWalls,
+              thicknessMm,
+            ),
+          })
+        : null,
+    )
+  }
+
+  const updateSemanticRoom = (
+    roomId: string,
+    patch: Partial<Pick<SemanticRoom, 'name' | 'type'>>,
+  ) => {
+    commitSemanticDraft((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) =>
+        room.id === roomId ? { ...room, ...patch } : room,
+      ),
+    }))
+  }
+
+  const updateSemanticRoomVertex = (
+    roomId: string,
+    pointIndex: number,
+    axis: keyof SemanticPoint,
+    value: number,
+  ) => {
+    commitSemanticDraft((current) => ({
+      ...current,
+      rooms: current.rooms.map((room) => {
+        if (room.id !== roomId) return room
+        const polygon = semanticRoomPolygon(room).map((point, index) =>
+          index === pointIndex
+            ? {
+                ...point,
+                [axis]: boundedInteger(
+                  value,
+                  0,
+                  axis === 'xMm'
+                    ? current.plan.widthMm
+                    : current.plan.depthMm,
+                  point[axis],
+                ),
+              }
+            : point,
+        )
+        return {
+          ...room,
+          polygon,
+          rect: semanticRectFromPolygon(polygon),
+        }
+      }),
+    }))
+  }
+
+  const updateSemanticOpening = (
+    openingId: string,
+    update: (opening: SemanticOpening, draft: SemanticLayout) => SemanticOpening,
+  ) => {
+    commitSemanticDraft((current) => ({
+      ...current,
+      openings: current.openings.map((opening) =>
+        opening.id === openingId
+          ? normalizeSemanticOpening(update(opening, current))
+          : opening,
+      ),
+    }))
+  }
+
+  const addSemanticOpening = (type: 'door' | 'window') => {
+    if (!semanticDraft?.rooms.length) return
+    const room = semanticDraft.rooms[0]
+    const centerX = room.rect.xMm + room.rect.widthMm / 2
+    const halfWidth = Math.max(50, Math.min(450, room.rect.widthMm * 0.25))
+    const id = nextManualEntityId(type)
+    const opening = normalizeSemanticOpening({
+      id,
+      type,
+      wallAxis: 'horizontal',
+      segment: {
+        start: {
+          xMm: boundedInteger(
+            centerX - halfWidth,
+            0,
+            semanticDraft.plan.widthMm,
+          ),
+          yMm: boundedInteger(
+            room.rect.yMm,
+            0,
+            semanticDraft.plan.depthMm,
+          ),
+        },
+        end: {
+          xMm: boundedInteger(
+            centerX + halfWidth,
+            0,
+            semanticDraft.plan.widthMm,
+          ),
+          yMm: boundedInteger(
+            room.rect.yMm,
+            0,
+            semanticDraft.plan.depthMm,
+          ),
+        },
+      },
+      roomIds: [room.id],
+      confidence: 1,
+    })
+    commitSemanticDraft((current) => ({
+      ...current,
+      openings: [...current.openings, opening],
+    }))
+    selectSemanticEntity('opening', id)
+  }
+
+  const updateSemanticFurniture = (
+    furnitureId: string,
+    update: (
+      furniture: SemanticFurniture,
+      draft: SemanticLayout,
+    ) => SemanticFurniture,
+  ) => {
+    commitSemanticDraft((current) => ({
+      ...current,
+      furniture: current.furniture.map((item) =>
+        item.id === furnitureId ? update(item, current) : item,
+      ),
+    }))
+  }
+
+  const addSemanticFurniture = () => {
+    if (!semanticDraft?.rooms.length) return
+    const selectedRoom =
+      selectedSemanticEntity?.kind === 'room'
+        ? semanticDraft.rooms.find(
+            (room) => room.id === selectedSemanticEntity.id,
+          )
+        : undefined
+    const room = selectedRoom ?? semanticDraft.rooms[0]
+    const id = nextManualEntityId('furniture')
+    const item: SemanticFurniture = {
+      id,
+      type: 'other',
+      center: {
+        xMm: boundedInteger(
+          room.rect.xMm + room.rect.widthMm / 2,
+          0,
+          semanticDraft.plan.widthMm,
+        ),
+        yMm: boundedInteger(
+          room.rect.yMm + room.rect.depthMm / 2,
+          0,
+          semanticDraft.plan.depthMm,
+        ),
+      },
+      size: {
+        widthMm: boundedInteger(room.rect.widthMm * 0.25, 100, 1200),
+        depthMm: boundedInteger(room.rect.depthMm * 0.2, 100, 1000),
+        heightMm: 600,
+      },
+      rotationDeg: 0,
+      roomId: room.id,
+      confidence: 1,
+    }
+    commitSemanticDraft((current) => ({
+      ...current,
+      furniture: [...current.furniture, item],
+    }))
+    selectSemanticEntity('furniture', id)
+  }
+
+  const removeSemanticEntity = (
+    kind: 'openings' | 'furniture',
+    id: string,
+  ) => {
+    commitSemanticDraft((current) => ({
+      ...current,
+      [kind]: current[kind].filter((item) => item.id !== id),
+    }))
+    if (selectedSemanticEntity?.id === id) setSelectedSemanticEntity(null)
+  }
+
+  const updateSemanticReviewConfirmation = (confirmed: boolean) => {
+    setSemanticReviewConfirmed(confirmed)
+    setSemanticDraft((current) =>
+      current
+        ? {
+            ...current,
+            validation: {
+              ...(current.validation ?? {}),
+              status: confirmed ? 'human_confirmed' : 'review_required',
+              humanConfirmed: confirmed,
+            },
+          }
+        : null,
+    )
+    if (!confirmed) setScene(null)
+  }
 
   const analyze = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (!file) return
+    if (!file || !visionReady || !planDimensionsSubmittable || runner.busy) return
     setScene(null)
+    setSemanticReviewConfirmed(false)
+    setSelectedSemanticEntity(null)
     const form = new FormData()
     form.append('source_image', file)
-    form.append('plan_width_mm', String(planWidth))
-    form.append('plan_depth_mm', String(planDepth))
+    if (integerInRange(planWidth, 2400, 30000)) {
+      form.append('plan_width_mm', String(planWidth))
+    }
+    if (integerInRange(planDepth, 2400, 30000)) {
+      form.append('plan_depth_mm', String(planDepth))
+    }
     const completed = await runner.run(
       apiFetch('/v1/floorplans/analyze', { method: 'POST', body: form }),
     )
     if (!completed?.result) return
     const result = completed.result as FloorplanAnalysis
-    const candidates = result.wallCandidates.map((wall, index) => ({
-      ...wall,
-      enabled: wall.confidence >= 0.62 || index < 12,
-    }))
+    setPlanWidth(result.planWidthMm)
+    setPlanDepth(result.planDepthMm)
+    const draft = result.semanticLayout
+      ? cloneSemanticLayout(result.semanticLayout)
+      : null
+    const editorWalls = buildEditorWalls(result, draft)
+    const synchronizedDraft = draft
+      ? {
+          ...draft,
+          walls: editorWallsToSemantic(
+            result,
+            draft,
+            editorWalls,
+            wallThickness,
+          ),
+        }
+      : null
     setAnalysis(result)
-    setWalls(candidates)
-    setRoomSelection(roomFromBounds(result.detectedBounds))
+    setSemanticDraft(synchronizedDraft)
+    setSemanticReviewConfirmed(false)
+    setSelectedSemanticEntity(null)
+    setWalls(editorWalls)
+    setRoomSelection(semanticRoomBounds(result, draft))
     setMode('review')
   }
 
   const resetAnalysis = () => {
     if (!analysis) return
-    setWalls(
-      analysis.wallCandidates.map((wall, index) => ({
-        ...wall,
-        enabled: wall.confidence >= 0.62 || index < 12,
-      })),
-    )
-    setRoomSelection(roomFromBounds(analysis.detectedBounds))
+    const draft = analysis.semanticLayout
+      ? cloneSemanticLayout(analysis.semanticLayout)
+      : null
+    const editorWalls = buildEditorWalls(analysis, draft)
+    const synchronizedDraft = draft
+      ? {
+          ...draft,
+          walls: editorWallsToSemantic(
+            analysis,
+            draft,
+            editorWalls,
+            wallThickness,
+          ),
+        }
+      : null
+    setSemanticDraft(synchronizedDraft)
+    setSemanticReviewConfirmed(false)
+    setSelectedSemanticEntity(null)
+    setWalls(editorWalls)
+    setRoomSelection(semanticRoomBounds(analysis, draft))
     setScene(null)
   }
 
   const toggleWall = (id: string) => {
     if (mode !== 'review') return
-    setWalls((current) =>
-      current.map((wall) =>
+    updateEditorWalls(
+      walls.map((wall) =>
         wall.id === id ? { ...wall, enabled: !wall.enabled } : wall,
       ),
     )
@@ -305,8 +1281,8 @@ export default function FloorplanModule() {
         : { x: dragStart.x, y: dragCurrent.y }
       const length = Math.hypot(end.x - dragStart.x, end.y - dragStart.y)
       if (length >= 20) {
-        setWalls((current) => [
-          ...current,
+        updateEditorWalls([
+          ...walls,
           {
             id: `wall_manual_${manualCounter.current++}`,
             orientation: horizontal ? 'horizontal' : 'vertical',
@@ -340,23 +1316,36 @@ export default function FloorplanModule() {
   }
 
   const removeLastManualWall = () => {
-    setWalls((current) => {
-      const target = [...current]
-        .reverse()
-        .find((wall) => wall.source === 'manual')
-      return target ? current.filter((wall) => wall.id !== target.id) : current
-    })
+    const target = [...walls]
+      .reverse()
+      .find((wall) => wall.source === 'manual')
+    if (target) {
+      updateEditorWalls(walls.filter((wall) => wall.id !== target.id))
+    }
   }
 
   const createScene = async () => {
-    if (!analysis || !roomSelection || enabledCount < 4) return
+    if (
+      !analysis ||
+      !semanticDraft ||
+      !roomSelection ||
+      !visionReady ||
+      !planDimensionsValid ||
+      !sceneDimensionsValid ||
+      !semanticScaleMatches ||
+      !semanticReviewConfirmed ||
+      enabledCount < 4 ||
+      runner.busy
+    ) {
+      return
+    }
     setScene(null)
     const completed = await runner.run(
       apiFetch('/v1/floorplan-scenes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          schemaVersion: '0.2',
+          schemaVersion: '0.5',
           sourceImageUrl: analysis.sourceImageUrl,
           imageWidth: analysis.imageWidth,
           imageHeight: analysis.imageHeight,
@@ -375,17 +1364,37 @@ export default function FloorplanModule() {
               y2,
               source,
             })),
+          semanticLayout: semanticDraft,
+          semanticReviewConfirmed,
           roomSelection,
           roomName,
           stylePresetId: style,
           cameraPresetId: camera,
-          useBlender,
+          layoutPresetId: layoutPreset,
+          generationMode,
+          renderQuality,
+          enableEnhancement: renderQuality === 'final',
+          enhancementStrength,
+          designPrompt,
+          useBlender:
+            generationMode === 'structured_3d' && renderQuality !== 'preview',
         }),
       }),
     )
-    if (completed?.result) {
-      setScene(completed.result as FloorplanScene)
-    }
+    showSceneResult(completed)
+  }
+
+  const showSceneResult = (completed: Job | null) => {
+    if (!completed?.result || completed.type !== 'FLOORPLAN_SCENE') return
+    setScene(completed.result as FloorplanScene)
+    window.setTimeout(
+      () => resultsRef.current?.scrollIntoView({ behavior: 'smooth' }),
+      80,
+    )
+  }
+
+  const resumeScene = async () => {
+    showSceneResult(await runner.resume())
   }
 
   const dragPreview =
@@ -402,10 +1411,10 @@ export default function FloorplanModule() {
     <div className="page floorplan-page">
       <header className="module-header">
         <div>
-          <span className="eyebrow">MODULE 01 · V0.2 PILOT</span>
-          <h1>平面图结构化生效果图</h1>
+          <span className="eyebrow">MODULE 01 · V0.5 VISION SEMANTICS</span>
+          <h1>户型识别与效果图</h1>
           <p>
-            上传正交户型图，确认墙线并框选目标房间，再创建真实三维相机、基础场景和可替换的写实增强结果。
+            上传任意清晰住宅平面图，由多模态视觉模型识别房间、墙体、门窗与家具；人工确认后可选择 AI 直出或精确三维，生成受控写实结果。
           </p>
         </div>
         <JobBadge job={runner.job} />
@@ -414,7 +1423,7 @@ export default function FloorplanModule() {
       {apiCompatibility.state === 'outdated' && (
         <div className="notice notice-error api-version-notice">
           <span>
-            当前后端是 V{apiCompatibility.version}，未包含平面图分析接口。请停止
+            当前后端是 V{apiCompatibility.version}，未包含 V0.5 视觉语义户型接口。请停止
             8000 端口的旧服务，并在项目根目录重新运行 <code>./scripts/dev.sh</code>。
           </span>
           <button type="button" onClick={checkApiCompatibility}>
@@ -432,6 +1441,19 @@ export default function FloorplanModule() {
         </div>
       )}
 
+      {apiCompatibility.state === 'ready' &&
+        apiCompatibility.visionConfigured === false && (
+          <div className="notice notice-error api-version-notice vision-config-notice">
+            <span>
+              未配置多模态视觉识别服务。为避免把几何墙线回退误当成任意户型语义识别，当前网页已禁用识别与建模；请在后端配置
+              <code> KUYAO_API_KEY </code>后重启 API。
+            </span>
+            <button type="button" onClick={checkApiCompatibility}>
+              重新检测
+            </button>
+          </div>
+        )}
+
       <div className="floorplan-workspace">
         <form className="floorplan-controls" onSubmit={analyze}>
           <div className="control-section">
@@ -441,10 +1463,12 @@ export default function FloorplanModule() {
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
+                disabled={runner.busy}
                 onChange={(event) => {
                   setFile(event.target.files?.[0] ?? null)
-                  setAnalysis(null)
-                  setScene(null)
+                  setPlanWidth(0)
+                  setPlanDepth(0)
+                  clearRecognizedPlan()
                 }}
               />
               <strong>{file ? file.name : '选择平面布局图'}</strong>
@@ -457,8 +1481,14 @@ export default function FloorplanModule() {
                   type="number"
                   min={2400}
                   max={30000}
-                  value={planWidth}
-                  onChange={(event) => setPlanWidth(Number(event.target.value))}
+                  placeholder="自动识别"
+                  value={planWidth || ''}
+                  disabled={runner.busy}
+                  onChange={(event) => {
+                    const value = Number(event.target.value)
+                    if (value !== planWidth) clearRecognizedPlan()
+                    setPlanWidth(value)
+                  }}
                 />
               </label>
               <label>
@@ -467,21 +1497,36 @@ export default function FloorplanModule() {
                   type="number"
                   min={2400}
                   max={30000}
-                  value={planDepth}
-                  onChange={(event) => setPlanDepth(Number(event.target.value))}
+                  placeholder="自动识别"
+                  value={planDepth || ''}
+                  disabled={runner.busy}
+                  onChange={(event) => {
+                    const value = Number(event.target.value)
+                    if (value !== planDepth) clearRecognizedPlan()
+                    setPlanDepth(value)
+                  }}
                 />
               </label>
             </div>
+            <p className="dimension-help">
+              {analysis?.quality.dimensionSource &&
+              analysis.quality.dimensionSource !== 'user_input'
+                ? `${
+                    analysis.quality.dimensionSource === 'object_scale_estimate'
+                      ? '原图无尺寸标注，已按门洞/标准家具尺度估算'
+                      : '已自动识别'
+                  }为 ${analysis.planWidthMm} × ${analysis.planDepthMm} mm${
+                    analysis.quality.dimensionConfidence !== undefined
+                      ? `，置信度 ${Math.round(analysis.quality.dimensionConfidence * 100)}%`
+                      : ''
+                  }；请对照图纸核对。`
+                : '尺寸可留空：系统优先读取总尺寸标注；没有标注时会按门洞和标准家具尺度给出低置信度估算。'}
+            </p>
             <button
               className="primary-button"
-              disabled={
-                !file ||
-                runner.busy ||
-                apiCompatibility.state === 'outdated' ||
-                apiCompatibility.state === 'offline'
-              }
+              disabled={!canAnalyze}
             >
-              {runner.busy && !analysis ? '识别中…' : '识别结构'}
+              {runner.busy && !analysis ? '识别尺寸与结构中…' : '识别尺寸与结构'}
             </button>
           </div>
 
@@ -523,7 +1568,547 @@ export default function FloorplanModule() {
                   <span>
                     <strong>{analysis.quality.candidateCount}</strong> 候选
                   </span>
+                  {semanticDraft && (
+                    <span>
+                      <strong>{semanticDraft.rooms.length}</strong> 房间
+                    </span>
+                  )}
                 </div>
+                <div
+                  className={`semantic-recognition-card ${
+                    semanticDraft ? 'is-ready' : 'is-warning'
+                  }`}
+                >
+                  <div className="semantic-recognition-heading">
+                    <strong>
+                      {semanticDraft ? '视觉语义识别完成' : '仅几何墙线回退'}
+                    </strong>
+                    {recognitionConfidence !== undefined && (
+                      <span>
+                        置信度 {Math.round(recognitionConfidence * 100)}%
+                      </span>
+                    )}
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>Provider</dt>
+                      <dd>{recognitionProvider || 'local'}</dd>
+                    </div>
+                    <div>
+                      <dt>Model</dt>
+                      <dd>{recognitionModel || 'geometric-fallback'}</dd>
+                    </div>
+                    <div>
+                      <dt>Mode</dt>
+                      <dd>
+                        {analysis.quality.recognitionMode || 'unknown'}
+                        {analysis.quality.cacheHit ? ' · 缓存复用' : ''}
+                      </dd>
+                    </div>
+                  </dl>
+                  {semanticDraft ? (
+                    <p>
+                      {semanticDraft.rooms.length} 个房间 ·{' '}
+                      {semanticDraft.openings.length} 个门窗 ·{' '}
+                      {semanticDraft.furniture.length} 件家具；当前副本可人工校正并提交给
+                      Blender。
+                    </p>
+                  ) : (
+                    <p>
+                      未生成 semanticLayout，Blender 只能使用墙线和目标框；请检查视觉服务配置或识别警告。
+                    </p>
+                  )}
+                  {analysis.quality.visionConfigured === false && (
+                    <p className="semantic-service-warning">
+                      多模态视觉服务未配置，本次结果没有经过房间、门窗和家具视觉识别。
+                    </p>
+                  )}
+                  {recognitionWarnings.length > 0 && (
+                    <ul>
+                      {recognitionWarnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                {semanticDraft && (
+                  <details
+                    className="semantic-entity-editor"
+                    ref={semanticEditorRef}
+                  >
+                    <summary>房间、门窗与家具校正</summary>
+                    <div className="semantic-entity-groups">
+                      <section>
+                        <h3>房间</h3>
+                        {semanticDraft.rooms.map((room) => (
+                          <article
+                            className={`semantic-geometry-card ${
+                              selectedSemanticEntity?.kind === 'room' &&
+                              selectedSemanticEntity.id === room.id
+                                ? 'selected'
+                                : ''
+                            }`}
+                            key={room.id}
+                            onClick={() =>
+                              selectSemanticEntity('room', room.id)
+                            }
+                          >
+                            <div className="semantic-card-heading">
+                              <strong>{room.id}</strong>
+                              <span>POLYGON · mm</span>
+                            </div>
+                            <div className="semantic-room-row">
+                              <input
+                                aria-label={`${room.id} 名称`}
+                                value={room.name}
+                                maxLength={80}
+                                onChange={(event) =>
+                                  updateSemanticRoom(room.id, {
+                                    name: event.target.value,
+                                  })
+                                }
+                              />
+                              <select
+                                aria-label={`${room.id} 类型`}
+                                value={room.type}
+                                onChange={(event) =>
+                                  updateSemanticRoom(room.id, {
+                                    type: event.target.value,
+                                  })
+                                }
+                              >
+                                {ROOM_TYPE_OPTIONS.map(([value, label]) => (
+                                  <option value={value} key={value}>
+                                    {label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="semantic-coordinate-list">
+                              {semanticRoomPolygon(room).map((point, index) => (
+                                <div className="semantic-point-row" key={index}>
+                                  <span>P{index + 1}</span>
+                                  <label>
+                                    X
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      max={semanticDraft.plan.widthMm}
+                                      step={1}
+                                      value={point.xMm}
+                                      onChange={(event) =>
+                                        updateSemanticRoomVertex(
+                                          room.id,
+                                          index,
+                                          'xMm',
+                                          Number(event.target.value),
+                                        )
+                                      }
+                                    />
+                                  </label>
+                                  <label>
+                                    Y
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      max={semanticDraft.plan.depthMm}
+                                      step={1}
+                                      value={point.yMm}
+                                      onChange={(event) =>
+                                        updateSemanticRoomVertex(
+                                          room.id,
+                                          index,
+                                          'yMm',
+                                          Number(event.target.value),
+                                        )
+                                      }
+                                    />
+                                  </label>
+                                </div>
+                              ))}
+                            </div>
+                          </article>
+                        ))}
+                      </section>
+                      <section>
+                        <div className="semantic-group-heading">
+                          <h3>门窗</h3>
+                          <div>
+                            <button
+                              type="button"
+                              onClick={() => addSemanticOpening('door')}
+                            >
+                              + 门
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => addSemanticOpening('window')}
+                            >
+                              + 窗
+                            </button>
+                          </div>
+                        </div>
+                        {semanticDraft.openings.length ? (
+                          semanticDraft.openings.map((opening) => (
+                            <article
+                              className={`semantic-geometry-card ${
+                                selectedSemanticEntity?.kind === 'opening' &&
+                                selectedSemanticEntity.id === opening.id
+                                  ? 'selected'
+                                  : ''
+                              }`}
+                              key={opening.id}
+                              onClick={() =>
+                                selectSemanticEntity('opening', opening.id)
+                              }
+                            >
+                              <div className="semantic-card-heading">
+                                <strong>{opening.id}</strong>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    removeSemanticEntity(
+                                      'openings',
+                                      opening.id,
+                                    )
+                                  }}
+                                >
+                                  删除
+                                </button>
+                              </div>
+                              <label className="semantic-full-field">
+                                类型
+                                <select
+                                  value={opening.type}
+                                  onChange={(event) =>
+                                    updateSemanticOpening(
+                                      opening.id,
+                                      (current) => ({
+                                        ...current,
+                                        type: event.target.value,
+                                      }),
+                                    )
+                                  }
+                                >
+                                  <option value="door">门</option>
+                                  <option value="window">窗</option>
+                                </select>
+                              </label>
+                              <div className="semantic-coordinate-grid">
+                                {(
+                                  [
+                                    ['start', 'xMm', '起点 X'],
+                                    ['start', 'yMm', '起点 Y'],
+                                    ['end', 'xMm', '终点 X'],
+                                    ['end', 'yMm', '终点 Y'],
+                                  ] as const
+                                ).map(([endpoint, axis, label]) => (
+                                  <label key={`${endpoint}-${axis}`}>
+                                    {label}
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      max={
+                                        axis === 'xMm'
+                                          ? semanticDraft.plan.widthMm
+                                          : semanticDraft.plan.depthMm
+                                      }
+                                      step={1}
+                                      value={opening.segment[endpoint][axis]}
+                                      onChange={(event) =>
+                                        updateSemanticOpening(
+                                          opening.id,
+                                          (current, draft) => ({
+                                            ...current,
+                                            segment: {
+                                              ...current.segment,
+                                              [endpoint]: {
+                                                ...current.segment[endpoint],
+                                                [axis]: boundedInteger(
+                                                  Number(event.target.value),
+                                                  0,
+                                                  axis === 'xMm'
+                                                    ? draft.plan.widthMm
+                                                    : draft.plan.depthMm,
+                                                  current.segment[endpoint][axis],
+                                                ),
+                                              },
+                                            },
+                                          }),
+                                        )
+                                      }
+                                    />
+                                  </label>
+                                ))}
+                              </div>
+                              <fieldset className="semantic-room-links">
+                                <legend>关联房间</legend>
+                                {semanticDraft.rooms.map((room) => {
+                                  const checked = (
+                                    opening.roomIds ?? []
+                                  ).includes(room.id)
+                                  return (
+                                    <label key={room.id}>
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={(event) =>
+                                          updateSemanticOpening(
+                                            opening.id,
+                                            (current) => ({
+                                              ...current,
+                                              roomIds: event.target.checked
+                                                ? Array.from(
+                                                    new Set([
+                                                      ...(current.roomIds ?? []),
+                                                      room.id,
+                                                    ]),
+                                                  )
+                                                : (current.roomIds ?? []).filter(
+                                                    (id) => id !== room.id,
+                                                  ),
+                                            }),
+                                          )
+                                        }
+                                      />
+                                      {room.name}
+                                    </label>
+                                  )
+                                })}
+                              </fieldset>
+                            </article>
+                          ))
+                        ) : (
+                          <p>未识别门窗</p>
+                        )}
+                      </section>
+                      <section>
+                        <div className="semantic-group-heading">
+                          <h3>家具</h3>
+                          <button
+                            type="button"
+                            onClick={addSemanticFurniture}
+                          >
+                            + 家具
+                          </button>
+                        </div>
+                        {semanticDraft.furniture.length ? (
+                          semanticDraft.furniture.map((item) => (
+                            <article
+                              className={`semantic-geometry-card ${
+                                selectedSemanticEntity?.kind === 'furniture' &&
+                                selectedSemanticEntity.id === item.id
+                                  ? 'selected'
+                                  : ''
+                              }`}
+                              key={item.id}
+                              onClick={() =>
+                                selectSemanticEntity('furniture', item.id)
+                              }
+                            >
+                              <div className="semantic-card-heading">
+                                <strong>{item.id}</strong>
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation()
+                                    removeSemanticEntity('furniture', item.id)
+                                  }}
+                                >
+                                  删除
+                                </button>
+                              </div>
+                              <div className="semantic-coordinate-grid">
+                                <label>
+                                  类型
+                                  <select
+                                    value={item.type}
+                                    onChange={(event) =>
+                                      updateSemanticFurniture(
+                                        item.id,
+                                        (current) => ({
+                                          ...current,
+                                          type: event.target.value,
+                                        }),
+                                      )
+                                    }
+                                  >
+                                    {FURNITURE_TYPE_OPTIONS.map((value) => (
+                                      <option value={value} key={value}>
+                                        {value}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label>
+                                  房间
+                                  <select
+                                    value={item.roomId ?? ''}
+                                    onChange={(event) =>
+                                      updateSemanticFurniture(
+                                        item.id,
+                                        (current) => ({
+                                          ...current,
+                                          roomId: event.target.value,
+                                        }),
+                                      )
+                                    }
+                                  >
+                                    {semanticDraft.rooms.map((room) => (
+                                      <option value={room.id} key={room.id}>
+                                        {room.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                {(
+                                  [
+                                    {
+                                      group: 'center',
+                                      key: 'xMm',
+                                      label: '中心 X',
+                                      min: 0,
+                                      max: semanticDraft.plan.widthMm,
+                                    },
+                                    {
+                                      group: 'center',
+                                      key: 'yMm',
+                                      label: '中心 Y',
+                                      min: 0,
+                                      max: semanticDraft.plan.depthMm,
+                                    },
+                                    {
+                                      group: 'size',
+                                      key: 'widthMm',
+                                      label: '宽',
+                                      min: 1,
+                                      max: semanticDraft.plan.widthMm,
+                                    },
+                                    {
+                                      group: 'size',
+                                      key: 'depthMm',
+                                      label: '深',
+                                      min: 1,
+                                      max: semanticDraft.plan.depthMm,
+                                    },
+                                    {
+                                      group: 'size',
+                                      key: 'heightMm',
+                                      label: '高',
+                                      min: 1,
+                                      max: 4500,
+                                    },
+                                  ] satisfies FurnitureNumericField[]
+                                ).map((field) => {
+                                  const value =
+                                    field.group === 'center'
+                                      ? item.center[field.key]
+                                      : (item.size[field.key] ?? 600)
+                                  return (
+                                    <label key={`${field.group}-${field.key}`}>
+                                      {field.label}
+                                      <input
+                                        type="number"
+                                        min={field.min}
+                                        max={field.max}
+                                        step={1}
+                                        value={value}
+                                        onChange={(event) => {
+                                          const nextValue = Number(
+                                            event.target.value,
+                                          )
+                                          updateSemanticFurniture(
+                                            item.id,
+                                            (current) => {
+                                              if (field.group === 'center') {
+                                                return {
+                                                  ...current,
+                                                  center: {
+                                                    ...current.center,
+                                                    [field.key]: boundedInteger(
+                                                      nextValue,
+                                                      field.min,
+                                                      field.max,
+                                                      current.center[field.key],
+                                                    ),
+                                                  },
+                                                }
+                                              }
+                                              return {
+                                                ...current,
+                                                size: {
+                                                  ...current.size,
+                                                  [field.key]: boundedInteger(
+                                                    nextValue,
+                                                    field.min,
+                                                    field.max,
+                                                    current.size[field.key] ??
+                                                      field.min,
+                                                  ),
+                                                },
+                                              }
+                                            },
+                                          )
+                                        }}
+                                      />
+                                    </label>
+                                  )
+                                })}
+                                <label>
+                                  旋转 °
+                                  <input
+                                    type="number"
+                                    min={-359}
+                                    max={359}
+                                    step={1}
+                                    value={item.rotationDeg ?? 0}
+                                    onChange={(event) =>
+                                      updateSemanticFurniture(
+                                        item.id,
+                                        (current) => ({
+                                          ...current,
+                                          rotationDeg: boundedInteger(
+                                            Number(event.target.value),
+                                            -359,
+                                            359,
+                                            current.rotationDeg ?? 0,
+                                          ),
+                                        }),
+                                      )
+                                    }
+                                  />
+                                </label>
+                              </div>
+                            </article>
+                          ))
+                        ) : (
+                          <p>未识别家具</p>
+                        )}
+                      </section>
+                    </div>
+                  </details>
+                )}
+                <label
+                  className={`semantic-review-confirmation ${
+                    semanticReviewConfirmed ? 'confirmed' : ''
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={semanticReviewConfirmed}
+                    disabled={!semanticDraft}
+                    onChange={(event) =>
+                      updateSemanticReviewConfirmation(event.target.checked)
+                    }
+                  />
+                  <span>
+                    <strong>我已核对语义布局</strong>
+                    <small>
+                      已确认房间边界、墙线、门窗、家具和尺寸；任何后续编辑都会要求重新确认。
+                    </small>
+                  </span>
+                </label>
                 <button
                   type="button"
                   className="secondary-button"
@@ -560,9 +2145,17 @@ export default function FloorplanModule() {
                       min={2200}
                       max={4500}
                       value={ceilingHeight}
-                      onChange={(event) =>
-                        setCeilingHeight(Number(event.target.value))
-                      }
+                      onChange={(event) => {
+                        const value = Number(event.target.value)
+                        setCeilingHeight(value)
+                        commitSemanticDraft((current) => ({
+                          ...current,
+                          plan: {
+                            ...current.plan,
+                            ceilingHeightMm: value,
+                          },
+                        }))
+                      }}
                     />
                   </label>
                   <label>
@@ -572,9 +2165,11 @@ export default function FloorplanModule() {
                       min={60}
                       max={500}
                       value={wallThickness}
-                      onChange={(event) =>
-                        setWallThickness(Number(event.target.value))
-                      }
+                      onChange={(event) => {
+                        const value = Number(event.target.value)
+                        setWallThickness(value)
+                        updateEditorWalls(walls, value)
+                      }}
                     />
                   </label>
                 </div>
@@ -587,6 +2182,19 @@ export default function FloorplanModule() {
                     <option value="modern_warm_v1">现代暖调</option>
                     <option value="modern_minimal_v1">现代极简</option>
                     <option value="natural_wood_v1">自然原木</option>
+                    <option value="quiet_luxury_v1">静奢暖灰</option>
+                  </select>
+                </label>
+                <label>
+                  户型软装模板
+                  <select
+                    value={layoutPreset}
+                    onChange={(event) => setLayoutPreset(event.target.value)}
+                  >
+                    <option value="auto">自动匹配</option>
+                    <option value="studio">开间 Studio</option>
+                    <option value="one_bedroom">一室一厅</option>
+                    <option value="two_bedroom">两室一厅</option>
                   </select>
                 </label>
                 <label>
@@ -600,39 +2208,151 @@ export default function FloorplanModule() {
                     <option value="eye_level_01">1.6 米平视机位</option>
                   </select>
                 </label>
-                <label className="toggle-row">
-                  <input
-                    type="checkbox"
-                    checked={useBlender}
-                    onChange={(event) => setUseBlender(event.target.checked)}
-                  />
-                  <span>
-                    <strong>启用 Blender</strong>
-                    <small>关闭时生成快速结构预览</small>
-                  </span>
-                </label>
+                <span className="field-label">生成模式</span>
+                <div className="generation-mode" role="group" aria-label="生成模式">
+                  {(
+                    [
+                      ['ai_direct', 'AI 直出', '原图 + 语义图 → gpt-image-2'],
+                      ['structured_3d', '精确三维', 'Semantic → Blender → 增强'],
+                    ] as const
+                  ).map(([value, label, description]) => (
+                    <button
+                      type="button"
+                      key={value}
+                      className={generationMode === value ? 'active' : ''}
+                      onClick={() => {
+                        setGenerationMode(value)
+                        if (value === 'ai_direct') setRenderQuality('final')
+                        setScene(null)
+                      }}
+                    >
+                      <strong>{label}</strong>
+                      <small>{description}</small>
+                    </button>
+                  ))}
+                </div>
+                {generationMode === 'structured_3d' ? (
+                  <>
+                    <span className="field-label">输出质量</span>
+                    <div className="render-quality" role="group" aria-label="输出质量">
+                      {(
+                        [
+                          ['preview', '快速结构', '不启动 Blender'],
+                          ['base', '基础渲染', 'Cycles + PBR'],
+                          ['final', '最终增强', '控制图 + 增强'],
+                        ] as const
+                      ).map(([value, label, description]) => (
+                        <button
+                          type="button"
+                          key={value}
+                          className={renderQuality === value ? 'active' : ''}
+                          onClick={() => setRenderQuality(value)}
+                        >
+                          <strong>{label}</strong>
+                          <small>{description}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <p className="generation-mode-help">
+                    跳过 Blender，直接使用原始平面图、人工确认的语义结构图和风格参考图生成完整鸟瞰效果图。
+                  </p>
+                )}
+                {renderQuality === 'final' && (
+                  <>
+                    <label className="enhancement-strength-field">
+                      <span className="range-heading">
+                        <span>写实重绘强度</span>
+                        <strong>{Math.round(enhancementStrength * 100)}%</strong>
+                      </span>
+                      <input
+                        type="range"
+                        min={0.35}
+                        max={0.85}
+                        step={0.05}
+                        value={enhancementStrength}
+                        onChange={(event) =>
+                          setEnhancementStrength(Number(event.target.value))
+                        }
+                      />
+                      <small>
+                        {generationMode === 'ai_direct'
+                          ? '控制 AI 直出时的装修与资产重绘幅度；布局仍以原图和语义图为准。'
+                          : '60%–70% 会把白模家具和材质重绘为写实软装，同时由 Depth ControlNet 约束墙体与相机。'}
+                      </small>
+                    </label>
+                    <label>
+                      设计补充要求
+                      <textarea
+                        value={designPrompt}
+                        maxLength={500}
+                        rows={3}
+                        placeholder="例如：浅橡木、米白布艺、落地窗帘、自然日光、绿植和地毯"
+                        onChange={(event) => setDesignPrompt(event.target.value)}
+                      />
+                    </label>
+                    {!finalImageConfigured && (
+                      <p className="provider-hint">
+                        {generationMode === 'ai_direct'
+                          ? 'AI 直出需要配置 gpt-image-2；可切换“精确三维”先输出 Blender 基础图。'
+                          : '当前未配置图像增强服务，将输出 Blender 基础图和完整控制图。'}
+                      </p>
+                    )}
+                  </>
+                )}
                 <button
                   type="button"
                   className="primary-button"
-                  disabled={
-                    runner.busy || enabledCount < 4 || roomSelection === null
-                  }
+                  disabled={!canCreateScene}
                   onClick={createScene}
                 >
-                  {runner.busy ? '构建场景中…' : '生成 3D 与效果图'}
+                  {runner.busy
+                    ? '构建场景中…'
+                    : !semanticReviewConfirmed
+                      ? '请先核对并确认布局'
+                      : renderQuality === 'final'
+                      ? '生成受控最终图'
+                      : renderQuality === 'base'
+                        ? '生成基础渲染'
+                        : '生成结构预览'}
                 </button>
               </div>
             </>
           )}
-          {runner.error && <div className="notice notice-error">{runner.error}</div>}
+          {runner.busy && runner.job?.status === 'RUNNING' && (
+            <div className="notice job-running-notice">
+              <strong>本机正在生成</strong>
+              <span>
+                最终增强通常需要 4–8 分钟；浏览器会持续等待，CPU/GPU 高负载与风扇转动属于正常现象。
+              </span>
+            </div>
+          )}
+          {runner.error && (
+            <div className="notice notice-error job-error-notice">
+              <span>{runner.error}</span>
+              {runner.job &&
+                !['SUCCEEDED', 'FAILED', 'CANCELED'].includes(
+                  runner.job.status,
+                ) && (
+                  <button
+                    type="button"
+                    disabled={runner.busy}
+                    onClick={resumeScene}
+                  >
+                    {runner.busy ? '等待中…' : '继续等待 / 获取结果'}
+                  </button>
+                )}
+            </div>
+          )}
         </form>
 
         <section className="floorplan-main">
           {!analysis && (
             <div className="empty-state floorplan-empty">
-              <span>V0.2</span>
+              <span>V0.5</span>
               <h3>先上传平面布局图</h3>
-              <p>系统先给出候选墙线，所有结构都由你确认后才进入 3D。</p>
+              <p>系统先识别房间、开口、家具和墙体，结构确认后才进入 3D。</p>
             </div>
           )}
           {analysis && (
@@ -653,8 +2373,18 @@ export default function FloorplanModule() {
                 </div>
                 <div className="legend">
                   <span className="legend-auto">自动墙</span>
+                  {semanticDraft && (
+                    <span className="legend-semantic">语义结构</span>
+                  )}
                   <span className="legend-manual">手工墙</span>
                   <span className="legend-room">目标房间</span>
+                  {semanticDraft && (
+                    <>
+                      <span className="legend-opening">门窗</span>
+                      <span className="legend-furniture">家具</span>
+                      <span className="legend-low-confidence">低置信度</span>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -662,7 +2392,7 @@ export default function FloorplanModule() {
                 <div className="scale-warning">
                   宽深比例差异为{' '}
                   {(analysis.quality.scaleDeltaRatio * 100).toFixed(1)}%，请核对总尺寸；
-                  V0.2 分别按 X/Y 方向缩放。
+                  V0.5 分别按 X/Y 方向缩放。
                 </div>
               )}
 
@@ -687,6 +2417,107 @@ export default function FloorplanModule() {
                     width={analysis.detectedBounds.width}
                     height={analysis.detectedBounds.height}
                   />
+                  {semanticDraft?.rooms.map((room) => {
+                    const center = semanticPointToPixel(
+                      analysis,
+                      semanticDraft,
+                      {
+                        xMm: room.rect.xMm + room.rect.widthMm / 2,
+                        yMm: room.rect.yMm + room.rect.depthMm / 2,
+                      },
+                    )
+                    return (
+                      <g
+                        key={room.id}
+                        className={[
+                          isLowConfidence(
+                            room.confidence,
+                            recognitionConfidence,
+                          )
+                            ? 'low-confidence'
+                            : '',
+                          selectedSemanticEntity?.kind === 'room' &&
+                          selectedSemanticEntity.id === room.id
+                            ? 'semantic-selected'
+                            : '',
+                        ].join(' ')}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          selectSemanticEntity('room', room.id)
+                        }}
+                      >
+                        <polygon
+                          className="semantic-room"
+                          points={semanticRoomPolygon(room)
+                            .map((point) =>
+                              semanticPointToPixel(
+                                analysis,
+                                semanticDraft,
+                                point,
+                              ),
+                            )
+                            .map(({ x, y }) => `${x},${y}`)
+                            .join(' ')}
+                        >
+                          <title>
+                            {room.name} · {room.type}
+                          </title>
+                        </polygon>
+                        <text
+                          className="semantic-room-label"
+                          x={center.x}
+                          y={center.y}
+                        >
+                          {room.name}
+                        </text>
+                      </g>
+                    )
+                  })}
+                  {semanticDraft?.furniture.map((item) => {
+                    const center = semanticPointToPixel(
+                      analysis,
+                      semanticDraft,
+                      item.center,
+                    )
+                    const width =
+                      (item.size.widthMm / semanticDraft.plan.widthMm) *
+                      analysis.detectedBounds.width
+                    const depth =
+                      (item.size.depthMm / semanticDraft.plan.depthMm) *
+                      analysis.detectedBounds.height
+                    return (
+                      <g
+                        key={item.id}
+                        className={`semantic-furniture ${
+                          isLowConfidence(
+                            item.confidence,
+                            recognitionConfidence,
+                          )
+                            ? 'low-confidence'
+                            : ''
+                        } ${
+                          selectedSemanticEntity?.kind === 'furniture' &&
+                          selectedSemanticEntity.id === item.id
+                            ? 'semantic-selected'
+                            : ''
+                        }`}
+                        transform={`rotate(${item.rotationDeg ?? 0} ${center.x} ${center.y})`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          selectSemanticEntity('furniture', item.id)
+                        }}
+                      >
+                        <rect
+                          x={center.x - width / 2}
+                          y={center.y - depth / 2}
+                          width={width}
+                          height={depth}
+                        >
+                          <title>{item.type}</title>
+                        </rect>
+                      </g>
+                    )
+                  })}
                   {walls.map((wall) => (
                     <line
                       key={wall.id}
@@ -694,6 +2525,12 @@ export default function FloorplanModule() {
                         'floorplan-wall',
                         wall.enabled ? 'enabled' : 'disabled',
                         wall.source,
+                        isLowConfidence(
+                          wall.confidence,
+                          recognitionConfidence,
+                        )
+                          ? 'low-confidence'
+                          : '',
                       ].join(' ')}
                       x1={wall.x1}
                       y1={wall.y1}
@@ -706,6 +2543,46 @@ export default function FloorplanModule() {
                       }}
                     />
                   ))}
+                  {semanticDraft?.openings.map((opening) => {
+                    const start = semanticPointToPixel(
+                      analysis,
+                      semanticDraft,
+                      opening.segment.start,
+                    )
+                    const end = semanticPointToPixel(
+                      analysis,
+                      semanticDraft,
+                      opening.segment.end,
+                    )
+                    return (
+                      <line
+                        key={opening.id}
+                        className={`semantic-opening ${opening.type} ${
+                          isLowConfidence(
+                            opening.confidence,
+                            recognitionConfidence,
+                          )
+                            ? 'low-confidence'
+                            : ''
+                        } ${
+                          selectedSemanticEntity?.kind === 'opening' &&
+                          selectedSemanticEntity.id === opening.id
+                            ? 'semantic-selected'
+                            : ''
+                        }`}
+                        x1={start.x}
+                        y1={start.y}
+                        x2={end.x}
+                        y2={end.y}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          selectSemanticEntity('opening', opening.id)
+                        }}
+                      >
+                        <title>{opening.type}</title>
+                      </line>
+                    )
+                  })}
                   {roomSelection && (
                     <rect
                       className="room-selection"
@@ -747,50 +2624,235 @@ export default function FloorplanModule() {
               </div>
 
               {scene && (
-                <section className="floorplan-results">
-                  <div className="scene-summary">
+                <section className="floorplan-results" ref={resultsRef}>
+                  <div
+                    className={`scene-summary ${
+                      scene.structureCheck.passed ? '' : 'scene-summary-failed'
+                    }`}
+                  >
                     <div>
-                      <span>SCENE READY</span>
+                      <span>
+                        {scene.structureCheck.passed
+                          ? 'SCENE READY'
+                          : 'STRUCTURE REVIEW REQUIRED'}
+                      </span>
                       <h2>
                         {scene.room.name} · {scene.room.widthMm} ×{' '}
                         {scene.room.depthMm} mm
                       </h2>
                     </div>
                     <div>
-                      {scene.structureCheck.wallCount} 条墙线 · {scene.provider}
+                      {scene.structureCheck.wallCount} 条墙线 ·{' '}
+                      {scene.structureCheck.semanticLayoutValidated &&
+                        `${scene.structureCheck.roomCount} 房间 · `}
+                      {scene.renderInfo
+                        ? `${scene.renderInfo.width} × ${scene.renderInfo.height} · ${scene.renderInfo.durationMs} ms`
+                        : scene.provider}
                     </div>
                   </div>
-                  <div className="scene-grid">
+                  <div className="render-comparison">
                     <article className="image-card">
                       <div className="result-heading">
-                        <h3>结构俯视</h3>
-                        <span>TOP DOWN</span>
-                      </div>
-                      <img src={assetUrl(scene.topDownUrl)} alt="三维结构俯视图" />
-                    </article>
-                    <article className="image-card">
-                      <div className="result-heading">
-                        <h3>室内机位</h3>
-                        <span>CAMERA</span>
+                        <div>
+                          <h3>
+                            {scene.generationMode === 'ai_direct'
+                              ? '结构参考'
+                              : '基础渲染'}
+                          </h3>
+                          <p>
+                            {scene.generationMode === 'ai_direct'
+                              ? '原始平面图与确认后的 Semantic 约束'
+                              : 'Blender 几何、PBR 材质和固定相机'}
+                          </p>
+                        </div>
+                        <span>
+                          {scene.generationMode === 'ai_direct'
+                            ? 'SOURCE + SEMANTIC'
+                            : 'BASE RGB'}
+                        </span>
                       </div>
                       <img
-                        src={assetUrl(scene.roomPreviewUrl)}
-                        alt="目标房间室内机位"
+                        src={assetUrl(
+                          scene.baseRenderUrl ??
+                            scene.dollhouseUrl ??
+                            scene.effectUrl,
+                        )}
+                        alt="全屋三维基础渲染"
                       />
                     </article>
-                    <article className="image-card featured">
+                    <article className="image-card final-render-card">
                       <div className="result-heading">
-                        <h3>写实增强</h3>
-                        <span>ENHANCED</span>
+                        <div>
+                          <h3>最终增强</h3>
+                          <p>
+                            {scene.enhancement?.provider ??
+                              '兼容模式增强结果'}
+                            {scene.enhancement?.mode
+                              ? ` · ${scene.enhancement.mode}`
+                              : ''}
+                          </p>
+                        </div>
+                        <span>FINAL</span>
                       </div>
-                      <img src={assetUrl(scene.effectUrl)} alt="室内设计意向效果图" />
+                      <img
+                        src={assetUrl(scene.finalRenderUrl ?? scene.effectUrl)}
+                        alt="受控增强后的全屋三维效果图"
+                      />
+                      <div
+                        className={`enhancement-capability enhancement-capability-${enhancementCapability.tone}`}
+                      >
+                        <span className="enhancement-capability-indicator" />
+                        <div>
+                          <strong>{enhancementCapability.label}</strong>
+                          <p>{enhancementCapability.detail}</p>
+                        </div>
+                      </div>
                     </article>
                   </div>
-                  <div className="check-grid">
-                    <span>✓ 房间位于户型范围内</span>
-                    <span>✓ 真实三维相机已创建</span>
-                    <span>✓ 墙体数量与结构 JSON 一致</span>
-                    <span>需人工确认视觉结果</span>
+                  {scene.enhancement?.notice && (
+                    <div
+                      className={`enhancement-notice ${
+                        scene.structureCheck.passed
+                          ? ''
+                          : 'enhancement-notice-failed'
+                      }`}
+                    >
+                      <strong>增强状态</strong>
+                      <span>{scene.enhancement.notice}</span>
+                    </div>
+                  )}
+                  <details className="render-diagnostics">
+                    <summary>控制图与诊断结果</summary>
+                    <div className="control-map-grid">
+                      <article className="image-card">
+                        <div className="result-heading">
+                          <h3>结构边缘</h3>
+                          <span>EDGE</span>
+                        </div>
+                        <img
+                          src={assetUrl(
+                            scene.controlImages?.edgeUrl ?? scene.topDownUrl,
+                          )}
+                          alt="结构边缘控制图"
+                        />
+                      </article>
+                      {scene.controlImages?.depthUrl && (
+                        <article className="image-card">
+                          <div className="result-heading">
+                            <h3>相机深度</h3>
+                            <span>DEPTH</span>
+                          </div>
+                          <img
+                            src={assetUrl(scene.controlImages.depthUrl)}
+                            alt="相机深度控制图"
+                          />
+                        </article>
+                      )}
+                      {scene.controlImages?.normalUrl && (
+                        <article className="image-card">
+                          <div className="result-heading">
+                            <h3>表面法线</h3>
+                            <span>NORMAL</span>
+                          </div>
+                          <img
+                            src={assetUrl(scene.controlImages.normalUrl)}
+                            alt="表面法线控制图"
+                          />
+                        </article>
+                      )}
+                      {scene.controlImages?.semanticUrl && (
+                        <article className="image-card">
+                          <div className="result-heading">
+                            <h3>语义分区</h3>
+                            <span>SEMANTIC</span>
+                          </div>
+                          <img
+                            src={assetUrl(scene.controlImages.semanticUrl)}
+                            alt="场景语义控制图"
+                          />
+                        </article>
+                      )}
+                      <article className="image-card">
+                        <div className="result-heading">
+                          <h3>结构俯视</h3>
+                          <span>TOP DOWN</span>
+                        </div>
+                        <img src={assetUrl(scene.topDownUrl)} alt="三维结构俯视图" />
+                      </article>
+                      <article className="image-card">
+                        <div className="result-heading">
+                          <h3>室内机位</h3>
+                          <span>CAMERA</span>
+                        </div>
+                        <img
+                          src={assetUrl(scene.roomPreviewUrl)}
+                          alt="目标房间室内机位"
+                        />
+                      </article>
+                    </div>
+                  </details>
+                  <div className="structure-metrics">
+                    <span
+                      className={
+                        scene.structureCheck.roomInsideBounds
+                          ? 'metric-pass'
+                          : 'metric-fail'
+                      }
+                    >
+                      {scene.structureCheck.roomInsideBounds ? '✓' : '×'} 房间范围
+                    </span>
+                    <span
+                      className={
+                        scene.structureCheck.cameraInsideRoom
+                          ? 'metric-pass'
+                          : 'metric-fail'
+                      }
+                    >
+                      {scene.structureCheck.cameraInsideRoom ? '✓' : '×'} 相机安全
+                    </span>
+                    <span
+                      className={
+                        scene.structureCheck.wallsPreserved === false
+                          ? 'metric-fail'
+                          : 'metric-pass'
+                      }
+                    >
+                      {scene.structureCheck.wallsPreserved === false ? '×' : '✓'}{' '}
+                      结构边缘保留
+                      {scene.structureCheck.edgeRetention !== undefined
+                        ? ` ${(scene.structureCheck.edgeRetention * 100).toFixed(1)}%`
+                        : ''}
+                    </span>
+                    <span
+                      className={
+                        scene.structureCheck.outputSizeMatches === false
+                          ? 'metric-fail'
+                          : 'metric-pass'
+                      }
+                    >
+                      {scene.structureCheck.outputSizeMatches === false ? '×' : '✓'}{' '}
+                      输出尺寸一致
+                    </span>
+                    {scene.structureCheck.semanticLayoutValidated && (
+                      <span className="metric-pass">
+                        ✓ 语义户型已校验 · {scene.structureCheck.roomCount} 房间 /{' '}
+                        {scene.structureCheck.openingCount} 开口 /{' '}
+                        {scene.structureCheck.furnitureCount} 家具
+                      </span>
+                    )}
+                    {(scene.structureCheck.validationWarnings ?? []).map(
+                      (warning) => (
+                        <span className="metric-warn" key={warning}>
+                          ! {SEMANTIC_WARNING_LABELS[warning] ?? warning}
+                        </span>
+                      ),
+                    )}
+                    {scene.structureCheck.furnitureIsSuggestion ? (
+                      <span className="metric-warn">! 家具为自动软装建议</span>
+                    ) : (
+                      <span className="metric-pass">✓ 家具来自原图语义布局</span>
+                    )}
+                    <span className="metric-warn">! 视觉结果需人工确认</span>
                   </div>
                 </section>
               )}

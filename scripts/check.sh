@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_ROOT="/Users/bolin/Documents/AI/room_design"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ "${CONDA_DEFAULT_ENV:-}" != "llf_v1" ]]; then
   echo "请先运行：conda activate llf_v1"
@@ -10,6 +10,10 @@ fi
 
 cd "$PROJECT_ROOT/apps/api"
 python -m ruff check .
+python -m pytest
+
+cd "$PROJECT_ROOT/apps/enhancer"
+python -m ruff check app tests
 python -m pytest
 
 cd "$PROJECT_ROOT/apps/web"

@@ -7,5 +7,11 @@ __pycache__/
 apps/**/node_modules/
 apps/**/dist/
 apps/api/.env
+apps/enhancer/.env
 /apps/package.json
 /apps/package-lock.json
+/Codex Image *
+/references/
+/output/imagegen/*
+!/output/imagegen/gpt-image.png
+!/output/imagegen/interior-3d-one-bedroom.png
