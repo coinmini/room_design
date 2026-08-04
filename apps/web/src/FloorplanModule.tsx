@@ -87,7 +87,7 @@ type SemanticFurniture = {
   confidence?: number
 }
 
-type SemanticLayout = {
+export type SemanticLayout = {
   version: '0.4' | '0.5'
   profileId?: string
   sourceSha256?: string
@@ -108,6 +108,34 @@ type SemanticLayout = {
   furniture: SemanticFurniture[]
   confidence?: number
   warnings?: string[]
+}
+
+export type FloorplanApprovalInvalidationReason =
+  | 'source_changed'
+  | 'dimension_changed'
+  | 'semantic_edited'
+  | 'walls_edited'
+  | 'analysis_reset'
+
+export type FloorplanStage01Approval = {
+  approvedLayoutImage: File
+  approvedLayoutImageUrl: string
+  semanticLayout: SemanticLayout
+  planWidthMm: number
+  planDepthMm: number
+  analysisJobId: string
+  approvedLayoutVersionId: string
+  sourceSha256?: string
+  detectedBounds: PixelBounds
+  approvedAt: string
+}
+
+export type FloorplanModuleProps = {
+  presentation?: 'standalone' | 'workflow-stage-01'
+  onApproved?: (approval: FloorplanStage01Approval) => void
+  onApprovalInvalidated?: (
+    reason: FloorplanApprovalInvalidationReason,
+  ) => void
 }
 
 type SelectedSemanticEntity = {
@@ -765,7 +793,12 @@ function JobBadge({ job }: { job: Job | null }) {
   )
 }
 
-export default function FloorplanModule() {
+export default function FloorplanModule({
+  presentation = 'standalone',
+  onApproved,
+  onApprovalInvalidated,
+}: FloorplanModuleProps = {}) {
+  const isWorkflowStage01 = presentation === 'workflow-stage-01'
   const runner = useFloorplanJob()
   const [apiCompatibility, setApiCompatibility] = useState<ApiCompatibility>({
     state: 'checking',
@@ -789,6 +822,13 @@ export default function FloorplanModule() {
   const [semanticReviewConfirmed, setSemanticReviewConfirmed] = useState(false)
   const [selectedSemanticEntity, setSelectedSemanticEntity] =
     useState<SelectedSemanticEntity | null>(null)
+  const [entityPopover, setEntityPopover] = useState<{
+    kind: SelectedSemanticEntity['kind']
+    id: string
+    x: number
+    y: number
+  } | null>(null)
+  const floorplanStageRef = useRef<HTMLDivElement | null>(null)
   const [scene, setScene] = useState<FloorplanScene | null>(null)
   const [walls, setWalls] = useState<FloorplanWall[]>([])
   const [roomSelection, setRoomSelection] = useState<PixelBounds | null>(null)
@@ -797,8 +837,21 @@ export default function FloorplanModule() {
   const [dragCurrent, setDragCurrent] = useState<Point | null>(null)
   const manualCounter = useRef(1)
   const manualEntityCounter = useRef(1)
+  const approvalEmittedRef = useRef(false)
   const resultsRef = useRef<HTMLElement | null>(null)
   const semanticEditorRef = useRef<HTMLDetailsElement | null>(null)
+  const [stage01ApprovalSubmitted, setStage01ApprovalSubmitted] =
+    useState(false)
+
+  const invalidateStage01Approval = useCallback(
+    (reason: FloorplanApprovalInvalidationReason) => {
+      if (!approvalEmittedRef.current) return
+      approvalEmittedRef.current = false
+      setStage01ApprovalSubmitted(false)
+      onApprovalInvalidated?.(reason)
+    },
+    [onApprovalInvalidated],
+  )
 
   const checkApiCompatibility = useCallback(async () => {
     setApiCompatibility({ state: 'checking' })
@@ -838,7 +891,10 @@ export default function FloorplanModule() {
   const canAnalyze = Boolean(
     file && visionReady && planDimensionsSubmittable && !runner.busy,
   )
-  const clearRecognizedPlan = () => {
+  const clearRecognizedPlan = (
+    reason: FloorplanApprovalInvalidationReason = 'analysis_reset',
+  ) => {
+    invalidateStage01Approval(reason)
     setAnalysis(null)
     setSemanticDraft(null)
     setSemanticReviewConfirmed(false)
@@ -874,6 +930,20 @@ export default function FloorplanModule() {
       enabledCount >= 4 &&
       roomSelection &&
       (generationMode !== 'ai_direct' || finalImageConfigured) &&
+      !runner.busy,
+  )
+  const canApproveStage01 = Boolean(
+    isWorkflowStage01 &&
+      file &&
+      analysis &&
+      semanticDraft &&
+      semanticDraft.rooms.length > 0 &&
+      planDimensionsValid &&
+      semanticScaleMatches &&
+      semanticReviewConfirmed &&
+      enabledCount >= 4 &&
+      runner.job?.type === 'FLOORPLAN_ANALYZE' &&
+      runner.job.status === 'SUCCEEDED' &&
       !runner.busy,
   )
   const enhancementCapability = useMemo(
@@ -919,6 +989,7 @@ export default function FloorplanModule() {
   const commitSemanticDraft = (
     update: (current: SemanticLayout) => SemanticLayout,
   ) => {
+    invalidateStage01Approval('semantic_edited')
     setSemanticDraft((current) =>
       current ? requireSemanticReview(update(current)) : null,
     )
@@ -929,10 +1000,39 @@ export default function FloorplanModule() {
   const selectSemanticEntity = (
     kind: SelectedSemanticEntity['kind'],
     id: string,
+    options: { openEditor?: boolean } = {},
   ) => {
     setSelectedSemanticEntity({ kind, id })
-    if (semanticEditorRef.current) semanticEditorRef.current.open = true
+    if (options.openEditor ?? true) {
+      if (semanticEditorRef.current) semanticEditorRef.current.open = true
+    }
   }
+
+  // Clicking an entity directly on the plan opens a floating editor next to
+  // the click point, so users never have to scroll the long correction list.
+  const openEntityPopover = (
+    kind: SelectedSemanticEntity['kind'],
+    id: string,
+    point: { clientX: number; clientY: number },
+  ) => {
+    selectSemanticEntity(kind, id, { openEditor: false })
+    const stage = floorplanStageRef.current
+    if (!stage) return
+    const bounds = stage.getBoundingClientRect()
+    const panelWidth = 336
+    const panelHeight = Math.min(460, Math.max(240, bounds.height - 16))
+    const x = Math.max(
+      8,
+      Math.min(point.clientX - bounds.left + 14, bounds.width - panelWidth - 8),
+    )
+    const y = Math.max(
+      8,
+      Math.min(point.clientY - bounds.top + 14, bounds.height - panelHeight - 8),
+    )
+    setEntityPopover({ kind, id, x, y })
+  }
+
+  const closeEntityPopover = () => setEntityPopover(null)
 
   const nextManualEntityId = (prefix: string) => {
     const knownIds = new Set(
@@ -956,6 +1056,7 @@ export default function FloorplanModule() {
     nextWalls: FloorplanWall[],
     thicknessMm = wallThickness,
   ) => {
+    invalidateStage01Approval('walls_edited')
     setWalls(nextWalls)
     setScene(null)
     setSemanticReviewConfirmed(false)
@@ -1146,9 +1247,389 @@ export default function FloorplanModule() {
       [kind]: current[kind].filter((item) => item.id !== id),
     }))
     if (selectedSemanticEntity?.id === id) setSelectedSemanticEntity(null)
+    if (entityPopover?.id === id) setEntityPopover(null)
   }
 
+  // Shared entity editor cards: used by the long correction list and by the
+  // floating popover that appears when an entity is clicked on the plan.
+  const renderRoomGeometryCard = (draft: SemanticLayout, room: SemanticRoom) => (
+    <article
+      className={`semantic-geometry-card ${
+        selectedSemanticEntity?.kind === 'room' &&
+        selectedSemanticEntity.id === room.id
+          ? 'selected'
+          : ''
+      }`}
+      key={room.id}
+      onClick={() => selectSemanticEntity('room', room.id, { openEditor: false })}
+    >
+      <div className="semantic-card-heading">
+        <strong>{room.id}</strong>
+        <span>POLYGON · mm</span>
+      </div>
+      <div className="semantic-room-row">
+        <input
+          aria-label={`${room.id} 名称`}
+          value={room.name}
+          maxLength={80}
+          onChange={(event) =>
+            updateSemanticRoom(room.id, {
+              name: event.target.value,
+            })
+          }
+        />
+        <select
+          aria-label={`${room.id} 类型`}
+          value={room.type}
+          onChange={(event) =>
+            updateSemanticRoom(room.id, {
+              type: event.target.value,
+            })
+          }
+        >
+          {ROOM_TYPE_OPTIONS.map(([value, label]) => (
+            <option value={value} key={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="semantic-coordinate-list">
+        {semanticRoomPolygon(room).map((point, index) => (
+          <div className="semantic-point-row" key={index}>
+            <span>P{index + 1}</span>
+            <label>
+              X
+              <input
+                type="number"
+                min={0}
+                max={draft.plan.widthMm}
+                step={1}
+                value={point.xMm}
+                onChange={(event) =>
+                  updateSemanticRoomVertex(
+                    room.id,
+                    index,
+                    'xMm',
+                    Number(event.target.value),
+                  )
+                }
+              />
+            </label>
+            <label>
+              Y
+              <input
+                type="number"
+                min={0}
+                max={draft.plan.depthMm}
+                step={1}
+                value={point.yMm}
+                onChange={(event) =>
+                  updateSemanticRoomVertex(
+                    room.id,
+                    index,
+                    'yMm',
+                    Number(event.target.value),
+                  )
+                }
+              />
+            </label>
+          </div>
+        ))}
+      </div>
+    </article>
+  )
+
+  const renderOpeningGeometryCard = (
+    draft: SemanticLayout,
+    opening: SemanticOpening,
+  ) => (
+    <article
+      className={`semantic-geometry-card ${
+        selectedSemanticEntity?.kind === 'opening' &&
+        selectedSemanticEntity.id === opening.id
+          ? 'selected'
+          : ''
+      }`}
+      key={opening.id}
+      onClick={() =>
+        selectSemanticEntity('opening', opening.id, { openEditor: false })
+      }
+    >
+      <div className="semantic-card-heading">
+        <strong>{opening.id}</strong>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            removeSemanticEntity('openings', opening.id)
+          }}
+        >
+          删除
+        </button>
+      </div>
+      <label className="semantic-full-field">
+        类型
+        <select
+          value={opening.type}
+          onChange={(event) =>
+            updateSemanticOpening(opening.id, (current) => ({
+              ...current,
+              type: event.target.value,
+            }))
+          }
+        >
+          <option value="door">门</option>
+          <option value="window">窗</option>
+        </select>
+      </label>
+      <div className="semantic-coordinate-grid">
+        {(
+          [
+            ['start', 'xMm', '起点 X'],
+            ['start', 'yMm', '起点 Y'],
+            ['end', 'xMm', '终点 X'],
+            ['end', 'yMm', '终点 Y'],
+          ] as const
+        ).map(([endpoint, axis, label]) => (
+          <label key={`${endpoint}-${axis}`}>
+            {label}
+            <input
+              type="number"
+              min={0}
+              max={axis === 'xMm' ? draft.plan.widthMm : draft.plan.depthMm}
+              step={1}
+              value={opening.segment[endpoint][axis]}
+              onChange={(event) =>
+                updateSemanticOpening(opening.id, (current, currentDraft) => ({
+                  ...current,
+                  segment: {
+                    ...current.segment,
+                    [endpoint]: {
+                      ...current.segment[endpoint],
+                      [axis]: boundedInteger(
+                        Number(event.target.value),
+                        0,
+                        axis === 'xMm'
+                          ? currentDraft.plan.widthMm
+                          : currentDraft.plan.depthMm,
+                        current.segment[endpoint][axis],
+                      ),
+                    },
+                  },
+                }))
+              }
+            />
+          </label>
+        ))}
+      </div>
+      <fieldset className="semantic-room-links">
+        <legend>关联房间</legend>
+        {draft.rooms.map((room) => {
+          const checked = (opening.roomIds ?? []).includes(room.id)
+          return (
+            <label key={room.id}>
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={(event) =>
+                  updateSemanticOpening(opening.id, (current) => ({
+                    ...current,
+                    roomIds: event.target.checked
+                      ? Array.from(
+                          new Set([...(current.roomIds ?? []), room.id]),
+                        )
+                      : (current.roomIds ?? []).filter((id) => id !== room.id),
+                  }))
+                }
+              />
+              {room.name}
+            </label>
+          )
+        })}
+      </fieldset>
+    </article>
+  )
+
+  const renderFurnitureGeometryCard = (
+    draft: SemanticLayout,
+    item: SemanticFurniture,
+  ) => (
+    <article
+      className={`semantic-geometry-card ${
+        selectedSemanticEntity?.kind === 'furniture' &&
+        selectedSemanticEntity.id === item.id
+          ? 'selected'
+          : ''
+      }`}
+      key={item.id}
+      onClick={() =>
+        selectSemanticEntity('furniture', item.id, { openEditor: false })
+      }
+    >
+      <div className="semantic-card-heading">
+        <strong>{item.id}</strong>
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation()
+            removeSemanticEntity('furniture', item.id)
+          }}
+        >
+          删除
+        </button>
+      </div>
+      <div className="semantic-coordinate-grid">
+        <label>
+          类型
+          <select
+            value={item.type}
+            onChange={(event) =>
+              updateSemanticFurniture(item.id, (current) => ({
+                ...current,
+                type: event.target.value,
+              }))
+            }
+          >
+            {FURNITURE_TYPE_OPTIONS.map((value) => (
+              <option value={value} key={value}>
+                {value}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          房间
+          <select
+            value={item.roomId ?? ''}
+            onChange={(event) =>
+              updateSemanticFurniture(item.id, (current) => ({
+                ...current,
+                roomId: event.target.value,
+              }))
+            }
+          >
+            {draft.rooms.map((room) => (
+              <option value={room.id} key={room.id}>
+                {room.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        {(
+          [
+            {
+              group: 'center',
+              key: 'xMm',
+              label: '中心 X',
+              min: 0,
+              max: draft.plan.widthMm,
+            },
+            {
+              group: 'center',
+              key: 'yMm',
+              label: '中心 Y',
+              min: 0,
+              max: draft.plan.depthMm,
+            },
+            {
+              group: 'size',
+              key: 'widthMm',
+              label: '宽',
+              min: 1,
+              max: draft.plan.widthMm,
+            },
+            {
+              group: 'size',
+              key: 'depthMm',
+              label: '深',
+              min: 1,
+              max: draft.plan.depthMm,
+            },
+            {
+              group: 'size',
+              key: 'heightMm',
+              label: '高',
+              min: 1,
+              max: 4500,
+            },
+          ] satisfies FurnitureNumericField[]
+        ).map((field) => {
+          const value =
+            field.group === 'center'
+              ? item.center[field.key]
+              : (item.size[field.key] ?? 600)
+          return (
+            <label key={`${field.group}-${field.key}`}>
+              {field.label}
+              <input
+                type="number"
+                min={field.min}
+                max={field.max}
+                step={1}
+                value={value}
+                onChange={(event) => {
+                  const nextValue = Number(event.target.value)
+                  updateSemanticFurniture(item.id, (current) => {
+                    if (field.group === 'center') {
+                      return {
+                        ...current,
+                        center: {
+                          ...current.center,
+                          [field.key]: boundedInteger(
+                            nextValue,
+                            field.min,
+                            field.max,
+                            current.center[field.key],
+                          ),
+                        },
+                      }
+                    }
+                    return {
+                      ...current,
+                      size: {
+                        ...current.size,
+                        [field.key]: boundedInteger(
+                          nextValue,
+                          field.min,
+                          field.max,
+                          current.size[field.key] ?? field.min,
+                        ),
+                      },
+                    }
+                  })
+                }}
+              />
+            </label>
+          )
+        })}
+        <label>
+          旋转 °
+          <input
+            type="number"
+            min={-359}
+            max={359}
+            step={1}
+            value={item.rotationDeg ?? 0}
+            onChange={(event) =>
+              updateSemanticFurniture(item.id, (current) => ({
+                ...current,
+                rotationDeg: boundedInteger(
+                  Number(event.target.value),
+                  -359,
+                  359,
+                  current.rotationDeg ?? 0,
+                ),
+              }))
+            }
+          />
+        </label>
+      </div>
+    </article>
+  )
+
   const updateSemanticReviewConfirmation = (confirmed: boolean) => {
+    if (!confirmed) invalidateStage01Approval('semantic_edited')
     setSemanticReviewConfirmed(confirmed)
     setSemanticDraft((current) =>
       current
@@ -1165,24 +1646,8 @@ export default function FloorplanModule() {
     if (!confirmed) setScene(null)
   }
 
-  const analyze = async (event: React.FormEvent) => {
-    event.preventDefault()
-    if (!file || !visionReady || !planDimensionsSubmittable || runner.busy) return
-    setScene(null)
-    setSemanticReviewConfirmed(false)
-    setSelectedSemanticEntity(null)
-    const form = new FormData()
-    form.append('source_image', file)
-    if (integerInRange(planWidth, 2400, 30000)) {
-      form.append('plan_width_mm', String(planWidth))
-    }
-    if (integerInRange(planDepth, 2400, 30000)) {
-      form.append('plan_depth_mm', String(planDepth))
-    }
-    const completed = await runner.run(
-      apiFetch('/v1/floorplans/analyze', { method: 'POST', body: form }),
-    )
-    if (!completed?.result) return
+  const applyAnalysisResult = (completed: Job | null) => {
+    if (!completed?.result || completed.type !== 'FLOORPLAN_ANALYZE') return
     const result = completed.result as FloorplanAnalysis
     setPlanWidth(result.planWidthMm)
     setPlanDepth(result.planDepthMm)
@@ -1210,8 +1675,30 @@ export default function FloorplanModule() {
     setMode('review')
   }
 
+  const analyze = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!file || !visionReady || !planDimensionsSubmittable || runner.busy) return
+    invalidateStage01Approval('analysis_reset')
+    setScene(null)
+    setSemanticReviewConfirmed(false)
+    setSelectedSemanticEntity(null)
+    const form = new FormData()
+    form.append('source_image', file)
+    if (integerInRange(planWidth, 2400, 30000)) {
+      form.append('plan_width_mm', String(planWidth))
+    }
+    if (integerInRange(planDepth, 2400, 30000)) {
+      form.append('plan_depth_mm', String(planDepth))
+    }
+    const completed = await runner.run(
+      apiFetch('/v1/floorplans/analyze', { method: 'POST', body: form }),
+    )
+    applyAnalysisResult(completed)
+  }
+
   const resetAnalysis = () => {
     if (!analysis) return
+    invalidateStage01Approval('analysis_reset')
     const draft = analysis.semanticLayout
       ? cloneSemanticLayout(analysis.semanticLayout)
       : null
@@ -1233,6 +1720,43 @@ export default function FloorplanModule() {
     setWalls(editorWalls)
     setRoomSelection(semanticRoomBounds(analysis, draft))
     setScene(null)
+  }
+
+  const approveStage01 = () => {
+    if (
+      !canApproveStage01 ||
+      !file ||
+      !analysis ||
+      !semanticDraft ||
+      !runner.job
+    ) {
+      return
+    }
+    const approvedAt = new Date().toISOString()
+    const approvedSemantic = cloneSemanticLayout({
+      ...semanticDraft,
+      validation: {
+        ...(semanticDraft.validation ?? {}),
+        status: 'human_confirmed',
+        humanConfirmed: true,
+        approvedAt,
+      },
+    })
+    const approval: FloorplanStage01Approval = {
+      approvedLayoutImage: file,
+      approvedLayoutImageUrl: analysis.sourceImageUrl,
+      semanticLayout: approvedSemantic,
+      planWidthMm: planWidth,
+      planDepthMm: planDepth,
+      analysisJobId: runner.job.id,
+      approvedLayoutVersionId: `${runner.job.id}:${Date.now()}`,
+      sourceSha256: semanticDraft.sourceSha256,
+      detectedBounds: { ...analysis.detectedBounds },
+      approvedAt,
+    }
+    onApproved?.(approval)
+    approvalEmittedRef.current = true
+    setStage01ApprovalSubmitted(true)
   }
 
   const toggleWall = (id: string) => {
@@ -1393,8 +1917,13 @@ export default function FloorplanModule() {
     )
   }
 
-  const resumeScene = async () => {
-    showSceneResult(await runner.resume())
+  const resumeCurrentJob = async () => {
+    const completed = await runner.resume()
+    if (completed?.type === 'FLOORPLAN_ANALYZE') {
+      applyAnalysisResult(completed)
+      return
+    }
+    showSceneResult(completed)
   }
 
   const dragPreview =
@@ -1408,17 +1937,25 @@ export default function FloorplanModule() {
       : null
 
   return (
-    <div className="page floorplan-page">
-      <header className="module-header">
-        <div>
-          <span className="eyebrow">MODULE 01 · V0.5 VISION SEMANTICS</span>
-          <h1>户型识别与效果图</h1>
-          <p>
-            上传任意清晰住宅平面图，由多模态视觉模型识别房间、墙体、门窗与家具；人工确认后可选择 AI 直出或精确三维，生成受控写实结果。
-          </p>
-        </div>
-        <JobBadge job={runner.job} />
-      </header>
+    <div
+      className={
+        isWorkflowStage01
+          ? 'floorplan-page floorplan-stage01-embedded'
+          : 'page floorplan-page'
+      }
+    >
+      {!isWorkflowStage01 && (
+        <header className="module-header">
+          <div>
+            <span className="eyebrow">MODULE 01 · V0.5 VISION SEMANTICS</span>
+            <h1>户型识别与效果图</h1>
+            <p>
+              上传任意清晰住宅平面图，由多模态视觉模型识别房间、墙体、门窗与家具；人工确认后生成受控概念效果图。
+            </p>
+          </div>
+          <JobBadge job={runner.job} />
+        </header>
+      )}
 
       {apiCompatibility.state === 'outdated' && (
         <div className="notice notice-error api-version-notice">
@@ -1468,7 +2005,7 @@ export default function FloorplanModule() {
                   setFile(event.target.files?.[0] ?? null)
                   setPlanWidth(0)
                   setPlanDepth(0)
-                  clearRecognizedPlan()
+                  clearRecognizedPlan('source_changed')
                 }}
               />
               <strong>{file ? file.name : '选择平面布局图'}</strong>
@@ -1486,7 +2023,9 @@ export default function FloorplanModule() {
                   disabled={runner.busy}
                   onChange={(event) => {
                     const value = Number(event.target.value)
-                    if (value !== planWidth) clearRecognizedPlan()
+                    if (value !== planWidth) {
+                      clearRecognizedPlan('dimension_changed')
+                    }
                     setPlanWidth(value)
                   }}
                 />
@@ -1502,7 +2041,9 @@ export default function FloorplanModule() {
                   disabled={runner.busy}
                   onChange={(event) => {
                     const value = Number(event.target.value)
-                    if (value !== planDepth) clearRecognizedPlan()
+                    if (value !== planDepth) {
+                      clearRecognizedPlan('dimension_changed')
+                    }
                     setPlanDepth(value)
                   }}
                 />
@@ -1610,12 +2151,12 @@ export default function FloorplanModule() {
                     <p>
                       {semanticDraft.rooms.length} 个房间 ·{' '}
                       {semanticDraft.openings.length} 个门窗 ·{' '}
-                      {semanticDraft.furniture.length} 件家具；当前副本可人工校正并提交给
-                      Blender。
+                      {semanticDraft.furniture.length} 件家具；当前副本可人工校正并作为
+                      后续 AI 平面布局的语义基准。
                     </p>
                   ) : (
                     <p>
-                      未生成 semanticLayout，Blender 只能使用墙线和目标框；请检查视觉服务配置或识别警告。
+                      未生成 semanticLayout，无法进入 AI 平面布局；请检查视觉服务配置或识别警告。
                     </p>
                   )}
                   {analysis.quality.visionConfigured === false && (
@@ -1640,95 +2181,9 @@ export default function FloorplanModule() {
                     <div className="semantic-entity-groups">
                       <section>
                         <h3>房间</h3>
-                        {semanticDraft.rooms.map((room) => (
-                          <article
-                            className={`semantic-geometry-card ${
-                              selectedSemanticEntity?.kind === 'room' &&
-                              selectedSemanticEntity.id === room.id
-                                ? 'selected'
-                                : ''
-                            }`}
-                            key={room.id}
-                            onClick={() =>
-                              selectSemanticEntity('room', room.id)
-                            }
-                          >
-                            <div className="semantic-card-heading">
-                              <strong>{room.id}</strong>
-                              <span>POLYGON · mm</span>
-                            </div>
-                            <div className="semantic-room-row">
-                              <input
-                                aria-label={`${room.id} 名称`}
-                                value={room.name}
-                                maxLength={80}
-                                onChange={(event) =>
-                                  updateSemanticRoom(room.id, {
-                                    name: event.target.value,
-                                  })
-                                }
-                              />
-                              <select
-                                aria-label={`${room.id} 类型`}
-                                value={room.type}
-                                onChange={(event) =>
-                                  updateSemanticRoom(room.id, {
-                                    type: event.target.value,
-                                  })
-                                }
-                              >
-                                {ROOM_TYPE_OPTIONS.map(([value, label]) => (
-                                  <option value={value} key={value}>
-                                    {label}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="semantic-coordinate-list">
-                              {semanticRoomPolygon(room).map((point, index) => (
-                                <div className="semantic-point-row" key={index}>
-                                  <span>P{index + 1}</span>
-                                  <label>
-                                    X
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      max={semanticDraft.plan.widthMm}
-                                      step={1}
-                                      value={point.xMm}
-                                      onChange={(event) =>
-                                        updateSemanticRoomVertex(
-                                          room.id,
-                                          index,
-                                          'xMm',
-                                          Number(event.target.value),
-                                        )
-                                      }
-                                    />
-                                  </label>
-                                  <label>
-                                    Y
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      max={semanticDraft.plan.depthMm}
-                                      step={1}
-                                      value={point.yMm}
-                                      onChange={(event) =>
-                                        updateSemanticRoomVertex(
-                                          room.id,
-                                          index,
-                                          'yMm',
-                                          Number(event.target.value),
-                                        )
-                                      }
-                                    />
-                                  </label>
-                                </div>
-                              ))}
-                            </div>
-                          </article>
-                        ))}
+                        {semanticDraft.rooms.map((room) =>
+                          renderRoomGeometryCard(semanticDraft, room),
+                        )}
                       </section>
                       <section>
                         <div className="semantic-group-heading">
@@ -1749,136 +2204,9 @@ export default function FloorplanModule() {
                           </div>
                         </div>
                         {semanticDraft.openings.length ? (
-                          semanticDraft.openings.map((opening) => (
-                            <article
-                              className={`semantic-geometry-card ${
-                                selectedSemanticEntity?.kind === 'opening' &&
-                                selectedSemanticEntity.id === opening.id
-                                  ? 'selected'
-                                  : ''
-                              }`}
-                              key={opening.id}
-                              onClick={() =>
-                                selectSemanticEntity('opening', opening.id)
-                              }
-                            >
-                              <div className="semantic-card-heading">
-                                <strong>{opening.id}</strong>
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    removeSemanticEntity(
-                                      'openings',
-                                      opening.id,
-                                    )
-                                  }}
-                                >
-                                  删除
-                                </button>
-                              </div>
-                              <label className="semantic-full-field">
-                                类型
-                                <select
-                                  value={opening.type}
-                                  onChange={(event) =>
-                                    updateSemanticOpening(
-                                      opening.id,
-                                      (current) => ({
-                                        ...current,
-                                        type: event.target.value,
-                                      }),
-                                    )
-                                  }
-                                >
-                                  <option value="door">门</option>
-                                  <option value="window">窗</option>
-                                </select>
-                              </label>
-                              <div className="semantic-coordinate-grid">
-                                {(
-                                  [
-                                    ['start', 'xMm', '起点 X'],
-                                    ['start', 'yMm', '起点 Y'],
-                                    ['end', 'xMm', '终点 X'],
-                                    ['end', 'yMm', '终点 Y'],
-                                  ] as const
-                                ).map(([endpoint, axis, label]) => (
-                                  <label key={`${endpoint}-${axis}`}>
-                                    {label}
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      max={
-                                        axis === 'xMm'
-                                          ? semanticDraft.plan.widthMm
-                                          : semanticDraft.plan.depthMm
-                                      }
-                                      step={1}
-                                      value={opening.segment[endpoint][axis]}
-                                      onChange={(event) =>
-                                        updateSemanticOpening(
-                                          opening.id,
-                                          (current, draft) => ({
-                                            ...current,
-                                            segment: {
-                                              ...current.segment,
-                                              [endpoint]: {
-                                                ...current.segment[endpoint],
-                                                [axis]: boundedInteger(
-                                                  Number(event.target.value),
-                                                  0,
-                                                  axis === 'xMm'
-                                                    ? draft.plan.widthMm
-                                                    : draft.plan.depthMm,
-                                                  current.segment[endpoint][axis],
-                                                ),
-                                              },
-                                            },
-                                          }),
-                                        )
-                                      }
-                                    />
-                                  </label>
-                                ))}
-                              </div>
-                              <fieldset className="semantic-room-links">
-                                <legend>关联房间</legend>
-                                {semanticDraft.rooms.map((room) => {
-                                  const checked = (
-                                    opening.roomIds ?? []
-                                  ).includes(room.id)
-                                  return (
-                                    <label key={room.id}>
-                                      <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={(event) =>
-                                          updateSemanticOpening(
-                                            opening.id,
-                                            (current) => ({
-                                              ...current,
-                                              roomIds: event.target.checked
-                                                ? Array.from(
-                                                    new Set([
-                                                      ...(current.roomIds ?? []),
-                                                      room.id,
-                                                    ]),
-                                                  )
-                                                : (current.roomIds ?? []).filter(
-                                                    (id) => id !== room.id,
-                                                  ),
-                                            }),
-                                          )
-                                        }
-                                      />
-                                      {room.name}
-                                    </label>
-                                  )
-                                })}
-                              </fieldset>
-                            </article>
-                          ))
+                          semanticDraft.openings.map((opening) =>
+                            renderOpeningGeometryCard(semanticDraft, opening),
+                          )
                         ) : (
                           <p>未识别门窗</p>
                         )}
@@ -1894,194 +2222,9 @@ export default function FloorplanModule() {
                           </button>
                         </div>
                         {semanticDraft.furniture.length ? (
-                          semanticDraft.furniture.map((item) => (
-                            <article
-                              className={`semantic-geometry-card ${
-                                selectedSemanticEntity?.kind === 'furniture' &&
-                                selectedSemanticEntity.id === item.id
-                                  ? 'selected'
-                                  : ''
-                              }`}
-                              key={item.id}
-                              onClick={() =>
-                                selectSemanticEntity('furniture', item.id)
-                              }
-                            >
-                              <div className="semantic-card-heading">
-                                <strong>{item.id}</strong>
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation()
-                                    removeSemanticEntity('furniture', item.id)
-                                  }}
-                                >
-                                  删除
-                                </button>
-                              </div>
-                              <div className="semantic-coordinate-grid">
-                                <label>
-                                  类型
-                                  <select
-                                    value={item.type}
-                                    onChange={(event) =>
-                                      updateSemanticFurniture(
-                                        item.id,
-                                        (current) => ({
-                                          ...current,
-                                          type: event.target.value,
-                                        }),
-                                      )
-                                    }
-                                  >
-                                    {FURNITURE_TYPE_OPTIONS.map((value) => (
-                                      <option value={value} key={value}>
-                                        {value}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-                                <label>
-                                  房间
-                                  <select
-                                    value={item.roomId ?? ''}
-                                    onChange={(event) =>
-                                      updateSemanticFurniture(
-                                        item.id,
-                                        (current) => ({
-                                          ...current,
-                                          roomId: event.target.value,
-                                        }),
-                                      )
-                                    }
-                                  >
-                                    {semanticDraft.rooms.map((room) => (
-                                      <option value={room.id} key={room.id}>
-                                        {room.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-                                {(
-                                  [
-                                    {
-                                      group: 'center',
-                                      key: 'xMm',
-                                      label: '中心 X',
-                                      min: 0,
-                                      max: semanticDraft.plan.widthMm,
-                                    },
-                                    {
-                                      group: 'center',
-                                      key: 'yMm',
-                                      label: '中心 Y',
-                                      min: 0,
-                                      max: semanticDraft.plan.depthMm,
-                                    },
-                                    {
-                                      group: 'size',
-                                      key: 'widthMm',
-                                      label: '宽',
-                                      min: 1,
-                                      max: semanticDraft.plan.widthMm,
-                                    },
-                                    {
-                                      group: 'size',
-                                      key: 'depthMm',
-                                      label: '深',
-                                      min: 1,
-                                      max: semanticDraft.plan.depthMm,
-                                    },
-                                    {
-                                      group: 'size',
-                                      key: 'heightMm',
-                                      label: '高',
-                                      min: 1,
-                                      max: 4500,
-                                    },
-                                  ] satisfies FurnitureNumericField[]
-                                ).map((field) => {
-                                  const value =
-                                    field.group === 'center'
-                                      ? item.center[field.key]
-                                      : (item.size[field.key] ?? 600)
-                                  return (
-                                    <label key={`${field.group}-${field.key}`}>
-                                      {field.label}
-                                      <input
-                                        type="number"
-                                        min={field.min}
-                                        max={field.max}
-                                        step={1}
-                                        value={value}
-                                        onChange={(event) => {
-                                          const nextValue = Number(
-                                            event.target.value,
-                                          )
-                                          updateSemanticFurniture(
-                                            item.id,
-                                            (current) => {
-                                              if (field.group === 'center') {
-                                                return {
-                                                  ...current,
-                                                  center: {
-                                                    ...current.center,
-                                                    [field.key]: boundedInteger(
-                                                      nextValue,
-                                                      field.min,
-                                                      field.max,
-                                                      current.center[field.key],
-                                                    ),
-                                                  },
-                                                }
-                                              }
-                                              return {
-                                                ...current,
-                                                size: {
-                                                  ...current.size,
-                                                  [field.key]: boundedInteger(
-                                                    nextValue,
-                                                    field.min,
-                                                    field.max,
-                                                    current.size[field.key] ??
-                                                      field.min,
-                                                  ),
-                                                },
-                                              }
-                                            },
-                                          )
-                                        }}
-                                      />
-                                    </label>
-                                  )
-                                })}
-                                <label>
-                                  旋转 °
-                                  <input
-                                    type="number"
-                                    min={-359}
-                                    max={359}
-                                    step={1}
-                                    value={item.rotationDeg ?? 0}
-                                    onChange={(event) =>
-                                      updateSemanticFurniture(
-                                        item.id,
-                                        (current) => ({
-                                          ...current,
-                                          rotationDeg: boundedInteger(
-                                            Number(event.target.value),
-                                            -359,
-                                            359,
-                                            current.rotationDeg ?? 0,
-                                          ),
-                                        }),
-                                      )
-                                    }
-                                  />
-                                </label>
-                              </div>
-                            </article>
-                          ))
+                          semanticDraft.furniture.map((item) =>
+                            renderFurnitureGeometryCard(semanticDraft, item),
+                          )
                         ) : (
                           <p>未识别家具</p>
                         )}
@@ -2109,6 +2252,18 @@ export default function FloorplanModule() {
                     </small>
                   </span>
                 </label>
+                {isWorkflowStage01 && (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!canApproveStage01 || stage01ApprovalSubmitted}
+                    onClick={approveStage01}
+                  >
+                    {stage01ApprovalSubmitted
+                      ? '✓ Stage 01 已批准'
+                      : '批准 Stage 01 并进入 AI 平面布局'}
+                  </button>
+                )}
                 <button
                   type="button"
                   className="secondary-button"
@@ -2126,7 +2281,8 @@ export default function FloorplanModule() {
                 </button>
               </div>
 
-              <div className="control-section">
+              {!isWorkflowStage01 && (
+                <div className="control-section">
                 <span className="control-section-label">03 / SCENE</span>
                 <h2>目标场景</h2>
                 <label>
@@ -2317,14 +2473,19 @@ export default function FloorplanModule() {
                         ? '生成基础渲染'
                         : '生成结构预览'}
                 </button>
-              </div>
+                </div>
+              )}
             </>
           )}
           {runner.busy && runner.job?.status === 'RUNNING' && (
             <div className="notice job-running-notice">
-              <strong>本机正在生成</strong>
+              <strong>
+                {isWorkflowStage01 ? '正在识别功能区与结构' : '本机正在生成'}
+              </strong>
               <span>
-                最终增强通常需要 4–8 分钟；浏览器会持续等待，CPU/GPU 高负载与风扇转动属于正常现象。
+                {isWorkflowStage01
+                  ? '多模态视觉模型正在提取房间、墙体、门窗与家具，请保持页面打开。'
+                  : '最终增强通常需要 4–8 分钟；浏览器会持续等待，CPU/GPU 高负载与风扇转动属于正常现象。'}
               </span>
             </div>
           )}
@@ -2338,7 +2499,7 @@ export default function FloorplanModule() {
                   <button
                     type="button"
                     disabled={runner.busy}
-                    onClick={resumeScene}
+                    onClick={resumeCurrentJob}
                   >
                     {runner.busy ? '等待中…' : '继续等待 / 获取结果'}
                   </button>
@@ -2352,7 +2513,11 @@ export default function FloorplanModule() {
             <div className="empty-state floorplan-empty">
               <span>V0.5</span>
               <h3>先上传平面布局图</h3>
-              <p>系统先识别房间、开口、家具和墙体，结构确认后才进入 3D。</p>
+              <p>
+                {isWorkflowStage01
+                  ? '系统先识别房间、开口、家具和墙体，人工确认后进入 AI 平面布局。'
+                  : '系统先识别房间、开口、家具和墙体，结构确认后才进入 3D。'}
+              </p>
             </div>
           )}
           {analysis && (
@@ -2369,6 +2534,7 @@ export default function FloorplanModule() {
                   <span>
                     图纸 {analysis.imageWidth} × {analysis.imageHeight}px · 比例 X{' '}
                     {analysis.scaleX.toFixed(2)} / Y {analysis.scaleY.toFixed(2)} mm/px
+                    {semanticDraft ? ' · 点击房间 / 门窗 / 家具可直接修改参数' : ''}
                   </span>
                 </div>
                 <div className="legend">
@@ -2396,13 +2562,17 @@ export default function FloorplanModule() {
                 </div>
               )}
 
-              <div className={`floorplan-stage mode-${mode}`}>
+              <div
+                className={`floorplan-stage mode-${mode}`}
+                ref={floorplanStageRef}
+              >
                 <svg
                   viewBox={`0 0 ${analysis.imageWidth} ${analysis.imageHeight}`}
                   onPointerDown={beginDrag}
                   onPointerMove={moveDrag}
                   onPointerUp={endDrag}
                   onPointerCancel={endDrag}
+                  onClick={closeEntityPopover}
                 >
                   <image
                     href={assetUrl(analysis.sourceImageUrl)}
@@ -2443,7 +2613,7 @@ export default function FloorplanModule() {
                         ].join(' ')}
                         onClick={(event) => {
                           event.stopPropagation()
-                          selectSemanticEntity('room', room.id)
+                          openEntityPopover('room', room.id, event)
                         }}
                       >
                         <polygon
@@ -2504,7 +2674,7 @@ export default function FloorplanModule() {
                         transform={`rotate(${item.rotationDeg ?? 0} ${center.x} ${center.y})`}
                         onClick={(event) => {
                           event.stopPropagation()
-                          selectSemanticEntity('furniture', item.id)
+                          openEntityPopover('furniture', item.id, event)
                         }}
                       >
                         <rect
@@ -2576,7 +2746,7 @@ export default function FloorplanModule() {
                         y2={end.y}
                         onClick={(event) => {
                           event.stopPropagation()
-                          selectSemanticEntity('opening', opening.id)
+                          openEntityPopover('opening', opening.id, event)
                         }}
                       >
                         <title>{opening.type}</title>
@@ -2621,9 +2791,68 @@ export default function FloorplanModule() {
                     />
                   )}
                 </svg>
+                {entityPopover &&
+                  semanticDraft &&
+                  (() => {
+                    const title =
+                      entityPopover.kind === 'room'
+                        ? '房间参数'
+                        : entityPopover.kind === 'opening'
+                          ? '门窗参数'
+                          : '家具参数'
+                    const card =
+                      entityPopover.kind === 'room'
+                        ? (() => {
+                            const room = semanticDraft.rooms.find(
+                              (item) => item.id === entityPopover.id,
+                            )
+                            return room
+                              ? renderRoomGeometryCard(semanticDraft, room)
+                              : null
+                          })()
+                        : entityPopover.kind === 'opening'
+                          ? (() => {
+                              const opening = semanticDraft.openings.find(
+                                (item) => item.id === entityPopover.id,
+                              )
+                              return opening
+                                ? renderOpeningGeometryCard(
+                                    semanticDraft,
+                                    opening,
+                                  )
+                                : null
+                            })()
+                          : (() => {
+                              const item = semanticDraft.furniture.find(
+                                (entry) => entry.id === entityPopover.id,
+                              )
+                              return item
+                                ? renderFurnitureGeometryCard(semanticDraft, item)
+                                : null
+                            })()
+                    if (!card) return null
+                    return (
+                      <div
+                        className="semantic-entity-popover"
+                        style={{ left: entityPopover.x, top: entityPopover.y }}
+                      >
+                        <header>
+                          <strong>{title}</strong>
+                          <button
+                            type="button"
+                            aria-label="关闭"
+                            onClick={closeEntityPopover}
+                          >
+                            ×
+                          </button>
+                        </header>
+                        <div className="semantic-entity-popover-body">{card}</div>
+                      </div>
+                    )
+                  })()}
               </div>
 
-              {scene && (
+              {!isWorkflowStage01 && scene && (
                 <section className="floorplan-results" ref={resultsRef}>
                   <div
                     className={`scene-summary ${

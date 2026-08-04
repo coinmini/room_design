@@ -21,7 +21,7 @@ ASSET_MODULES: dict[str, dict[str, str]] = {
     },
     "layout": {
         "name": "AI 平面布局",
-        "description": "AI 生成的家具平面布局概念方案；历史布局资产保留只读浏览",
+        "description": "由阶段 01 功能区标注生成的专业黑白平面布局方案；历史布局资产保留只读浏览",
     },
     "white_model": {
         "name": "白模渲染",
@@ -35,6 +35,10 @@ ASSET_MODULES: dict[str, dict[str, str]] = {
         "name": "AI 多材质替换",
         "description": "使用蒙版约束 AI 重绘墙面与地面材质；失败时明确记录本地回退",
     },
+    "ai_workflow": {
+        "name": "AI 设计工作流",
+        "description": "从已批准布局连续生成彩平、轴侧、空间、风格、色调和局部修改方案",
+    },
 }
 
 JOB_TYPE_TO_MODULE = {
@@ -44,9 +48,25 @@ JOB_TYPE_TO_MODULE = {
     "WHITE_MODEL_RENDER": "white_model",
     "EFFECT_RENDER": "effect_render",
     "MATERIAL_REPLACEMENT": "material_replacement",
+    "AI_COLOR_PLAN": "ai_workflow",
+    "AI_AXONOMETRIC": "ai_workflow",
+    "AI_SPACE_RENDER": "ai_workflow",
+    "AI_STYLE_SCHEME": "ai_workflow",
+    "AI_TONE_SCHEME": "ai_workflow",
+    "AI_LOCAL_EDIT": "ai_workflow",
 }
 
 ASSET_JOB_TYPES = frozenset(JOB_TYPE_TO_MODULE)
+AI_WORKFLOW_JOB_TYPES = frozenset(
+    {
+        "AI_COLOR_PLAN",
+        "AI_AXONOMETRIC",
+        "AI_SPACE_RENDER",
+        "AI_STYLE_SCHEME",
+        "AI_TONE_SCHEME",
+        "AI_LOCAL_EDIT",
+    }
+)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -77,6 +97,9 @@ def _valid_module_key(value: Any) -> str | None:
 
 
 def _module_key(job: Job, parent_asset: SceneAsset | None = None) -> str:
+    if job.type in AI_WORKFLOW_JOB_TYPES:
+        explicit = _valid_module_key(_mapping(job.payload).get("asset_module_key"))
+        return explicit or "ai_workflow"
     if parent_asset is not None:
         inherited = _valid_module_key(_mapping(parent_asset.metadata_json).get("moduleKey"))
         if inherited:
@@ -127,6 +150,18 @@ def _asset_title(job: Job, result: dict[str, Any]) -> str:
         return title[:160]
     if job.type == "MATERIAL_REPLACEMENT":
         return "AI 多材质替换"
+    if job.type in AI_WORKFLOW_JOB_TYPES:
+        stage_labels = {
+            "AI_COLOR_PLAN": "AI 彩平方案",
+            "AI_AXONOMETRIC": "AI 轴侧方案",
+            "AI_SPACE_RENDER": "AI 分空间效果图",
+            "AI_STYLE_SCHEME": "AI 风格方案",
+            "AI_TONE_SCHEME": "AI 色调方案",
+            "AI_LOCAL_EDIT": "AI 局部修改",
+        }
+        output_count = len(result.get("outputs") or [])
+        suffix = f" · {output_count} 张" if output_count else ""
+        return f"{stage_labels[job.type]}{suffix}"[:160]
 
     base_title = room_name or "室内设计效果图"
     variant_type = payload.get("asset_variant_type")
@@ -155,6 +190,8 @@ def _asset_deliverables(job: Job, result: dict[str, Any]) -> dict[str, Any]:
     payload = _mapping(job.payload)
     source_image_url = payload.get("source_image_url") or _path_url(
         payload.get("source_path")
+        or payload.get("approved_layout_path")
+        or payload.get("source_space_path")
     )
     if job.type in {"LAYOUT", "LAYOUT_AI"}:
         layouts = result.get("layouts") if isinstance(result.get("layouts"), list) else []
@@ -165,6 +202,7 @@ def _asset_deliverables(job: Job, result: dict[str, Any]) -> dict[str, Any]:
         ]
         return {
             "sourceImageUrl": source_image_url,
+            "stage01ControlImageUrl": result.get("stage01ControlImageUrl"),
             "previewUrl": preview_urls[0] if preview_urls else None,
             "previewUrls": preview_urls,
             "capabilities": {
@@ -215,6 +253,43 @@ def _asset_deliverables(job: Job, result: dict[str, Any]) -> dict[str, Any]:
                 "multiView": False,
                 "materialReplacement": True,
                 "glbDelivery": False,
+            },
+        }
+    if job.type in AI_WORKFLOW_JOB_TYPES:
+        outputs = result.get("outputs") if isinstance(result.get("outputs"), list) else []
+        safe_outputs = [
+            output
+            for output in outputs
+            if isinstance(output, dict) and isinstance(output.get("url"), str)
+        ]
+        output_urls = [output["url"] for output in safe_outputs]
+        return {
+            "sourceImageUrl": source_image_url,
+            "approvedLayoutImageUrl": source_image_url,
+            "approvedColorPlanImageUrl": _path_url(
+                payload.get("approved_color_plan_path")
+            ),
+            "sourceSpaceImageUrl": _path_url(payload.get("source_space_path")),
+            "maskImageUrl": _path_url(payload.get("mask_path")),
+            "finalRenderUrl": output_urls[0] if output_urls else None,
+            "outputUrls": output_urls,
+            "outputs": safe_outputs,
+            "workflowStage": result.get("workflowStage")
+            or payload.get("workflow_stage"),
+            "variantGroupId": result.get("variantGroupId")
+            or payload.get("variant_group_id"),
+            "capabilities": {
+                "editableModel": False,
+                "multiView": False,
+                "materialReplacement": False,
+                "glbDelivery": False,
+                "batchVariants": True,
+                "conceptAngles": job.type == "AI_AXONOMETRIC",
+                "batchViewVariants": job.type == "AI_AXONOMETRIC",
+                "styleVariants": job.type == "AI_STYLE_SCHEME",
+                "toneVariants": job.type == "AI_TONE_SCHEME",
+                "localEdit": job.type == "AI_LOCAL_EDIT",
+                "maskedEdit": job.type == "AI_LOCAL_EDIT",
             },
         }
 
@@ -268,6 +343,17 @@ def _asset_metadata(
     module_key: str,
 ) -> dict[str, Any]:
     payload = _mapping(job.payload)
+    variant_ids = [
+        item.get("variantId")
+        for item in result.get("outputs") or []
+        if isinstance(item, dict) and item.get("variantId")
+    ]
+    variant_ids.extend(
+        item.get("layoutId")
+        for item in result.get("layouts") or []
+        if isinstance(item, dict) and item.get("layoutId")
+    )
+    source_space = result.get("sourceSpace") or {}
     return {
         "moduleKey": module_key,
         "moduleName": _module_name(module_key),
@@ -290,6 +376,35 @@ def _asset_metadata(
         "renderInfo": result.get("renderInfo") or {},
         "modelDelivery": result.get("modelDelivery") or {},
         "generationMode": _generation_mode(job, result),
+        "workflowStage": result.get("workflowStage") or payload.get("workflow_stage"),
+        "variantGroupId": result.get("variantGroupId")
+        or payload.get("variant_group_id"),
+        "variantIds": list(dict.fromkeys(variant_ids)),
+        "approvedLayout": result.get("approvedLayout") or {},
+        "semanticInput": result.get("semanticInput") or {},
+        "approvedColorPlan": result.get("approvedColorPlan"),
+        "selectedSpaceIds": result.get("selectedSpaceIds") or [],
+        "spaceId": result.get("spaceId") or payload.get("space_id"),
+        "sourceSpace": source_space,
+        "parentApprovedVersionId": source_space.get("parentApprovedVersionId")
+        or payload.get("parent_approved_version_id"),
+        "parentVariantId": source_space.get("parentVariantId")
+        or payload.get("parent_variant_id"),
+        "sourceSha256": source_space.get("sourceSha256")
+        or source_space.get("sha256")
+        or payload.get("source_sha256"),
+        "mask": result.get("mask") or {},
+        "inputRoles": result.get("inputRoles") or {},
+        "promptVersion": result.get("promptVersion"),
+        "generationGoal": result.get("generationGoal"),
+        "referencePolicy": result.get("referencePolicy"),
+        "referenceImageCount": result.get("referenceImageCount"),
+        "stage01Lineage": result.get("stage01Lineage") or {},
+        "approvalStatus": result.get("approvalStatus"),
+        "structureAudit": result.get("structureAudit") or {},
+        "batchStatus": result.get("batchStatus"),
+        "succeededCount": result.get("succeededCount"),
+        "failedCount": result.get("failedCount"),
     }
 
 
@@ -309,6 +424,8 @@ def _generation_mode(job: Job, result: dict[str, Any]) -> str:
         return "structured_3d" if payload.get("use_blender") else "local_preview"
     if job.type == "MATERIAL_REPLACEMENT":
         return "local_edit"
+    if job.type in AI_WORKFLOW_JOB_TYPES:
+        return "ai_image"
     return "structured_3d"
 
 
@@ -321,6 +438,12 @@ def _asset_type(job: Job, generation_mode: str) -> str:
         "WHITE_MODEL_RENDER": "white_model_render",
         "EFFECT_RENDER": "effect_render",
         "MATERIAL_REPLACEMENT": "material_replacement",
+        "AI_COLOR_PLAN": "ai_color_plan",
+        "AI_AXONOMETRIC": "ai_axonometric",
+        "AI_SPACE_RENDER": "ai_space_render",
+        "AI_STYLE_SCHEME": "ai_style_scheme",
+        "AI_TONE_SCHEME": "ai_tone_scheme",
+        "AI_LOCAL_EDIT": "ai_local_edit",
     }[job.type]
 
 
@@ -366,6 +489,25 @@ def ensure_scene_asset(session: Session, job: Job) -> SceneAsset | None:
     metadata = _asset_metadata(job, result, module_key=module_key)
     existing = session.scalar(select(SceneAsset).where(SceneAsset.job_id == job.id))
     if existing is not None:
+        if module_key in {"ai_workflow", "layout"}:
+            existing_metadata = _mapping(existing.metadata_json)
+            if existing_metadata.get("approvalStatus") == "approved":
+                for key in (
+                    "approvalStatus",
+                    "approvedVariantId",
+                    "approvedVersionId",
+                    "approvedAt",
+                    "approvalComment",
+                ):
+                    metadata[key] = existing_metadata.get(key)
+                existing_deliverables = _mapping(existing.deliverables)
+                for key in (
+                    "approvedOutputUrl",
+                    "approvedVariantId",
+                    "approvedVersionId",
+                ):
+                    if existing_deliverables.get(key) is not None:
+                        deliverables[key] = existing_deliverables[key]
         title = _asset_title(job, result)
         asset_type = _asset_type(job, generation_mode)
         changed = False

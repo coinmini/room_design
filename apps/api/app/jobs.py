@@ -7,6 +7,14 @@ from sqlalchemy.orm import Session
 from app.assets import ensure_scene_asset
 from app.database import SessionLocal
 from app.models import Job
+from app.processors.ai_workflow import (
+    run_ai_axonometric,
+    run_ai_color_plan,
+    run_ai_local_edit,
+    run_ai_space_render,
+    run_ai_style_scheme,
+    run_ai_tone_scheme,
+)
 from app.processors.common import ProcessorError
 from app.processors.image import (
     run_effect_render,
@@ -28,6 +36,12 @@ PROCESSORS: dict[str, Processor] = {
     "WHITE_MODEL_RENDER": run_white_model,
     "EFFECT_RENDER": run_effect_render,
     "MATERIAL_REPLACEMENT": run_material_replace,
+    "AI_COLOR_PLAN": run_ai_color_plan,
+    "AI_AXONOMETRIC": run_ai_axonometric,
+    "AI_SPACE_RENDER": run_ai_space_render,
+    "AI_STYLE_SCHEME": run_ai_style_scheme,
+    "AI_TONE_SCHEME": run_ai_tone_scheme,
+    "AI_LOCAL_EDIT": run_ai_local_edit,
 }
 
 
@@ -60,21 +74,42 @@ def run_job(job_id: str) -> None:
         job.status = "RUNNING"
         session.commit()
         processor = PROCESSORS[job.type]
-        job.result = processor(job.payload)
+        processor_result = processor(job.payload)
+        # Cancellation may be committed by another request while the provider is running.
+        # Refresh before persisting provider output so a late result cannot revive the job.
+        session.expire(job)
+        session.refresh(job)
+        if job.status == "CANCELED":
+            return
+        job.result = processor_result
         job.status = "SUCCEEDED"
         job.error_code = None
         job.error_message = None
         session.flush()
-        ensure_scene_asset(session, job)
+        asset = ensure_scene_asset(session, job)
+        if asset is not None:
+            # SQLAlchemy JSON columns do not detect nested mutation. Reassign a fresh mapping.
+            job.result = {**(job.result or {}), "assetId": asset.id}
         session.commit()
     except ProcessorError as exc:
         if "job" in locals() and job is not None:
+            session.rollback()
+            session.expire_all()
+            job = session.get(Job, job_id)
+            if job is None or job.status == "CANCELED":
+                return
             job.status = "FAILED"
+            job.result = exc.partial_result
             job.error_code = exc.code
             job.error_message = exc.message
             session.commit()
     except Exception as exc:  # pragma: no cover - defensive task boundary
         if "job" in locals() and job is not None:
+            session.rollback()
+            session.expire_all()
+            job = session.get(Job, job_id)
+            if job is None or job.status == "CANCELED":
+                return
             job.status = "FAILED"
             job.error_code = "GENERATION_FAILED"
             job.error_message = str(exc)

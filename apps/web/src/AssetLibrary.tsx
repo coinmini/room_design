@@ -26,7 +26,18 @@ type GalleryItem = {
   label: string
   hint: string
   url: string
+  approved?: boolean
+  variantId?: string
+  spaceId?: string
+  spaceName?: string
 }
+
+const showLegacyTools = import.meta.env.VITE_SHOW_LEGACY_TOOLS === 'true'
+const legacyModuleKeys = new Set<AssetModuleKey>([
+  'floorplan',
+  'white_model',
+  'effect_render',
+])
 
 const assetModules: AssetModuleDefinition[] = [
   {
@@ -40,6 +51,13 @@ const assetModules: AssetModuleDefinition[] = [
     number: '02',
     label: 'AI 平面布局',
     emptyHint: '从“AI 平面布局”生成一套布局后会自动出现在这里。',
+  },
+  {
+    key: 'ai_workflow',
+    number: '03–08',
+    label: 'AI 设计工作流',
+    emptyHint:
+      '彩平、轴侧、空间效果、风格、色调和局部修改结果会按工作流阶段自动归档到这里。',
   },
   {
     key: 'white_model',
@@ -63,15 +81,24 @@ const assetModules: AssetModuleDefinition[] = [
 
 const filterOptions: Array<{ value: AssetFilter; label: string }> = [
   { value: 'all', label: '全部模块' },
-  ...assetModules.map((module) => ({
-    value: module.key,
-    label: `${module.number} ${module.label}`,
-  })),
+  ...assetModules
+    .filter((module) => showLegacyTools || !legacyModuleKeys.has(module.key))
+    .map((module) => ({
+      value: module.key,
+      label: `${module.number} ${module.label}`,
+    })),
 ]
 
 const modeLabels: Record<string, string> = {
   ai_direct: 'AI 直出',
-  structured_3d: '精确三维',
+  structured_3d: '历史三维实验',
+  ai_workflow: 'AI 工作流',
+  ai_color_plan: 'AI 彩平',
+  ai_axonometric: 'AI 轴侧',
+  ai_space_render: 'AI 空间效果',
+  ai_style_scheme: 'AI 风格方案',
+  ai_tone_scheme: 'AI 色调方案',
+  ai_local_edit: 'AI 局部修改',
   deterministic: '规则求解',
   ai_image: 'AI 生图',
   ai_quick: 'AI 快速渲染',
@@ -79,6 +106,77 @@ const modeLabels: Record<string, string> = {
   ai_edit_fallback: 'AI 回退材质替换',
   local_preview: '本地预览',
   local_edit: '本地材质编辑',
+}
+
+const workflowStageLabels: Record<string, string> = {
+  color_plan: '03 彩平方案',
+  axonometric: '04 轴侧方案',
+  space_render: '05 空间效果',
+  style: '06 风格方案',
+  style_scheme: '06 风格方案',
+  tone: '07 色调方案',
+  tone_scheme: '07 色调方案',
+  local_edit: '08 局部修改',
+}
+
+const workflowVariantLabels: Record<string, string> = {
+  style_modern_minimal: '现代极简',
+  style_natural_wood: '日式原木',
+  style_wabi_sabi: '侘寂质感',
+  style_midcentury_vintage: '中古复古',
+  style_french_luxury: '法式轻奢',
+  tone_warm_gold_day: '暖金日景',
+  tone_neutral_dusk: '中性暮色',
+  tone_cool_blue_night: '冷蓝夜景',
+  local_edit: '局部修改结果',
+}
+
+type WorkflowSourceDescriptor = {
+  label: string
+  hint: string
+  deliverableKeys: string[]
+}
+
+function workflowSourceDescriptor(
+  workflowStage: string,
+): WorkflowSourceDescriptor {
+  if (workflowStage === 'style' || workflowStage === 'style_scheme') {
+    return {
+      label: '已批准空间效果基准',
+      hint: 'APPROVED SPACE RENDER',
+      deliverableKeys: ['sourceSpaceImageUrl', 'sourceImageUrl'],
+    }
+  }
+  if (workflowStage === 'tone' || workflowStage === 'tone_scheme') {
+    return {
+      label: '已批准风格方案基准',
+      hint: 'APPROVED STYLE SCHEME',
+      deliverableKeys: ['sourceSpaceImageUrl', 'sourceImageUrl'],
+    }
+  }
+  if (workflowStage === 'local_edit') {
+    return {
+      label: '已批准色调方案基准',
+      hint: 'APPROVED TONE SCHEME',
+      deliverableKeys: ['sourceSpaceImageUrl', 'sourceImageUrl'],
+    }
+  }
+  if (workflowStage === 'axonometric' || workflowStage === 'space_render') {
+    return {
+      label: '已批准彩平图',
+      hint: 'APPROVED COLOR PLAN',
+      deliverableKeys: ['approvedColorPlanImageUrl', 'sourceImageUrl'],
+    }
+  }
+  return {
+    label: '已批准平面布局',
+    hint: 'APPROVED LAYOUT',
+    deliverableKeys: [
+      'approvedLayoutImageUrl',
+      'sourceImageUrl',
+      'layoutImageUrl',
+    ],
+  }
 }
 
 const moduleByKey = new Map(assetModules.map((module) => [module.key, module]))
@@ -90,6 +188,18 @@ const moduleByJobType: Record<string, AssetModuleKey> = {
   WHITE_MODEL_RENDER: 'white_model',
   EFFECT_RENDER: 'effect_render',
   MATERIAL_REPLACEMENT: 'material_replacement',
+  AI_WORKFLOW_COLOR_PLAN: 'ai_workflow',
+  AI_WORKFLOW_AXONOMETRIC: 'ai_workflow',
+  AI_WORKFLOW_SPACE_RENDER: 'ai_workflow',
+  COLOR_PLAN_RENDER: 'ai_workflow',
+  AXONOMETRIC_RENDER: 'ai_workflow',
+  SPACE_RENDER: 'ai_workflow',
+  AI_COLOR_PLAN: 'ai_workflow',
+  AI_AXONOMETRIC: 'ai_workflow',
+  AI_SPACE_RENDER: 'ai_workflow',
+  AI_STYLE_SCHEME: 'ai_workflow',
+  AI_TONE_SCHEME: 'ai_workflow',
+  AI_LOCAL_EDIT: 'ai_workflow',
 }
 
 function normalizeModuleKey(value: unknown): AssetModuleKey | undefined {
@@ -98,6 +208,15 @@ function normalizeModuleKey(value: unknown): AssetModuleKey | undefined {
     floorplan: 'floorplan',
     floorplan_scene: 'floorplan',
     layout: 'layout',
+    ai_workflow: 'ai_workflow',
+    color_plan: 'ai_workflow',
+    axonometric: 'ai_workflow',
+    space_render: 'ai_workflow',
+    style: 'ai_workflow',
+    style_scheme: 'ai_workflow',
+    tone: 'ai_workflow',
+    tone_scheme: 'ai_workflow',
+    local_edit: 'ai_workflow',
     white: 'white_model',
     white_model: 'white_model',
     effect: 'effect_render',
@@ -120,8 +239,22 @@ function inferAssetModule(asset: SceneAsset): AssetModuleDefinition {
     return moduleByKey.get(moduleByJobType[jobType])!
   }
 
+  if (pickString(metadata, 'workflowStage', 'workflow_stage')) {
+    return moduleByKey.get('ai_workflow')!
+  }
+
   const assetType = asset.assetType.toLowerCase()
   if (assetType.includes('layout')) return moduleByKey.get('layout')!
+  if (
+    assetType.includes('color_plan') ||
+    assetType.includes('axonometric') ||
+    assetType.includes('space_render') ||
+    assetType.includes('style_scheme') ||
+    assetType.includes('tone_scheme') ||
+    assetType.includes('local_edit')
+  ) {
+    return moduleByKey.get('ai_workflow')!
+  }
   if (assetType.includes('white')) return moduleByKey.get('white_model')!
   if (assetType.includes('material')) {
     return moduleByKey.get('material_replacement')!
@@ -159,9 +292,11 @@ function generationModeLabel(mode: string): string {
 
 const moduleAssetNotes: Record<AssetModuleKey, string> = {
   floorplan:
-    '保存户型识别与效果图模块生成的结构参考、最终效果图与三维交付物；精确三维资产可继续派生机位和材质版本。',
+    '保存旧版户型实验生成的结构参考与效果图，仅作为历史能力兼容。',
   layout:
     '保存 AI 生成的平面布局方案。概念布局与尺寸仍需人工复核后使用。',
+  ai_workflow:
+    '保存 AI 工作流 03–08 生成的彩平、轴侧、空间效果、风格、色调和局部修改结果，并保留阶段与父资产谱系。',
   white_model:
     '保存白模的本地保真预览或 AI 快速渲染结果，以及用于结构复核的控制图。',
   effect_render:
@@ -173,6 +308,7 @@ const moduleAssetNotes: Record<AssetModuleKey, string> = {
 const moduleDownloadLabels: Record<AssetModuleKey, string> = {
   floorplan: '下载最终效果图',
   layout: '下载布局方案',
+  ai_workflow: '下载当前阶段图片',
   white_model: '下载白模渲染',
   effect_render: '下载历史渲染图',
   material_replacement: '下载材质替换结果',
@@ -244,6 +380,143 @@ function formatDate(value: string): string {
   }).format(date)
 }
 
+function approvalStatusLabel(status?: string): string {
+  const labels: Record<string, string> = {
+    approved: '已批准',
+    review_required: '待人工确认',
+    rejected: '已驳回',
+  }
+  return status ? (labels[status] ?? status) : '待人工确认'
+}
+
+function safeDownloadPart(value: string): string {
+  return Array.from(value.normalize('NFKC'))
+    .map((character) => (character.charCodeAt(0) < 32 ? '-' : character))
+    .join('')
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^[.-]+|[.-]+$/g, '')
+    .slice(0, 64)
+}
+
+function imageExtension(blob: Blob, url: string): string {
+  const extensionByMime: Record<string, string> = {
+    'image/avif': 'avif',
+    'image/gif': 'gif',
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/svg+xml': 'svg',
+    'image/webp': 'webp',
+  }
+  const normalizedMime = blob.type.toLowerCase().split(';')[0]
+  if (extensionByMime[normalizedMime]) return extensionByMime[normalizedMime]
+
+  const urlExtension = url
+    .split(/[?#]/)[0]
+    .match(/\.([a-zA-Z0-9]{2,5})$/)?.[1]
+    ?.toLowerCase()
+  return urlExtension &&
+    ['avif', 'gif', 'jpeg', 'jpg', 'png', 'svg', 'webp'].includes(urlExtension)
+    ? urlExtension === 'jpeg'
+      ? 'jpg'
+      : urlExtension
+    : 'png'
+}
+
+function semanticLayoutFromDetail(
+  detail: SceneAssetDetail,
+): Record<string, unknown> | null {
+  const candidates = [
+    detail.sourcePayload.semanticLayout,
+    detail.sourcePayload.semantic_layout,
+    detail.sourceResult.semanticLayout,
+    detail.sourceResult.semantic_layout,
+    detail.metadata.semanticLayout,
+    detail.metadata.semantic_layout,
+  ]
+
+  for (const candidate of candidates) {
+    const record = asRecord(candidate)
+    if (!Object.keys(record).length) continue
+    const nested = asRecord(record.semanticLayout ?? record.semantic_layout)
+    const layout = Object.keys(nested).length ? nested : record
+    if (Array.isArray(layout.rooms)) return layout
+  }
+  return null
+}
+
+function galleryDownloadFilename(
+  detail: SceneAssetDetail,
+  item: GalleryItem,
+  extension: string,
+): string {
+  const module = inferAssetModule(detail)
+  const metadata = asRecord(detail.metadata)
+  const semanticLayout = asRecord(
+    detail.sourcePayload.semantic_layout ??
+      detail.sourcePayload.semanticLayout ??
+      detail.sourceResult.semanticLayout ??
+      detail.sourceResult.semantic_layout,
+  )
+  const semanticRooms = Array.isArray(semanticLayout.rooms)
+    ? semanticLayout.rooms
+    : []
+  const semanticRoom = semanticRooms
+    .map(asRecord)
+    .find(
+      (room) =>
+        item.spaceId &&
+        pickString(room, 'id', 'roomId', 'room_id') === item.spaceId,
+    )
+  const spaceLabel =
+    item.spaceName ??
+    (semanticRoom
+      ? pickString(semanticRoom, 'name', 'label', 'roomName', 'room_name')
+      : undefined) ??
+    pickString(metadata, 'spaceName', 'space_name') ??
+    item.spaceId
+  const workflowStage = pickString(
+    metadata,
+    'workflowStage',
+    'workflow_stage',
+  )
+  const variantLabel = item.variantId
+    ? workflowVariantLabels[item.variantId] ?? item.variantId.replaceAll('_', ' ')
+    : undefined
+  const parts = [
+    'AI设计工作流',
+    module.key === 'layout'
+      ? '02 平面布局'
+      : workflowStage
+        ? workflowStageLabels[workflowStage] ?? workflowStage
+        : module.label,
+    spaceLabel,
+    variantLabel,
+    item.label,
+    `资产-${detail.id.slice(-8)}`,
+  ]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .map(safeDownloadPart)
+    .filter(Boolean)
+    .filter((part, index, values) => values.indexOf(part) === index)
+
+  return `${parts.join('_')}.${extension}`
+}
+
+function semanticLayoutDownloadFilename(detail: SceneAssetDetail): string {
+  return [
+    'AI设计工作流',
+    '02平面布局',
+    'SemanticLayout',
+    `资产-${detail.id.slice(-8)}`,
+  ]
+    .map(safeDownloadPart)
+    .filter(Boolean)
+    .join('_')
+    .concat('.json')
+}
+
 function assetGallery(detail: SceneAssetDetail): GalleryItem[] {
   const result = detail.sourceResult
   const controlImages = asRecord(result.controlImages)
@@ -270,13 +543,37 @@ function assetGallery(detail: SceneAssetDetail): GalleryItem[] {
 
   if (module.key === 'layout') {
     const layouts = Array.isArray(result.layouts) ? result.layouts : []
+    const describedLayouts = layouts.flatMap((layout, index) => {
+      const record = asRecord(layout)
+      const url = pickString(
+        record,
+        'previewUrl',
+        'url',
+        'imageUrl',
+        'outputUrl',
+      )
+      if (!url) return []
+      const variantId = pickString(record, 'layoutId', 'layout_id', 'variantId')
+      return [
+        {
+          key: `layout-${variantId ?? index}`,
+          label: `布局方案 ${index + 1}`,
+          hint:
+            detail.generationMode === 'ai_image'
+              ? 'AI LAYOUT'
+              : 'LEGACY LAYOUT',
+          url,
+          variantId,
+        },
+      ]
+    })
     const previewUrls = [
       ...assetUrls(detail, 'previewUrls', 'layoutUrls', 'outputUrls'),
-      ...layouts.flatMap(urlsFromValue),
     ]
     return uniqueGallery([
+      ...describedLayouts,
       ...previewUrls.map((url, index) => ({
-        key: `layout-${index}`,
+        key: `layout-fallback-${index}`,
         label: `布局方案 ${index + 1}`,
         hint:
           detail.generationMode === 'ai_image' ? 'AI LAYOUT' : 'LEGACY LAYOUT',
@@ -294,6 +591,103 @@ function assetGallery(detail: SceneAssetDetail): GalleryItem[] {
         hint: 'SOURCE',
         url: assetFile(detail, 'sourceImageUrl') ?? '',
       },
+    ])
+  }
+
+  if (module.key === 'ai_workflow') {
+    const metadata = asRecord(detail.metadata)
+    const approvedVariantId =
+      pickString(metadata, 'approvedVariantId', 'approved_variant_id') ??
+      pickString(detail.deliverables, 'approvedVariantId', 'approved_variant_id')
+    const workflowStage =
+      pickString(metadata, 'workflowStage', 'workflow_stage') ??
+      pickString(result, 'workflowStage', 'workflow_stage') ??
+      'ai_workflow'
+    const sourceDescriptor = workflowSourceDescriptor(workflowStage)
+    const resultOutputs = Array.isArray(result.outputs) ? result.outputs : []
+    const describedOutputs = resultOutputs.flatMap((output, index) => {
+      const record = asRecord(output)
+      const url = pickString(
+        record,
+        'url',
+        'imageUrl',
+        'outputUrl',
+        'previewUrl',
+      )
+      if (!url) return []
+      const variantId = pickString(record, 'variantId', 'variant_id')
+      const spaceId = pickString(record, 'spaceId', 'space_id')
+      const spaceName = pickString(record, 'spaceName', 'space_name')
+      const friendlyVariantLabel = variantId
+        ? workflowVariantLabels[variantId]
+        : undefined
+      return [
+        {
+          key: `workflow-${workflowStage}-${variantId ?? spaceId ?? index}`,
+          label:
+            spaceName ??
+            friendlyVariantLabel ??
+            (workflowStage === 'style_scheme'
+              ? `风格方案 ${index + 1}`
+              : workflowStage === 'tone_scheme'
+                ? `色调方案 ${index + 1}`
+                : variantId?.replaceAll('_', ' ')) ??
+            `${workflowStageLabels[workflowStage] ?? 'AI 工作流'} ${index + 1}`,
+          hint: [workflowStage, variantId, spaceId]
+            .filter(Boolean)
+            .join(' · ')
+            .toUpperCase()
+            .replaceAll('_', ' '),
+          url,
+          approved: Boolean(variantId && variantId === approvedVariantId),
+          variantId,
+          spaceId,
+          spaceName,
+        },
+      ]
+    })
+    const fallbackOutputUrls = [
+      ...assetUrls(
+        detail,
+        'outputUrls',
+        'renderUrls',
+        'imageUrls',
+        'finalImageUrl',
+      ),
+      ...urlsFromValue(result.renders),
+      ...urlsFromValue(result.images),
+      ...urlsFromValue(result.variants),
+    ]
+    return uniqueGallery([
+      ...describedOutputs,
+      ...fallbackOutputUrls.map((url, index) => ({
+        key: `workflow-${workflowStage}-${index}`,
+        label: `${workflowStageLabels[workflowStage] ?? 'AI 工作流'} ${index + 1}`,
+        hint: workflowStage.toUpperCase().replaceAll('_', ' '),
+        url,
+      })),
+      {
+        key: 'workflow-final',
+        label: workflowStageLabels[workflowStage] ?? 'AI 工作流结果',
+        hint: 'AI WORKFLOW',
+        url: finalUrl ?? '',
+      },
+      {
+        key: 'workflow-source',
+        label: sourceDescriptor.label,
+        hint: sourceDescriptor.hint,
+        url: assetFile(detail, ...sourceDescriptor.deliverableKeys) ?? '',
+      },
+      ...(workflowStage === 'local_edit'
+        ? [
+            {
+              key: 'workflow-mask',
+              label: '局部修改蒙版',
+              hint: 'EDIT MASK · WHITE = EDIT',
+              url: assetFile(detail, 'maskImageUrl') ?? '',
+            },
+          ]
+        : []),
     ])
   }
 
@@ -410,11 +804,11 @@ function assetGallery(detail: SceneAssetDetail): GalleryItem[] {
   }
 
   return uniqueGallery([
-    { key: 'final', label: '最终增强', hint: 'FINAL', url: finalUrl ?? '' },
+    { key: 'final', label: '历史最终增强', hint: 'LEGACY FINAL', url: finalUrl ?? '' },
     {
       key: 'base',
-      label: 'Blender 基础渲染',
-      hint: 'BASE RGB',
+      label: '历史基础渲染',
+      hint: 'LEGACY BASE',
       url:
         assetFile(detail, 'baseImageUrl', 'baseRenderUrl') ??
         pickString(result, 'baseRenderUrl', 'dollhouseUrl') ??
@@ -489,6 +883,7 @@ export default function AssetLibrary() {
   const [renderJob, setRenderJob] = useState<Job | null>(null)
   const [rendering, setRendering] = useState(false)
   const [renderNotice, setRenderNotice] = useState('')
+  const [downloadingGalleryKey, setDownloadingGalleryKey] = useState('')
   const detailRef = useRef<HTMLElement | null>(null)
 
   const loadAssets = useCallback(async (silent = false) => {
@@ -611,6 +1006,61 @@ export default function AssetLibrary() {
     setRenderNotice('')
   }
 
+  const downloadGalleryItem = async (item: GalleryItem) => {
+    if (!detail || downloadingGalleryKey) return
+    setDownloadingGalleryKey(item.key)
+    setError('')
+    try {
+      const response = await apiFetch(item.url, { cache: 'no-store' })
+      if (!response.ok) {
+        throw new Error(`图片下载失败：${response.status}`)
+      }
+      const blob = await response.blob()
+      if (!blob.size) throw new Error('图片下载失败：服务端返回了空文件')
+
+      const objectUrl = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = galleryDownloadFilename(
+        detail,
+        item,
+        imageExtension(blob, item.url),
+      )
+      anchor.style.display = 'none'
+      document.body.append(anchor)
+      anchor.click()
+      anchor.remove()
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000)
+    } catch (value) {
+      setError(value instanceof Error ? value.message : '图片下载失败')
+    } finally {
+      setDownloadingGalleryKey('')
+    }
+  }
+
+  const downloadSemanticLayout = () => {
+    if (!detail) return
+    const semanticLayout = semanticLayoutFromDetail(detail)
+    if (!semanticLayout) {
+      setError('该平面布局资产没有保存完整的 SemanticLayout')
+      return
+    }
+
+    setError('')
+    const blob = new Blob([JSON.stringify(semanticLayout, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    })
+    const objectUrl = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = objectUrl
+    anchor.download = semanticLayoutDownloadFilename(detail)
+    anchor.style.display = 'none'
+    document.body.append(anchor)
+    anchor.click()
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000)
+  }
+
   const createVariant = async (event: React.FormEvent) => {
     event.preventDefault()
     if (!detail || detail.generationMode !== 'structured_3d' || rendering) return
@@ -672,6 +1122,28 @@ export default function AssetLibrary() {
 
   const selectedMetadata = detail ? asRecord(detail.metadata) : {}
   const selectedModule = detail ? inferAssetModule(detail) : null
+  const selectedSemanticLayout = detail
+    ? semanticLayoutFromDetail(detail)
+    : null
+  const workflowApprovalStatus = pickString(
+    selectedMetadata,
+    'approvalStatus',
+    'approval_status',
+  )
+  const workflowApprovedVariantId =
+    pickString(selectedMetadata, 'approvedVariantId', 'approved_variant_id') ??
+    (detail
+      ? pickString(
+          detail.deliverables,
+          'approvedVariantId',
+          'approved_variant_id',
+        )
+      : undefined)
+  const workflowApprovedAt = pickString(
+    selectedMetadata,
+    'approvedAt',
+    'approved_at',
+  )
   const room = asRecord(selectedMetadata.room)
   const structureCheck = detail
     ? asRecord(detail.sourceResult.structureCheck)
@@ -736,6 +1208,7 @@ export default function AssetLibrary() {
       detail.sourceResult.fallbackUsed !== true,
   )
   const canEditStructuredAsset =
+    showLegacyTools &&
     selectedModule?.key === 'floorplan' &&
     detail?.generationMode === 'structured_3d' &&
     assetCapabilities.editableModel === true
@@ -748,7 +1221,7 @@ export default function AssetLibrary() {
           <span className="eyebrow">MODULE 05 · PERSONAL ASSETS</span>
           <h1>我的资产</h1>
           <p>
-            当前功能模块生成的结果及旧版本历史记录都会归档。可按来源浏览、下载交付物，或从精确三维资产继续生成新机位与材质版本。
+            彩平、轴侧、空间效果及后续编辑结果都会自动归档。可按工作流阶段追溯输入、版本和生成图片。
           </p>
         </div>
         <div className="asset-sync-state">
@@ -818,6 +1291,11 @@ export default function AssetLibrary() {
               {filteredAssets.map((asset) => {
                 const metadata = asRecord(asset.metadata)
                 const assetModule = inferAssetModule(asset)
+                const workflowStage = pickString(
+                  metadata,
+                  'workflowStage',
+                  'workflow_stage',
+                )
                 const assetRoom = asRecord(metadata.room)
                 const dimensions =
                   typeof assetRoom.widthMm === 'number' &&
@@ -849,7 +1327,11 @@ export default function AssetLibrary() {
                       <span>{dimensions ?? asset.assetType}</span>
                       <div className="asset-card-meta">
                         <small>{formatDate(asset.createdAt)}</small>
-                        <small>{generationModeLabel(asset.generationMode)}</small>
+                        <small>
+                          {workflowStage
+                            ? (workflowStageLabels[workflowStage] ?? workflowStage)
+                            : generationModeLabel(asset.generationMode)}
+                        </small>
                       </div>
                     </div>
                   </button>
@@ -864,7 +1346,7 @@ export default function AssetLibrary() {
             <div className="asset-detail-empty">
               <span>ASSET</span>
               <h2>选择一项历史资产</h2>
-              <p>选择左侧模块资产查看图片和交付物；精确三维还可继续派生机位与材质版本。</p>
+              <p>选择左侧资产查看所属工作流阶段、生成图片和可下载文件。</p>
             </div>
           )}
           {selectedId && detailLoading && !detail && (
@@ -887,6 +1369,8 @@ export default function AssetLibrary() {
                   <p>
                     {pickString(room, 'name') ?? '全屋场景'} ·{' '}
                     {generationModeLabel(detail.generationMode)} ·{' '}
+                    {selectedModule?.key === 'ai_workflow' &&
+                      `${workflowStageLabels[pickString(selectedMetadata, 'workflowStage', 'workflow_stage') ?? ''] ?? 'AI 工作流'} · `}
                     {formatDate(detail.createdAt)} · 资产 {detail.id.slice(-8)}
                   </p>
                 </div>
@@ -905,14 +1389,115 @@ export default function AssetLibrary() {
               >
                 {gallery.map((item) => (
                   <article className="asset-gallery-item" key={item.key}>
-                    <div>
-                      <strong>{item.label}</strong>
-                      <span>{item.hint}</span>
+                    <div className="asset-gallery-item-heading">
+                      <div className="asset-gallery-item-copy">
+                        <strong>
+                          {item.label}
+                          {item.approved && (
+                            <span
+                              className="asset-module-badge asset-module-ai_workflow"
+                              style={{ marginLeft: 8, verticalAlign: 'middle' }}
+                            >
+                              <i>✓</i>
+                              已批准
+                            </span>
+                          )}
+                        </strong>
+                        <span>{item.hint}</span>
+                      </div>
+                      {(selectedModule?.key === 'ai_workflow' ||
+                        selectedModule?.key === 'layout') && (
+                        <button
+                          type="button"
+                          className="asset-gallery-download"
+                          disabled={Boolean(downloadingGalleryKey)}
+                          onClick={() => void downloadGalleryItem(item)}
+                          aria-label={`单独下载${item.label}`}
+                        >
+                          {downloadingGalleryKey === item.key
+                            ? '下载中…'
+                            : '↓ 单独下载'}
+                        </button>
+                      )}
                     </div>
                     <img src={assetUrl(item.url)} alt={item.label} />
                   </article>
                 ))}
               </div>
+
+              {selectedModule?.key === 'layout' && (
+                <section className="asset-deliverables layout-archive-deliverables">
+                  <div>
+                    <span>STAGE 02 · RECOVERY PACKAGE</span>
+                    <h3>平面布局可恢复交付物</h3>
+                    <p>
+                      每张布局图可在上方单独下载；SemanticLayout JSON
+                      保留了生成该批布局时的房间、墙体、门窗与尺寸约束，可用于从后续阶段继续。
+                    </p>
+                  </div>
+                  <div className="asset-download-grid">
+                    <button
+                      type="button"
+                      className="asset-download asset-download-button"
+                      onClick={downloadSemanticLayout}
+                      disabled={!selectedSemanticLayout}
+                    >
+                      <span>JSON</span>
+                      <strong>
+                        {selectedSemanticLayout
+                          ? '下载 SemanticLayout'
+                          : '无可用 SemanticLayout'}
+                      </strong>
+                    </button>
+                  </div>
+                  {!selectedSemanticLayout && (
+                    <p className="deliverable-warning">
+                      该历史资产生成时未保存完整 SemanticLayout；新生成的
+                      Stage 02 资产会自动保留并允许下载。
+                    </p>
+                  )}
+                </section>
+              )}
+
+              {selectedModule?.key === 'ai_workflow' && (
+                <section
+                  className={`material-provider-state asset-material-provider-state ${
+                    workflowApprovalStatus === 'approved'
+                      ? 'is-ai'
+                      : 'is-fallback'
+                  }`}
+                >
+                  <span className="material-provider-indicator" />
+                  <div>
+                    <strong>
+                      {workflowApprovalStatus === 'approved'
+                        ? '工作流方案已批准'
+                        : '工作流方案等待人工确认'}
+                    </strong>
+                    <p>
+                      {workflowApprovalStatus === 'approved'
+                        ? '下游阶段应继承已批准变体及当前资产 ID。'
+                        : '请选择具体成功变体完成审批后，再作为下游生成基准。'}
+                    </p>
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>approvalStatus</dt>
+                      <dd>{approvalStatusLabel(workflowApprovalStatus)}</dd>
+                    </div>
+                    <div>
+                      <dt>approvedVariantId</dt>
+                      <dd>{workflowApprovedVariantId ?? '—'}</dd>
+                    </div>
+                    <div>
+                      <dt>approvedAt</dt>
+                      <dd>
+                        {workflowApprovedAt ? formatDate(workflowApprovedAt) : '—'}
+                      </dd>
+                    </div>
+                  </dl>
+                </section>
+              )}
 
               {selectedModule?.key !== 'floorplan' ? (
                 <>
@@ -1144,7 +1729,7 @@ export default function AssetLibrary() {
                     <span>MODULE 01 · 户型识别与效果图</span>
                     <strong>效果图图像资产</strong>
                     <p>
-                      当前资产没有可编辑 Blender 模型交付物，可浏览和下载效果图，不能继续生成三维机位或材质版本。
+                      这是旧版实验生成的图像资产，可继续浏览和下载；当前默认设计流程使用纯 AI 阶段资产。
                     </p>
                   </div>
                   <AssetDownload

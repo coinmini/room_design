@@ -330,10 +330,12 @@ def test_visual_module_jobs_are_saved_and_filterable_without_provider_calls(
             "white_model",
             "effect_render",
             "material_replacement",
+            "ai_workflow",
         }
         assert modules_by_key["floorplan"]["name"] == "户型识别与效果图"
         assert "规则求解" not in modules_by_key["layout"]["description"]
         assert modules_by_key["effect_render"]["name"] == "历史快速房间渲染"
+        assert modules_by_key["ai_workflow"]["name"] == "AI 设计工作流"
 
         assets_response = client.get("/v1/assets?limit=100")
         assert assets_response.status_code == 200
@@ -351,6 +353,8 @@ def test_visual_module_jobs_are_saved_and_filterable_without_provider_calls(
             assert asset["metadata"]["jobType"] in fixtures
             assert asset["generationMode"] == generation_mode
             assert asset["thumbnailUrl"]
+            if asset["metadata"]["jobType"] == "LAYOUT_AI":
+                assert asset["metadata"]["variantIds"] == ["layout_ai_1"]
 
         for module_key in {
             "layout",

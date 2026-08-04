@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +11,9 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
-from app.config import WORKSPACE_ROOT, settings
+from app.config import settings
+from app.database import SessionLocal
+from app.jobs import create_job
 from app.main import app
 
 
@@ -20,6 +24,94 @@ def image_bytes() -> bytes:
     success, output = cv2.imencode(".png", image)
     assert success
     return output.tobytes()
+
+
+def semantic_layout() -> dict[str, Any]:
+    source_sha256 = hashlib.sha256(image_bytes()).hexdigest()
+    return {
+        "version": "0.5",
+        "profileId": "stage01_confirmed_test",
+        "sourceSha256": source_sha256,
+        "coordinateSystem": {
+            "unit": "mm",
+            "origin": "top_left",
+            "xAxis": "right",
+            "yAxis": "down",
+        },
+        "plan": {"widthMm": 8150, "depthMm": 6060, "scaleStatus": "confirmed"},
+        "validation": {"status": "human_confirmed", "humanConfirmed": True},
+        "rooms": [
+            {
+                "id": "room_living",
+                "type": "living_room",
+                "name": "客餐厅",
+                "rect": {"xMm": 0, "yMm": 2600, "widthMm": 8150, "depthMm": 3460},
+            },
+            {
+                "id": "room_bedroom",
+                "type": "bedroom",
+                "name": "主卧",
+                "rect": {"xMm": 0, "yMm": 0, "widthMm": 3600, "depthMm": 2600},
+            },
+        ],
+        "walls": [
+            {
+                "id": "wall_top",
+                "kind": "exterior",
+                "start": {"xMm": 0, "yMm": 0},
+                "end": {"xMm": 8150, "yMm": 0},
+                "thicknessMm": 120,
+            }
+        ],
+        "openings": [
+            {
+                "id": "door_entry",
+                "type": "door",
+                "wallAxis": "horizontal",
+                "segment": {
+                    "start": {"xMm": 5700, "yMm": 6060},
+                    "end": {"xMm": 6600, "yMm": 6060},
+                },
+                "widthMm": 900,
+            }
+        ],
+        "furniture": [
+            {
+                "id": "sofa_existing",
+                "type": "sofa",
+                "roomId": "room_living",
+                "center": {"xMm": 3000, "yMm": 4200},
+                "size": {"widthMm": 2200, "depthMm": 900},
+                "rotationDeg": 0,
+            }
+        ],
+    }
+
+
+def stage01_form_fields(semantic: dict[str, Any] | None = None) -> dict[str, str]:
+    semantic = semantic or semantic_layout()
+    detected_bounds = {"x": 45, "y": 45, "width": 550, "height": 330}
+    with SessionLocal() as session:
+        job = create_job(
+            session,
+            job_type="FLOORPLAN_ANALYZE",
+            payload={"source_path": "stage01-test.png"},
+        )
+        job.status = "SUCCEEDED"
+        job.progress = 1.0
+        job.result = {
+            "semanticLayout": semantic,
+            "detectedBounds": detected_bounds,
+        }
+        session.commit()
+        job_id = job.id
+    return {
+        "semantic_layout": json.dumps({"semanticLayout": semantic}, ensure_ascii=False),
+        "stage01_analysis_job_id": job_id,
+        "stage01_approved_version_id": f"{job_id}:test-approved",
+        "stage01_source_sha256": str(semantic.get("sourceSha256") or ""),
+        "stage01_detected_bounds": json.dumps(detected_bounds),
+    }
 
 
 @pytest.fixture
@@ -56,88 +148,35 @@ def completed_job(client: TestClient, response) -> dict[str, Any]:
     return value
 
 
-def test_ai_layout_without_source_builds_proportional_authority_image(
+def test_ai_layout_requires_approved_stage01_inputs(
     mock_ai_layout: list[dict[str, Any]],
 ) -> None:
     with TestClient(app) as client:
-        job = completed_job(
-            client,
-            client.post(
-                "/v1/layouts/ai",
-                data={
-                    "room_type": "whole_home",
-                    "width_mm": "8150",
-                    "depth_mm": "6060",
-                    "count": "2",
-                    "design_prompt": "两室一厅，收纳充足，动静分区",
-                },
-            ),
+        missing_source = client.post(
+            "/v1/layouts/ai",
+            data={
+                **stage01_form_fields(),
+                "room_type": "whole_home",
+                "count": "2",
+            },
+        )
+        missing_semantic = client.post(
+            "/v1/layouts/ai",
+            files={"source_image": ("stage01.png", image_bytes(), "image/png")},
+            data={"room_type": "whole_home", "count": "1"},
         )
 
-    assert job["type"] == "LAYOUT_AI"
-    result = job["result"]
-    assert result["generationMode"] == "ai_image"
-    assert result["sourceMode"] == "generated_rectangle"
-    assert result["count"] == 2
-    assert result["provider"] == "mock-kuyao"
-    assert result["model"] == "gpt-image-2"
-    assert result["isConceptOnly"] is True
-    assert result["constructionReady"] is False
-    assert result["requiresUserConfirmation"] is True
-    assert result["templateIds"] == [
-        "builtin_floorplan_01",
-        "builtin_floorplan_02",
-        "builtin_floorplan_03",
-    ]
-    assert result["templateVersion"] == "builtin-floorplans-v1"
-    assert result["promptVersion"] == "ai-concept-layout-v1"
-    assert result["inputRoles"] == {
-        "image1": "geometry_authority",
-        "referenceImages": "inspiration_only",
-    }
-    assert result["structureAudit"]["performed"] is False
-    assert result["structureAudit"]["geometryGuaranteed"] is False
-    assert len(mock_ai_layout) == 2
-
-    expected_references = [
-        WORKSPACE_ROOT / "example" / "平面图.jpeg",
-        WORKSPACE_ROOT / "example" / "平面图2.jpeg",
-        WORKSPACE_ROOT / "example" / "平面图3.jpeg",
-    ]
-    assert list(mock_ai_layout[0]["reference_paths"]) == expected_references
-    assert mock_ai_layout[0]["size"] == "1536x1024"
-    assert "image 1 is the sole geometric authority" in mock_ai_layout[0]["prompt"]
-    assert "reference examples only" in mock_ai_layout[0]["prompt"]
-    assert "Do not draw numerical dimensions" in mock_ai_layout[0]["prompt"]
-    assert "两室一厅" in mock_ai_layout[0]["prompt"]
-
-    authority = cv2.imread(str(mock_ai_layout[0]["source_path"]))
-    assert authority is not None
-    assert authority.shape[:2] == (1024, 1536)
-    gray = cv2.cvtColor(authority, cv2.COLOR_BGR2GRAY)
-    contours, _ = cv2.findContours(
-        cv2.threshold(gray, 100, 255, cv2.THRESH_BINARY_INV)[1],
-        cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_SIMPLE,
-    )
-    _, _, rectangle_width, rectangle_height = cv2.boundingRect(max(contours, key=cv2.contourArea))
-    assert rectangle_width / rectangle_height == pytest.approx(8150 / 6060, rel=0.03)
-
-    for layout in result["layouts"]:
-        assert layout["previewUrl"].startswith("/artifacts/ai-layout-mock-")
-        assert layout["generationMode"] == "ai_image"
-        assert layout["provider"] == "mock-kuyao"
-        assert layout["isConceptOnly"] is True
-        assert layout["promptVersion"] == "ai-concept-layout-v1"
-        assert "placements" not in layout
-        assert "hardViolations" not in layout
-        assert "metrics" not in layout
+    assert missing_source.status_code == 422
+    assert missing_semantic.status_code == 422
+    assert mock_ai_layout == []
 
 
-def test_ai_layout_upload_is_authoritative_and_examples_are_read_only(
+def test_ai_layout_uses_only_stage01_project_inputs(
     mock_ai_layout: list[dict[str, Any]],
 ) -> None:
     source = image_bytes()
+    semantic = semantic_layout()
+    fields = stage01_form_fields(semantic)
     with TestClient(app) as client:
         job = completed_job(
             client,
@@ -145,63 +184,221 @@ def test_ai_layout_upload_is_authoritative_and_examples_are_read_only(
                 "/v1/layouts/ai",
                 files={"source_image": ("custom-plan.png", source, "image/png")},
                 data={
+                    **fields,
                     "room_type": "bedroom",
-                    "width_mm": "4800",
-                    "depth_mm": "3600",
-                    "count": "1",
+                    "count": "2",
                     "design_prompt": "需要双人床和整墙衣柜",
                 },
             ),
         )
-        example = client.get("/examples/平面图.jpeg")
 
-    assert example.status_code == 200
-    assert example.headers["content-type"].startswith("image/jpeg")
-    assert job["result"]["sourceMode"] == "uploaded"
-    assert len(mock_ai_layout) == 1
+    result = job["result"]
+    assert result["sourceMode"] == "stage01_confirmed_annotation"
+    assert result["count"] == 2
+    assert result["promptVersion"] == "ai-professional-plan-v3-stage01-only"
+    assert result["generationGoal"] == "professional_black_white_floor_plan"
+    assert result["referencePolicy"] == "stage01_only"
+    assert result["referenceImageCount"] == 0
+    assert result["inputRoles"] == {
+        "image1": "stage01_annotated_project_authority",
+        "referenceImages": "none",
+        "semanticLayout": "confirmed_function_zone_and_structure_authority",
+    }
+    assert result["stage01Lineage"]["analysisJobId"] == fields[
+        "stage01_analysis_job_id"
+    ]
+    assert job["parentJobId"] == fields["stage01_analysis_job_id"]
+    assert result["stage01Lineage"]["approvedVersionId"] == fields[
+        "stage01_approved_version_id"
+    ]
+    assert result["stage01ControlImageUrl"].startswith(
+        "/artifacts/layout-ai-stage01-control-"
+    )
+    assert len(mock_ai_layout) == 2
     call = mock_ai_layout[0]
-    assert call["source_path"].name.startswith("custom-plan-")
-    assert call["source_path"].read_bytes() == source
-    assert "uploaded floor plan" in call["prompt"]
-    assert "Do not add, remove or move any wall" in call["prompt"]
+    assert call.get("reference_paths") in (None, [])
+    assert call["source_path"].name.startswith("layout-ai-stage01-control-")
+    assert call["source_path"].read_bytes() != source
+    control = cv2.imread(str(call["source_path"]), cv2.IMREAD_COLOR)
+    assert control is not None
+    door_roi = control[368:382, 425:500]
+    assert np.any((door_roi[:, :, 2] > 180) & (door_roi[:, :, 0] < 100))
+    assert "confirmed Stage 01 project image" in call["prompt"]
+    assert "No external floor-plan reference images" in call["prompt"]
+    assert "reference examples only" not in call["prompt"]
+    assert "professional black-and-white" in call["prompt"]
+    assert "orange-red opening segments mark confirmed doors" in call["prompt"]
     assert "需要双人床" in call["prompt"]
-    assert job["result"]["notice"].startswith("AI 布局仅为概念设计建议")
+    assert result["notice"].startswith("AI 生成的专业平面布局仍属于方案设计")
 
 
-def test_ai_layout_rejects_unknown_template_before_creating_job(
+def test_ai_layout_persists_confirmed_semantics_and_uses_structure_lock(
     mock_ai_layout: list[dict[str, Any]],
 ) -> None:
+    semantic = semantic_layout()
+    fields = stage01_form_fields(semantic)
     with TestClient(app) as client:
-        response = client.post(
+        job = completed_job(
+            client,
+            client.post(
+                "/v1/layouts/ai",
+                files={"source_image": ("confirmed-plan.png", image_bytes(), "image/png")},
+                data={
+                    **fields,
+                    "room_type": "whole_home",
+                    "count": "1",
+                },
+            ),
+        )
+
+    assert job["payload"]["semantic_layout"] == semantic
+    summary = job["result"]["semanticInput"]
+    assert summary["profileId"] == "stage01_confirmed_test"
+    assert summary["plan"] == {
+        "widthMm": 8150,
+        "depthMm": 6060,
+        "scaleStatus": "confirmed",
+    }
+    assert summary["counts"] == {
+        "rooms": 2,
+        "walls": 1,
+        "openings": 1,
+        "furniture": 1,
+    }
+    assert summary["roomIds"] == ["room_living", "room_bedroom"]
+    assert summary["authoritativeSections"] == ["plan", "rooms", "walls", "openings"]
+    assert summary["furnitureRole"] == "current_state_reference_only"
+    assert len(summary["sha256"]) == 64
+    assert job["result"]["inputRoles"]["semanticLayout"] == (
+        "confirmed_function_zone_and_structure_authority"
+    )
+
+    prompt = mock_ai_layout[0]["prompt"]
+    assert "STAGE 01 CONFIRMED SEMANTIC STRUCTURE LOCK" in prompt
+    assert '"id":"room_living"' in prompt
+    assert '"id":"wall_top"' in prompt
+    assert '"id":"door_entry"' in prompt
+    assert "FURNITURE ROLE" in prompt
+    assert "not structurally locked" in prompt
+    assert '"id":"sofa_existing"' in prompt
+    assert "You may propose sensible internal room partitions" not in prompt
+
+
+def test_ai_layout_rejects_invalid_stage01_semantic_layout(
+    mock_ai_layout: list[dict[str, Any]],
+) -> None:
+    fields = stage01_form_fields()
+    with TestClient(app) as client:
+        malformed = client.post(
             "/v1/layouts/ai",
+            files={"source_image": ("stage01.png", image_bytes(), "image/png")},
             data={
-                "room_type": "living_room",
-                "width_mm": "5200",
-                "depth_mm": "4200",
-                "count": "1",
-                "template_ids": "builtin_floorplan_01,unknown_template",
+                **fields,
+                "room_type": "whole_home",
+                "semantic_layout": "{not-json}",
+            },
+        )
+        empty_rooms = client.post(
+            "/v1/layouts/ai",
+            files={"source_image": ("stage01.png", image_bytes(), "image/png")},
+            data={
+                **fields,
+                "room_type": "whole_home",
+                "semantic_layout": json.dumps({"rooms": []}),
             },
         )
 
-    assert response.status_code == 422
-    assert "unknown_template" in response.json()["detail"]
+    assert malformed.status_code == 422
+    assert "有效 JSON" in malformed.json()["detail"]
+    assert empty_rooms.status_code == 422
+    assert "rooms" in empty_rooms.json()["detail"]
     assert mock_ai_layout == []
+
+
+def test_ai_layout_rejects_stage01_lineage_mismatches(
+    mock_ai_layout: list[dict[str, Any]],
+) -> None:
+    source = image_bytes()
+    fields = stage01_form_fields()
+    different_hash = "a" * 64
+    changed_semantic = semantic_layout()
+    changed_semantic["sourceSha256"] = different_hash
+    with TestClient(app) as client:
+        hash_mismatch = client.post(
+            "/v1/layouts/ai",
+            files={"source_image": ("stage01.png", source, "image/png")},
+            data={**fields, "stage01_source_sha256": different_hash},
+        )
+        semantic_mismatch = client.post(
+            "/v1/layouts/ai",
+            files={"source_image": ("stage01.png", source, "image/png")},
+            data={
+                **fields,
+                "semantic_layout": json.dumps(changed_semantic),
+                "stage01_source_sha256": different_hash,
+            },
+        )
+        bounds_mismatch = client.post(
+            "/v1/layouts/ai",
+            files={"source_image": ("stage01.png", source, "image/png")},
+            data={
+                **fields,
+                "stage01_detected_bounds": json.dumps(
+                    {"x": 0, "y": 0, "width": 640, "height": 420}
+                ),
+            },
+        )
+
+    assert hash_mismatch.status_code == 422
+    assert "同一版本" in hash_mismatch.json()["detail"]
+    assert semantic_mismatch.status_code == 422
+    assert "同一版本" in semantic_mismatch.json()["detail"]
+    assert bounds_mismatch.status_code == 422
+    assert "标注边界" in bounds_mismatch.json()["detail"]
+    assert mock_ai_layout == []
+
+
+def test_ai_layout_ignores_legacy_template_field_and_sends_no_references(
+    mock_ai_layout: list[dict[str, Any]],
+) -> None:
+    fields = stage01_form_fields()
+    with TestClient(app) as client:
+        job = completed_job(
+            client,
+            client.post(
+                "/v1/layouts/ai",
+                files={"source_image": ("stage01.png", image_bytes(), "image/png")},
+                data={
+                    **fields,
+                    "room_type": "living_room",
+                    "count": "1",
+                    "template_ids": "builtin_floorplan_01,unknown_template",
+                },
+            ),
+        )
+
+    assert job["result"]["referencePolicy"] == "stage01_only"
+    assert job["result"]["referenceImageCount"] == 0
+    assert len(mock_ai_layout) == 1
+    assert mock_ai_layout[0].get("reference_paths") in (None, [])
 
 
 def test_ai_layout_validates_room_type_and_count(
     mock_ai_layout: list[dict[str, Any]],
 ) -> None:
+    fields = stage01_form_fields()
     with TestClient(app) as client:
         invalid_room = client.post(
             "/v1/layouts/ai",
-            data={"room_type": "garage", "width_mm": "5200", "depth_mm": "4200"},
+            files={"source_image": ("stage01.png", image_bytes(), "image/png")},
+            data={**fields, "room_type": "garage"},
         )
         invalid_count = client.post(
             "/v1/layouts/ai",
+            files={"source_image": ("stage01.png", image_bytes(), "image/png")},
             data={
+                **fields,
                 "room_type": "living_room",
-                "width_mm": "5200",
-                "depth_mm": "4200",
                 "count": "3",
             },
         )

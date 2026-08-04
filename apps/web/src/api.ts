@@ -27,6 +27,7 @@ export type SceneGenerationMode = 'ai_direct' | 'structured_3d'
 export type AssetModuleKey =
   | 'floorplan'
   | 'layout'
+  | 'ai_workflow'
   | 'white_model'
   | 'effect_render'
   | 'material_replacement'
@@ -55,10 +56,14 @@ export type SceneAssetDetail = SceneAsset & {
   sourceResult: Record<string, unknown>
 }
 
-function xhrFormRequest(url: string, init: RequestInit): Promise<Response> {
+function xhrRequest(
+  url: string,
+  init: RequestInit = {},
+  networkRetries = 2,
+): Promise<Response> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest()
-    request.open(init.method ?? 'POST', url, true)
+    request.open(init.method ?? 'GET', url, true)
     request.responseType = 'blob'
     request.withCredentials = init.credentials === 'include'
 
@@ -68,8 +73,18 @@ function xhrFormRequest(url: string, init: RequestInit): Promise<Response> {
 
     const signal = init.signal
     const removeAbortListener = () => signal?.removeEventListener('abort', abort)
-    const fail = (message: string) => {
+    const retryOrFail = (message: string) => {
       removeAbortListener()
+      if (networkRetries > 0 && !signal?.aborted) {
+        // Local keep-alive races and browser extension interference can drop a
+        // request before it reaches the server. Retry transient network
+        // failures a couple of times with a short backoff before surfacing.
+        const attempt = 3 - networkRetries
+        window.setTimeout(() => {
+          xhrRequest(url, init, networkRetries - 1).then(resolve, reject)
+        }, 350 * attempt)
+        return
+      }
       reject(new TypeError(message))
     }
     const abort = () => request.abort()
@@ -99,8 +114,8 @@ function xhrFormRequest(url: string, init: RequestInit): Promise<Response> {
         }),
       )
     }
-    request.onerror = () => fail('无法连接本地 API')
-    request.ontimeout = () => fail('本地 API 请求超时')
+    request.onerror = () => retryOrFail('无法连接本地 API')
+    request.ontimeout = () => retryOrFail('本地 API 请求超时')
     request.onabort = () => {
       removeAbortListener()
       reject(new DOMException('请求已取消', 'AbortError'))
@@ -111,16 +126,69 @@ function xhrFormRequest(url: string, init: RequestInit): Promise<Response> {
       return
     }
     signal?.addEventListener('abort', abort, { once: true })
-    request.send(init.body as FormData)
+    request.send((init.body ?? null) as XMLHttpRequestBodyInit | null)
   })
 }
 
-export function apiFetch(path: string, init?: RequestInit) {
-  const url = `${API_BASE}${path}`
-  if (init?.body instanceof FormData) {
-    return xhrFormRequest(url, init)
-  }
-  return fetch(url, init)
+export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const url = /^https?:\/\//.test(path) ? path : `${API_BASE}${path}`
+  // Browser wallet/provider extensions can replace window.fetch and return
+  // undefined even after the local request succeeds. Keep all local API and
+  // artifact traffic on XHR so callers always receive a real Response.
+  return xhrRequest(url, init)
+}
+
+export function createColorPlanRenders(form: FormData) {
+  return apiFetch('/v1/ai-workflow/color-plans', {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function createAxonometricRenders(form: FormData) {
+  return apiFetch('/v1/ai-workflow/axonometric-views', {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function createSpaceRenders(form: FormData) {
+  return apiFetch('/v1/ai-workflow/space-renders', {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function createStyleSchemeRenders(form: FormData) {
+  return apiFetch('/v1/ai-workflow/style-schemes', {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function createToneSchemeRenders(form: FormData) {
+  return apiFetch('/v1/ai-workflow/tone-schemes', {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function createLocalEditRender(form: FormData) {
+  return apiFetch('/v1/ai-workflow/local-edits', {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function approveWorkflowAsset(
+  assetId: string,
+  payload: { variantId: string; comment?: string },
+) {
+  return apiFetch(`/v1/assets/${encodeURIComponent(assetId)}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
 }
 
 export function assetUrl(path?: string) {

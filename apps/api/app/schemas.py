@@ -58,6 +58,7 @@ class SceneAssetRead(APIModel):
         "white_model",
         "effect_render",
         "material_replacement",
+        "ai_workflow",
     ]
     module_name: str
     thumbnail_url: str | None = None
@@ -72,6 +73,56 @@ class SceneAssetDetail(SceneAssetRead):
     source_result: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkflowResumeAsset(APIModel):
+    """Public, path-free inputs required to continue an approved AI workflow asset."""
+
+    asset_id: str
+    job_id: str
+    project_id: str | None = None
+    parent_asset_id: str | None = None
+    module_key: Literal["layout", "ai_workflow"]
+    workflow_stage: Literal[
+        "layout",
+        "color_plan",
+        "axonometric",
+        "space_render",
+        "style_scheme",
+        "tone_scheme",
+        "local_edit",
+    ]
+    approval_status: Literal["approved"]
+    approved_variant_id: str
+    approved_version_id: str
+    approved_output_url: str
+    approved_output_sha256: str | None = None
+    semantic_layout: dict[str, Any]
+    approved_layout_asset_id: str | None = None
+    approved_layout_version_id: str | None = None
+    approved_layout_image_url: str | None = None
+    approved_color_plan_asset_id: str | None = None
+    approved_color_plan_version_id: str | None = None
+    approved_color_plan_image_url: str | None = None
+    source_space_image_url: str | None = None
+    space_id: str | None = None
+    space_name: str | None = None
+    eligible_next_stages: list[
+        Literal[
+            "color_plan",
+            "axonometric",
+            "space_render",
+            "style_scheme",
+            "tone_scheme",
+            "local_edit",
+        ]
+    ] = Field(default_factory=list)
+    lineage: dict[str, Any] = Field(default_factory=dict)
+
+
+class SceneAssetApprovalRequest(APIModel):
+    variant_id: str = Field(min_length=1, max_length=160)
+    comment: str | None = Field(default=None, max_length=500)
+
+
 class AssetModuleRead(APIModel):
     key: Literal[
         "floorplan",
@@ -79,6 +130,7 @@ class AssetModuleRead(APIModel):
         "white_model",
         "effect_render",
         "material_replacement",
+        "ai_workflow",
     ]
     name: str
     description: str
@@ -87,11 +139,14 @@ class AssetModuleRead(APIModel):
 class SceneAssetRenderRequest(APIModel):
     variant_type: Literal["camera", "material"]
     camera_preset_id: Literal["corner_01", "corner_02", "eye_level_01"] | None = None
-    style_preset_id: Literal[
-        "modern_warm_v1",
-        "modern_minimal_v1",
-        "natural_wood_v1",
-    ] | None = None
+    style_preset_id: (
+        Literal[
+            "modern_warm_v1",
+            "modern_minimal_v1",
+            "natural_wood_v1",
+        ]
+        | None
+    ) = None
     render_quality: Literal["base", "final"] = "base"
 
     @model_validator(mode="after")
@@ -163,3 +218,120 @@ class CameraPreset(APIModel):
     id: str
     name: str
     description: str
+
+
+class AIWorkflowJobBase(APIModel):
+    """Validated, persisted payload shared by pure-AI workflow stages 3 through 5."""
+
+    project_id: str | None = None
+    approved_layout_path: str = Field(min_length=1)
+    approved_layout_version_id: str | None = Field(default=None, max_length=120)
+    layout_approved: bool
+    semantic_layout: dict[str, Any] = Field(min_length=1)
+    variant_group_id: str = Field(min_length=1, max_length=80)
+    design_prompt: str = Field(default="", max_length=1000)
+    style_reference_paths: list[str] = Field(default_factory=list, max_length=7)
+    asset_parent_id: str | None = Field(default=None, max_length=40)
+    asset_module_key: Literal["ai_workflow"] = "ai_workflow"
+
+    @model_validator(mode="after")
+    def validate_layout_approval(self) -> AIWorkflowJobBase:
+        if not self.layout_approved:
+            raise ValueError("只有已批准的平面布局才能进入后续 AI 设计阶段")
+        rooms = self.semantic_layout.get("rooms")
+        if not isinstance(rooms, list) or not rooms:
+            raise ValueError("semanticLayout 的 rooms 必须是非空数组")
+        return self
+
+
+class AIColorPlanJobPayload(AIWorkflowJobBase):
+    workflow_stage: Literal["color_plan"] = "color_plan"
+    variants: list[
+        Literal[
+            "simple_2d",
+            "topdown_3d",
+            "watercolor",
+            "material_realistic",
+        ]
+    ] = Field(min_length=1, max_length=4)
+
+
+class AIAxonometricJobPayload(AIWorkflowJobBase):
+    workflow_stage: Literal["axonometric"] = "axonometric"
+    approved_color_plan_path: str = Field(min_length=1)
+    variants: list[Literal["isometric_day", "isometric_night", "alternate_angle"]] = Field(
+        min_length=1, max_length=3
+    )
+
+
+class AISpaceRenderJobPayload(AIWorkflowJobBase):
+    workflow_stage: Literal["space_render"] = "space_render"
+    approved_color_plan_path: str = Field(min_length=1)
+    selected_space_ids: list[str] = Field(default_factory=list, max_length=12)
+    view_preset: Literal["eye_level_wide", "corner_wide", "straight_on"] = "eye_level_wide"
+
+
+class AIWorkflowDerivativeJobBase(APIModel):
+    """Validated payload shared by the approved-space derivative stages 6 through 8."""
+
+    project_id: str | None = None
+    source_space_path: str = Field(min_length=1)
+    source_space_version_id: str = Field(min_length=1, max_length=220)
+    parent_approved_version_id: str = Field(min_length=1, max_length=220)
+    parent_variant_id: str = Field(min_length=1, max_length=160)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_approved: bool
+    semantic_layout: dict[str, Any] = Field(min_length=1)
+    space_id: str = Field(min_length=1, max_length=120)
+    variant_group_id: str = Field(min_length=1, max_length=80)
+    design_prompt: str = Field(default="", max_length=1000)
+    asset_parent_id: str = Field(min_length=1, max_length=40)
+    asset_module_key: Literal["ai_workflow"] = "ai_workflow"
+
+    @model_validator(mode="after")
+    def validate_approved_space(self) -> AIWorkflowDerivativeJobBase:
+        if not self.source_approved:
+            raise ValueError("只有已批准的空间效果图才能进入风格、色调或局部修改阶段")
+        rooms = self.semantic_layout.get("rooms")
+        if not isinstance(rooms, list) or not rooms:
+            raise ValueError("semanticLayout 的 rooms 必须是非空数组")
+        room_ids = {
+            room.get("id")
+            for room in rooms
+            if isinstance(room, dict) and isinstance(room.get("id"), str)
+        }
+        if self.space_id not in room_ids:
+            raise ValueError("spaceId 不属于 semanticLayout.rooms")
+        if self.source_space_version_id != self.parent_approved_version_id:
+            raise ValueError("sourceSpaceVersionId 与上游批准版本不一致")
+        return self
+
+
+class AIStyleSchemeJobPayload(AIWorkflowDerivativeJobBase):
+    workflow_stage: Literal["style_scheme"] = "style_scheme"
+    variants: list[
+        Literal[
+            "modern_minimal",
+            "natural_wood",
+            "midcentury_vintage",
+            "french_luxury",
+        ]
+    ] = Field(min_length=1, max_length=4)
+    style_reference_paths: list[str] = Field(default_factory=list, max_length=7)
+
+
+class AIToneSchemeJobPayload(AIWorkflowDerivativeJobBase):
+    workflow_stage: Literal["tone_scheme"] = "tone_scheme"
+    variants: list[
+        Literal[
+            "warm_gold_day",
+            "neutral_dusk",
+            "cool_blue_night",
+        ]
+    ] = Field(min_length=1, max_length=3)
+
+
+class AILocalEditJobPayload(AIWorkflowDerivativeJobBase):
+    workflow_stage: Literal["local_edit"] = "local_edit"
+    mark_path: str = Field(min_length=1)
+    edit_prompt: str = Field(min_length=1, max_length=1000)

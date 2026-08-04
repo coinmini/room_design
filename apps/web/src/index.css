@@ -1,5 +1,5 @@
 html {
-  background: #f3f6f8;
+  background: #f4f5f7;
 }
 
 body {
@@ -12,6 +12,5 @@ body {
 
 ::selection {
   color: white;
-  background: #1768ac;
+  background: #7a5af8;
 }
-

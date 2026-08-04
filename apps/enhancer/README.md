@@ -1,8 +1,14 @@
-# Room Design ComfyUI Enhancer
+# Room Design 历史 ComfyUI 增强实验
 
-本服务是 `room_design` API 与本机 ComfyUI 之间的轻量桥接层。它不会下载模型，也不会修改 ComfyUI 目录。当前工作流以 Blender 基础渲染为结构锚点，组合 ArchViz SDXL checkpoint、Depth ControlNet、IP-Adapter Plus 风格参考和可选 SDXL Refiner。
+本服务是 `room_design` API 与本机 ComfyUI 之间保留的历史轻量桥接层。它不会下载模型，也
+不会修改 ComfyUI 目录。旧版实验以 Blender 基础渲染为结构锚点，组合 ArchViz SDXL
+checkpoint、Depth ControlNet、IP-Adapter Plus 风格参考和可选 SDXL Refiner。
 
-## 接口
+V0.6 阶段 3～5 的生产链路直接使用 Kuyao `gpt-image-2`，不调用本服务、ComfyUI 或
+Blender。8189 不在线不会影响纯 AI 彩平、轴侧概念图和分空间效果图；本目录仅用于历史结果
+回归和后续受控生成研究。
+
+## 历史实验接口
 
 - `GET /health`：探测 ComfyUI 的 `/system_stats`、`/object_info`，报告 checkpoint、ControlNet、IP-Adapter、CLIP Vision 与 Refiner 能力。缺少服务、模型或节点时返回 `status: degraded`。
 - `POST /v1/enhance`：接收现有 API 的 data URL 契约，上传 `images.base`，依次调用 ComfyUI `/upload/image`、`/prompt`、`/history/{prompt_id}` 与 `/view`，返回 `imageBase64`。
@@ -13,9 +19,10 @@
 `images.reference` 覆盖本地默认参考图；非正方形参考图会自动留白为正方形，避免
 CLIP Vision 中心裁切。上游不传参考图时使用操作方配置的本地文件。
 
-## 启动
+## 按需启动
 
-先确保 ComfyUI 已在 `127.0.0.1:8188` 启动，并在 ComfyUI 的模型列表中确认 SDXL checkpoint 的完整文件名。
+只有复现历史增强实验时才需要启动。先确保 ComfyUI 已在 `127.0.0.1:8188` 运行，并在
+ComfyUI 的模型列表中确认 SDXL checkpoint 的完整文件名。
 
 ```bash
 conda activate llf_v1
@@ -27,7 +34,7 @@ set +a
 uvicorn app.main:app --host 127.0.0.1 --port 8189
 ```
 
-然后在主 API 的 `.env` 中配置：
+如需让旧版兼容接口调用增强桥，再在主 API 的 `.env` 中配置：
 
 ```dotenv
 FLOORPLAN_AI_ENDPOINT=http://127.0.0.1:8189/v1/enhance
@@ -40,7 +47,8 @@ FLOORPLAN_AI_TIMEOUT_SECONDS=360
 curl http://127.0.0.1:8189/health
 ```
 
-项目根目录的 `scripts/dev.sh` 会自动加载 `apps/enhancer/.env`。当前本机默认配置为：
+项目根目录的 `scripts/dev.sh` 为兼容回归会自动加载 `apps/enhancer/.env` 并启动 8189；这不
+代表 V0.6 生产工作流依赖它。历史实验的示例配置为：
 
 ```dotenv
 COMFYUI_CONTROLNET_MODEL=control-lora-depth-rank256.safetensors
@@ -59,7 +67,7 @@ COMFYUI_IPADAPTER_REFERENCE_IMAGE=/absolute/path/to/reference.png
 COMFYUI_IPADAPTER_WEIGHT=0.60
 ```
 
-## 配置
+## 历史实验配置
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -95,3 +103,5 @@ pytest -q
 ```
 
 测试使用 mock 客户端，不要求本机 ComfyUI 或模型在线。
+
+> 本服务的输出只用于历史技术验证，不作为 V0.6 阶段资产、批准基线或三维交付。

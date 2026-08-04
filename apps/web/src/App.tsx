@@ -8,40 +8,144 @@ import {
   type Job,
 } from './api'
 import AssetLibrary from './AssetLibrary'
+import AiDesignWorkflow from './AiDesignWorkflow'
 import FloorplanModule from './FloorplanModule'
 import './App.css'
 
 type ModuleId =
   | 'overview'
+  | 'workflow'
   | 'floorplan'
-  | 'layout'
   | 'white'
   | 'material'
   | 'assets'
 
-const modules: Array<{
+type ModuleDef = {
   id: ModuleId
   number: string
   title: string
   short: string
-}> = [
-  { id: 'overview', number: '00', title: '项目总览', short: 'V0.5 Vision' },
+  badge?: string
+}
+
+const iconProps = {
+  width: 17,
+  height: 17,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.7,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+} as const
+
+const moduleIcons: Record<ModuleId, React.ReactNode> = {
+  overview: (
+    <svg {...iconProps}>
+      <rect x="3" y="3" width="7.5" height="7.5" rx="1.6" />
+      <rect x="13.5" y="3" width="7.5" height="7.5" rx="1.6" />
+      <rect x="3" y="13.5" width="7.5" height="7.5" rx="1.6" />
+      <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.6" />
+    </svg>
+  ),
+  workflow: (
+    <svg {...iconProps}>
+      <circle cx="5" cy="5" r="2" />
+      <circle cx="19" cy="12" r="2" />
+      <circle cx="5" cy="19" r="2" />
+      <path d="M7 5h4a4 4 0 0 1 4 4v0a3 3 0 0 0 3 3" />
+      <path d="M7 19h4a4 4 0 0 0 4-4v0a3 3 0 0 1 3-3" />
+    </svg>
+  ),
+  floorplan: (
+    <svg {...iconProps}>
+      <rect x="3" y="3" width="18" height="18" rx="1.6" />
+      <path d="M3 12h9V3" />
+      <path d="M12 12v9h9" />
+      <path d="M15 12h6" />
+    </svg>
+  ),
+  white: (
+    <svg {...iconProps}>
+      <path d="M12 2.8l8 4.4v9.6l-8 4.4-8-4.4V7.2l8-4.4z" />
+      <path d="M12 12l8-4.4" />
+      <path d="M12 12v9.6" />
+      <path d="M12 12L4 7.2" />
+    </svg>
+  ),
+  material: (
+    <svg {...iconProps}>
+      <path d="M12 3.5s6.5 7 6.5 11a6.5 6.5 0 1 1-13 0c0-4 6.5-11 6.5-11z" />
+    </svg>
+  ),
+  assets: (
+    <svg {...iconProps}>
+      <rect x="3" y="4" width="18" height="16" rx="1.8" />
+      <circle cx="9" cy="10" r="1.8" />
+      <path d="M3 17l5-4 4 3 4.5-3.5L21 16" />
+    </svg>
+  ),
+}
+
+const showLegacyTools = import.meta.env.VITE_SHOW_LEGACY_TOOLS === 'true'
+
+const navGroups: Array<{ label: string; items: ModuleDef[] }> = [
   {
-    id: 'floorplan',
-    number: '01',
-    title: '户型识别与效果图',
-    short: 'Floorplan Studio',
+    label: '工作台',
+    items: [
+      { id: 'overview', number: '00', title: '项目总览', short: 'Overview' },
+      {
+        id: 'workflow',
+        number: 'W',
+        title: 'AI 设计工作流',
+        short: '8-stage Workflow',
+        badge: 'NEW',
+      },
+    ],
   },
-  { id: 'layout', number: '02', title: 'AI 平面布局', short: 'AI Layout' },
-  { id: 'white', number: '03', title: '白模渲染', short: 'White Model' },
   {
-    id: 'material',
-    number: '04',
-    title: 'AI 多材质替换',
-    short: 'AI Material Edit',
+    label: '调整阶段',
+    items: [
+      {
+        id: 'material',
+        number: '04',
+        title: 'AI 多材质替换',
+        short: 'Material Edit',
+      },
+    ],
   },
-  { id: 'assets', number: '05', title: '我的资产', short: 'Asset Library' },
+  ...(showLegacyTools
+    ? [
+        {
+          label: '历史实验能力',
+          items: [
+            {
+              id: 'floorplan' as const,
+              number: 'H1',
+              title: '旧版户型工作室',
+              short: 'Legacy Floorplan',
+              badge: '实验',
+            },
+            {
+              id: 'white' as const,
+              number: 'H2',
+              title: '白模渲染实验',
+              short: 'Legacy White Model',
+              badge: '实验',
+            },
+          ],
+        },
+      ]
+    : []),
+  {
+    label: '资产中心',
+    items: [
+      { id: 'assets', number: '05', title: '我的资产', short: 'Asset Library' },
+    ],
+  },
 ]
+
+const modules: ModuleDef[] = navGroups.flatMap((group) => group.items)
 
 function useJobRunner() {
   const [job, setJob] = useState<Job | null>(null)
@@ -126,7 +230,6 @@ function Overview() {
   const [health, setHealth] = useState<{
     status: string
     version: string
-    blenderEnabled: boolean
   } | null>(null)
 
   useEffect(() => {
@@ -139,37 +242,35 @@ function Overview() {
   return (
     <div className="page">
       <header className="hero-header">
-        <span className="eyebrow">LOCAL PILOT · V0.5</span>
+        <span className="eyebrow">LOCAL PILOT · V0.6</span>
         <h1>
           从空间数据到
           <br />
           可沟通的设计意向
         </h1>
         <p>
-          围绕户型识别、结构校正、三维场景与概念效果图，打通从真实户型到可复用资产的完整验证闭环。
+          围绕功能区标注、AI 平面布局、彩平、轴侧、空间效果与局部修改，建立逐步确认、持续派生的设计项目闭环。
         </p>
         <div className="hero-actions">
           <span className={`service-dot ${health ? 'online' : ''}`} />
           {health
-            ? `API 在线 · V${health.version} · Blender ${
-                health.blenderEnabled ? '已启用' : '未启用'
-              }`
+            ? `AI 工作流 API 在线 · V${health.version}`
             : `等待 API · ${API_BASE}`}
         </div>
       </header>
 
       <section className="metric-grid">
         <article>
-          <strong>5</strong>
-          <span>功能模块</span>
+          <strong>8</strong>
+          <span>规划设计阶段</span>
         </article>
         <article>
           <strong>1</strong>
           <span>统一任务协议</span>
         </article>
         <article>
-          <strong>2</strong>
-          <span>完整用户闭环</span>
+          <strong>3</strong>
+          <span>已实现 AI 视觉阶段</span>
         </article>
         <article>
           <strong>0</strong>
@@ -183,7 +284,7 @@ function Overview() {
           <h2>最小业务链路</h2>
         </div>
         <div className="flow">
-          {['识别墙线', '人工校正', '框选房间', '3D 与机位', '效果增强'].map(
+          {['功能区标注', 'AI 平面布局', 'AI 彩平', 'AI 轴侧', '空间效果'].map(
             (item, index) => (
               <div className="flow-step" key={item}>
                 <small>{String(index + 1).padStart(2, '0')}</small>
@@ -196,225 +297,6 @@ function Overview() {
 
       <div className="notice">
         AI 结果用于概念设计与效果预览，不作为尺寸、材料色差或施工依据。
-      </div>
-    </div>
-  )
-}
-
-type AiLayoutResult = {
-  generationMode: 'ai_image'
-  provider: string
-  model: string
-  notice: string
-  sourceMode: 'uploaded' | 'generated_rectangle'
-  isConceptOnly: true
-  constructionReady: false
-  requiresUserConfirmation: true
-  templateIds: string[]
-  templateVersion: string
-  layouts: Array<{
-    layoutId: string
-    strategy: string
-    previewUrl: string
-    generationMode: 'ai_image'
-    provider: string
-    model: string
-    notice: string
-    isConceptOnly: true
-    constructionReady: false
-    requiresUserConfirmation: true
-  }>
-}
-
-function LayoutModule() {
-  const runner = useJobRunner()
-  const [aiFile, setAiFile] = useState<File | null>(null)
-  const [aiRoomType, setAiRoomType] = useState('whole_home')
-  const [aiWidth, setAiWidth] = useState(8150)
-  const [aiDepth, setAiDepth] = useState(6060)
-  const [designPrompt, setDesignPrompt] = useState(
-    '保留墙体、门窗和功能分区，优化家具尺度、收纳与日常动线。',
-  )
-  const result = runner.job?.result as AiLayoutResult | null
-
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault()
-    const form = new FormData()
-    if (aiFile) form.append('source_image', aiFile)
-    form.append('room_type', aiRoomType)
-    form.append('width_mm', String(aiWidth))
-    form.append('depth_mm', String(aiDepth))
-    form.append('count', '1')
-    form.append('design_prompt', designPrompt)
-    await runner.run(
-      apiFetch('/v1/layouts/ai', {
-        method: 'POST',
-        body: form,
-      }),
-    )
-  }
-
-  return (
-    <div className="page">
-      <ModuleHeader
-        index="02"
-        title="AI 家装平面布局"
-        description="上传户型或结构图，由图像模型结合空间尺寸、设计要求与内置范例，生成可沟通的家装平面概念方案。"
-        job={runner.job}
-      />
-      <div className="workspace layout-workspace">
-        <form className="control-panel layout-control-panel" onSubmit={submit}>
-          <h2>AI 概念布局</h2>
-          <label className="file-drop layout-source-drop">
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              onChange={(event) => setAiFile(event.target.files?.[0] ?? null)}
-            />
-            <strong>{aiFile ? aiFile.name : '可选上传毛坯 / 结构图'}</strong>
-            <span>
-              {aiFile
-                ? '已使用上传图作为主要结构参考'
-                : '未上传时按输入尺寸创建矩形房间，再结合内置范例生成'}
-            </span>
-          </label>
-          <label>
-            设计范围
-            <select
-              value={aiRoomType}
-              onChange={(event) => setAiRoomType(event.target.value)}
-            >
-              <option value="whole_home">全屋</option>
-              <option value="living_room">客厅</option>
-              <option value="dining_room">餐厅</option>
-              <option value="bedroom">卧室</option>
-            </select>
-          </label>
-          <div className="field-row">
-            <label>
-              总宽 / 开间（mm）
-              <input
-                type="number"
-                min={2400}
-                max={30000}
-                value={aiWidth}
-                onChange={(event) => setAiWidth(Number(event.target.value))}
-              />
-            </label>
-            <label>
-              总深 / 进深（mm）
-              <input
-                type="number"
-                min={2400}
-                max={30000}
-                value={aiDepth}
-                onChange={(event) => setAiDepth(Number(event.target.value))}
-              />
-            </label>
-          </div>
-          <label>
-            设计要求
-            <textarea
-              value={designPrompt}
-              maxLength={500}
-              onChange={(event) => setDesignPrompt(event.target.value)}
-              placeholder="例如：原木风、客餐厅一体、增加收纳，保留门窗与承重墙"
-            />
-          </label>
-          <div className="layout-reference-section">
-            <div>
-              <span>REFERENCE SET</span>
-              <strong>系统自动参考 3 套内置范例</strong>
-            </div>
-            <div className="layout-reference-grid">
-              {[
-                ['/examples/平面图.jpeg', '尺寸清晰两居'],
-                ['/examples/平面图2.jpeg', '不规则全屋'],
-                ['/examples/平面图3.jpeg', '多房全屋'],
-              ].map(([url, label], index) => (
-                <figure key={url}>
-                  <img src={assetUrl(url)} alt={label} />
-                  <figcaption>
-                    <span>0{index + 1}</span>
-                    {label}
-                  </figcaption>
-                </figure>
-              ))}
-            </div>
-            <p>范例只提供表达方式与家具尺度参考，不会覆盖上传图的结构。</p>
-          </div>
-          <div className="constraint-list">
-            <span>结构优先</span>
-            <span>家具完整</span>
-            <span>动线合理</span>
-            <span>概念预览</span>
-          </div>
-          <button className="primary-button" disabled={runner.busy}>
-            {runner.busy ? 'AI 正在生成布局…' : '生成 AI 概念布局'}
-          </button>
-          <ErrorNotice message={runner.error} />
-        </form>
-
-        <section className="result-panel layout-result-panel">
-          {!result && (
-            <div className="empty-state">
-              <span>AI</span>
-              <h3>等待概念布局生成</h3>
-              <p>可直接输入全屋尺寸，上传结构图后能更好地保持真实边界。</p>
-            </div>
-          )}
-          {result &&
-            result.layouts.map((layout, index) => (
-              <article className="layout-card ai-layout-card" key={layout.layoutId}>
-                <div className="result-heading">
-                  <div>
-                    <small>AI CONCEPT · {String(index + 1).padStart(2, '0')}</small>
-                    <h3>家装平面概念方案</h3>
-                  </div>
-                  <span>{layout.provider ?? result.provider ?? 'AI IMAGE'}</span>
-                </div>
-                <img src={assetUrl(layout.previewUrl)} alt="AI 家装平面概念布局" />
-                <div className="ai-layout-status">
-                  <span>概念图</span>
-                  <span>非施工图</span>
-                  <span>需人工确认</span>
-                </div>
-                <div className="ai-layout-meta">
-                  <div>
-                    <span>供应商</span>
-                    <strong>{layout.provider ?? result.provider ?? '未返回'}</strong>
-                  </div>
-                  <div>
-                    <span>模型</span>
-                    <strong>{layout.model ?? '图像生成模型'}</strong>
-                  </div>
-                  <div>
-                    <span>输入</span>
-                    <strong>
-                      {result.sourceMode === 'uploaded' ? '上传结构图' : '尺寸矩形'}
-                    </strong>
-                  </div>
-                </div>
-                <div className="ai-layout-notice">
-                  <strong>概念方案提醒</strong>
-                  <p>
-                    {layout.notice ??
-                      result.notice ??
-                      'AI 平面图用于方案沟通，需要结合尺寸与结构进行人工复核。'}
-                  </p>
-                </div>
-                <a
-                  className="ai-layout-download"
-                  href={assetUrl(layout.previewUrl)}
-                  target="_blank"
-                  rel="noreferrer"
-                  download
-                >
-                  下载概念布局图
-                </a>
-              </article>
-            ))}
-        </section>
       </div>
     </div>
   )
@@ -1149,7 +1031,7 @@ function MaterialModule() {
 }
 
 function App() {
-  const [active, setActive] = useState<ModuleId>('overview')
+  const [active, setActive] = useState<ModuleId>('workflow')
   const activeModule = useMemo(
     () => modules.find((item) => item.id === active) ?? modules[0],
     [active],
@@ -1166,18 +1048,24 @@ function App() {
           </div>
         </button>
         <nav>
-          {modules.map((item) => (
-            <button
-              key={item.id}
-              className={item.id === active ? 'active' : ''}
-              onClick={() => setActive(item.id)}
-            >
-              <span>{item.number}</span>
-              <div>
-                <strong>{item.title}</strong>
-                <small>{item.short}</small>
-              </div>
-            </button>
+          {navGroups.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <span className="nav-group-label">{group.label}</span>
+              {group.items.map((item) => (
+                <button
+                  key={item.id}
+                  className={item.id === active ? 'active' : ''}
+                  onClick={() => setActive(item.id)}
+                >
+                  <span className="nav-icon">{moduleIcons[item.id]}</span>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <small>{item.short}</small>
+                  </div>
+                  {item.badge && <em className="nav-badge">{item.badge}</em>}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <footer>
@@ -1200,8 +1088,13 @@ function App() {
           </div>
         </div>
         {active === 'overview' && <Overview />}
+        <section
+          className="persistent-workflow-module"
+          hidden={active !== 'workflow'}
+        >
+          <AiDesignWorkflow />
+        </section>
         {active === 'floorplan' && <FloorplanModule />}
-        {active === 'layout' && <LayoutModule />}
         {active === 'white' && <WhiteModelModule />}
         {active === 'material' && <MaterialModule />}
         {active === 'assets' && <AssetLibrary />}

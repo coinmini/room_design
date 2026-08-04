@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from copy import deepcopy
 from contextlib import asynccontextmanager
-from typing import Annotated, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal, TypeVar
+from urllib.parse import unquote, urlsplit
 
 from fastapi import (
     BackgroundTasks,
@@ -19,6 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 
 from app.assets import (
     LOCAL_OWNER_ID,
@@ -31,11 +36,22 @@ from app.assets import (
 from app.config import WORKSPACE_ROOT, settings
 from app.database import get_session, init_db
 from app.jobs import create_job, run_job
-from app.models import Job, Project, SceneAsset
+from app.models import Job, Project, SceneAsset, new_id, utc_now
+from app.processors.ai_workflow import (
+    AXONOMETRIC_VARIANTS,
+    COLOR_PLAN_VARIANTS,
+    STYLE_SCHEME_VARIANTS,
+    TONE_SCHEME_VARIANTS,
+)
 from app.processors.floorplan_enhancement import enhancement_capability
-from app.processors.common import ProcessorError
-from app.processors.layout import resolve_ai_layout_template_ids
 from app.schemas import (
+    AIAxonometricJobPayload,
+    AIColorPlanJobPayload,
+    AILocalEditJobPayload,
+    AISpaceRenderJobPayload,
+    AIStyleSchemeJobPayload,
+    AIToneSchemeJobPayload,
+    APIModel,
     AssetModuleRead,
     CameraPreset,
     EffectRenderRequest,
@@ -44,8 +60,10 @@ from app.schemas import (
     ProjectCreate,
     ProjectRead,
     SceneAssetDetail,
+    SceneAssetApprovalRequest,
     SceneAssetRead,
     SceneAssetRenderRequest,
+    WorkflowResumeAsset,
 )
 from app.storage import save_upload
 
@@ -58,7 +76,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title=settings.app_name,
-    version="0.5.0",
+    version="0.6.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -80,23 +98,712 @@ app.mount(
 )
 
 SessionDep = Annotated[Session, Depends(get_session)]
+WorkflowPayload = TypeVar("WorkflowPayload", bound=APIModel)
+
+WORKFLOW_STAGE_BY_JOB_TYPE = {
+    "AI_COLOR_PLAN": "color_plan",
+    "AI_AXONOMETRIC": "axonometric",
+    "AI_SPACE_RENDER": "space_render",
+    "AI_STYLE_SCHEME": "style_scheme",
+    "AI_TONE_SCHEME": "tone_scheme",
+    "AI_LOCAL_EDIT": "local_edit",
+}
+WORKFLOW_NEXT_STAGES = {
+    "layout": ["color_plan"],
+    "color_plan": ["axonometric", "space_render"],
+    "axonometric": ["space_render"],
+    "space_render": ["style_scheme"],
+    "style_scheme": ["tone_scheme"],
+    "tone_scheme": ["local_edit"],
+    "local_edit": [],
+}
+
+
+def _semantic_layout_form(raw: str) -> dict[str, Any]:
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="semanticLayout 必须是有效 JSON") from exc
+    if not isinstance(value, dict) or not value:
+        raise HTTPException(status_code=422, detail="semanticLayout 必须是非空 JSON 对象")
+    wrapped = value.get("semanticLayout")
+    if isinstance(wrapped, dict):
+        value = wrapped
+    elif isinstance(value.get("semantic_layout"), dict):
+        value = value["semantic_layout"]
+    if not isinstance(value.get("rooms"), list) or not value["rooms"]:
+        raise HTTPException(status_code=422, detail="semanticLayout 的 rooms 必须是非空数组")
+    return value
+
+
+def _confirmed_stage01_dimensions(value: dict[str, Any]) -> tuple[int, int]:
+    validation = value.get("validation")
+    validation = validation if isinstance(validation, dict) else {}
+    if not (
+        validation.get("humanConfirmed") is True or validation.get("status") == "human_confirmed"
+    ):
+        raise HTTPException(status_code=422, detail="Stage 01 SemanticLayout 尚未人工批准")
+    plan = value.get("plan")
+    plan = plan if isinstance(plan, dict) else {}
+    width = plan.get("widthMm")
+    depth = plan.get("depthMm")
+    if (
+        isinstance(width, bool)
+        or not isinstance(width, (int, float))
+        or isinstance(depth, bool)
+        or not isinstance(depth, (int, float))
+    ):
+        raise HTTPException(status_code=422, detail="Stage 01 缺少有效的总宽和总深")
+    width_mm = round(width)
+    depth_mm = round(depth)
+    if not 2400 <= width_mm <= 30000 or not 2400 <= depth_mm <= 30000:
+        raise HTTPException(status_code=422, detail="Stage 01 总宽和总深超出支持范围")
+    return width_mm, depth_mm
+
+
+def _stage01_bounds_form(raw: str) -> dict[str, float]:
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Stage 01 标注边界必须是有效 JSON") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="Stage 01 标注边界必须是 JSON 对象")
+    bounds: dict[str, float] = {}
+    for key in ("x", "y", "width", "height"):
+        item = value.get(key)
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            raise HTTPException(status_code=422, detail=f"Stage 01 标注边界缺少 {key}")
+        bounds[key] = float(item)
+    if bounds["width"] <= 0 or bounds["height"] <= 0:
+        raise HTTPException(status_code=422, detail="Stage 01 标注边界宽高必须大于 0")
+    return bounds
+
+
+def _csv_values(
+    raw: str | None,
+    *,
+    defaults: tuple[str, ...] = (),
+    allowed: tuple[str, ...] | None = None,
+    maximum: int,
+    label: str,
+) -> list[str]:
+    clean_raw = (raw or "").strip()
+    if clean_raw.startswith("["):
+        try:
+            parsed = json.loads(clean_raw)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"{label} JSON 数组无效") from exc
+        if not isinstance(parsed, list) or any(not isinstance(item, str) for item in parsed):
+            raise HTTPException(status_code=422, detail=f"{label}必须是字符串数组")
+        values = [item.strip() for item in parsed if item.strip()]
+    else:
+        values = [item.strip() for item in clean_raw.split(",") if item.strip()]
+    if not values:
+        values = list(defaults)
+    values = list(dict.fromkeys(values))
+    if not values:
+        raise HTTPException(status_code=422, detail=f"至少选择一个{label}")
+    if len(values) > maximum:
+        raise HTTPException(status_code=422, detail=f"{label}最多选择 {maximum} 个")
+    if allowed is not None:
+        invalid = [item for item in values if item not in allowed]
+        if invalid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"不支持的{label}：{', '.join(invalid)}",
+            )
+    return values
+
+
+def _validated_workflow_payload(
+    model: type[WorkflowPayload],
+    value: dict[str, Any],
+) -> WorkflowPayload:
+    try:
+        return model.model_validate(value)
+    except ValidationError as exc:
+        message = exc.errors(include_url=False)[0].get("msg", "工作流参数无效")
+        raise HTTPException(status_code=422, detail=message) from exc
+
+
+def _resume_public_url(value: Any, *, label: str) -> str:
+    """Return a browser-safe URL without exposing a host filesystem path."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise HTTPException(status_code=409, detail=f"资产缺少{label}")
+    url = value.strip()
+    parsed = urlsplit(url)
+    if parsed.scheme:
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=409, detail=f"资产的{label}不是可访问图片 URL")
+        return url
+    if parsed.netloc:
+        raise HTTPException(status_code=409, detail=f"资产的{label}不是公开图片 URL")
+    public_prefix = next(
+        (prefix for prefix in ("/artifacts/", "/examples/") if parsed.path.startswith(prefix)),
+        None,
+    )
+    relative_name = unquote(parsed.path[len(public_prefix) :]) if public_prefix else ""
+    if public_prefix is None or not relative_name or Path(relative_name).name != relative_name:
+        raise HTTPException(status_code=409, detail=f"资产的{label}不是公开图片 URL")
+    return url
+
+
+def _resume_optional_public_url(value: Any, *, label: str) -> str | None:
+    if value is None or value == "":
+        return None
+    return _resume_public_url(value, label=label)
+
+
+def _resume_semantic_candidate(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    wrapped = value.get("semanticLayout")
+    if isinstance(wrapped, dict):
+        value = wrapped
+    elif isinstance(value.get("semantic_layout"), dict):
+        value = value["semantic_layout"]
+    rooms = value.get("rooms")
+    if not isinstance(rooms, list) or not rooms:
+        return None
+    return value
+
+
+def _workflow_asset_chain(session: Session, asset: SceneAsset) -> list[SceneAsset]:
+    """Return root-to-leaf lineage, rejecting cycles and cross-project links."""
+
+    reverse_chain = [asset]
+    seen = {asset.id}
+    parent_id = asset.parent_asset_id
+    while parent_id:
+        if parent_id in seen or len(reverse_chain) >= 32:
+            raise HTTPException(status_code=409, detail="资产谱系存在循环或层级过深")
+        parent = get_local_scene_asset(session, parent_id)
+        if parent is None:
+            raise HTTPException(status_code=409, detail="资产谱系引用的上游资产不存在")
+        if parent.project_id != asset.project_id:
+            raise HTTPException(status_code=409, detail="资产谱系跨越了不同项目")
+        reverse_chain.append(parent)
+        seen.add(parent.id)
+        parent_id = parent.parent_asset_id
+    return list(reversed(reverse_chain))
+
+
+def _workflow_asset_stage(asset: SceneAsset, job: Job) -> str:
+    metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    module_key = metadata.get("moduleKey")
+    if module_key == "layout" and job.type in {"LAYOUT", "LAYOUT_AI"}:
+        return "layout"
+    stage = WORKFLOW_STAGE_BY_JOB_TYPE.get(job.type)
+    if module_key != "ai_workflow" or stage is None:
+        raise HTTPException(status_code=409, detail="该资产不是可续接的 AI 设计工作流资产")
+    recorded_stage = metadata.get("workflowStage")
+    if recorded_stage not in {None, stage}:
+        raise HTTPException(status_code=409, detail="资产阶段与生成任务不一致")
+    return stage
+
+
+def _workflow_approved_output(
+    asset: SceneAsset,
+    job: Job,
+    *,
+    stage: str,
+) -> tuple[dict[str, Any], str, str, str]:
+    metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    deliverables = asset.deliverables if isinstance(asset.deliverables, dict) else {}
+    if metadata.get("approvalStatus") != "approved":
+        raise HTTPException(status_code=409, detail="资产尚未审批，不能作为后续阶段素材")
+    variant_id = metadata.get("approvedVariantId")
+    version_id = metadata.get("approvedVersionId")
+    if not isinstance(variant_id, str) or not variant_id:
+        raise HTTPException(status_code=409, detail="资产缺少批准方案 ID")
+    if not isinstance(version_id, str) or not version_id:
+        raise HTTPException(status_code=409, detail="资产缺少批准版本 ID")
+    result = job.result if isinstance(job.result, dict) else {}
+    if stage == "layout":
+        candidates = result.get("layouts") if isinstance(result.get("layouts"), list) else []
+        approved = next(
+            (
+                item
+                for item in candidates
+                if isinstance(item, dict)
+                and item.get("layoutId") == variant_id
+                and isinstance(item.get("previewUrl"), str)
+            ),
+            None,
+        )
+        output_value = approved.get("previewUrl") if isinstance(approved, dict) else None
+    else:
+        candidates = result.get("outputs") if isinstance(result.get("outputs"), list) else []
+        approved = next(
+            (
+                item
+                for item in candidates
+                if isinstance(item, dict)
+                and item.get("variantId") == variant_id
+                and item.get("status") == "succeeded"
+                and isinstance(item.get("url"), str)
+            ),
+            None,
+        )
+        output_value = approved.get("url") if isinstance(approved, dict) else None
+    if not isinstance(approved, dict):
+        raise HTTPException(status_code=409, detail="资产批准方案不再属于成功输出")
+    output_url = _resume_public_url(output_value, label="批准输出图")
+    if deliverables.get("approvedOutputUrl") != output_url:
+        raise HTTPException(status_code=409, detail="资产批准输出与当前批准方案不一致")
+    if deliverables.get("approvedVariantId") not in {None, variant_id}:
+        raise HTTPException(status_code=409, detail="资产批准方案谱系不一致")
+    if deliverables.get("approvedVersionId") not in {None, version_id}:
+        raise HTTPException(status_code=409, detail="资产批准版本谱系不一致")
+    return approved, variant_id, version_id, output_url
+
+
+def _workflow_output_sha256(url: str) -> str | None:
+    parsed = urlsplit(url)
+    prefix = "/artifacts/"
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith(prefix):
+        return None
+    relative_name = unquote(parsed.path[len(prefix) :])
+    if not relative_name or Path(relative_name).name != relative_name:
+        return None
+    path = settings.artifact_dir / relative_name
+    if not path.is_file():
+        return None
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _workflow_resume_bundle(session: Session, asset: SceneAsset) -> dict[str, Any]:
+    job = session.get(Job, asset.job_id)
+    if job is None or job.status != "SUCCEEDED":
+        raise HTTPException(status_code=409, detail="资产缺少成功的生成任务")
+    stage = _workflow_asset_stage(asset, job)
+    approved, variant_id, version_id, output_url = _workflow_approved_output(
+        asset,
+        job,
+        stage=stage,
+    )
+    chain = _workflow_asset_chain(session, asset)
+
+    # Stage 02 may legitimately normalize validation and furniture after its
+    # plan is approved.  Stage 03 then becomes the canonical semantic input for
+    # the pure-AI chain.  Compare only AI-workflow copies with one another;
+    # otherwise every valid Stage 02 -> 03 transition could look like tampering.
+    workflow_semantic_candidates: list[dict[str, Any]] = []
+    layout_semantic_candidates: list[dict[str, Any]] = []
+    for item in reversed(chain):
+        item_job = session.get(Job, item.job_id)
+        payload = item_job.payload if item_job is not None else None
+        candidate = _resume_semantic_candidate(
+            payload.get("semantic_layout") if isinstance(payload, dict) else None
+        )
+        if candidate is not None:
+            item_metadata = item.metadata_json if isinstance(item.metadata_json, dict) else {}
+            if item_metadata.get("moduleKey") == "ai_workflow":
+                workflow_semantic_candidates.append(candidate)
+            elif item_metadata.get("moduleKey") == "layout":
+                layout_semantic_candidates.append(candidate)
+    semantic_candidates = (
+        workflow_semantic_candidates if workflow_semantic_candidates else layout_semantic_candidates
+    )
+    if not semantic_candidates:
+        raise HTTPException(status_code=409, detail="资产缺少可续接的 canonical SemanticLayout")
+    semantic_layout = semantic_candidates[0]
+    semantic_digest = json.dumps(
+        semantic_layout,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if any(
+        json.dumps(
+            candidate,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        != semantic_digest
+        for candidate in semantic_candidates[1:]
+    ):
+        raise HTTPException(status_code=409, detail="资产链中的 SemanticLayout 版本不一致")
+
+    chain_entries: list[dict[str, Any]] = []
+    layout_asset: SceneAsset | None = None
+    color_asset: SceneAsset | None = None
+    for item in chain:
+        item_job = session.get(Job, item.job_id)
+        if item_job is None:
+            raise HTTPException(status_code=409, detail="资产谱系缺少生成任务")
+        item_metadata = item.metadata_json if isinstance(item.metadata_json, dict) else {}
+        item_module = item_metadata.get("moduleKey")
+        item_stage = (
+            "layout" if item_module == "layout" else WORKFLOW_STAGE_BY_JOB_TYPE.get(item_job.type)
+        )
+        chain_entries.append(
+            {
+                "assetId": item.id,
+                "jobId": item.job_id,
+                "parentAssetId": item.parent_asset_id,
+                "moduleKey": item_module,
+                "workflowStage": item_stage,
+                "approvedVersionId": item_metadata.get("approvedVersionId"),
+            }
+        )
+        if item_module == "layout":
+            layout_asset = item
+        if item_module == "ai_workflow" and item_stage == "color_plan":
+            color_asset = item
+
+    layout_asset_version: str | None = None
+    layout_image_url: str | None = None
+    if layout_asset is not None:
+        layout_metadata = (
+            layout_asset.metadata_json if isinstance(layout_asset.metadata_json, dict) else {}
+        )
+        layout_deliverables = (
+            layout_asset.deliverables if isinstance(layout_asset.deliverables, dict) else {}
+        )
+        layout_asset_version = layout_metadata.get("approvedVersionId")
+        layout_image_url = _resume_optional_public_url(
+            layout_deliverables.get("approvedOutputUrl"),
+            label="已批准平面布局图",
+        )
+    if layout_asset_version is None:
+        for item in reversed(chain):
+            item_job = session.get(Job, item.job_id)
+            item_payload = item_job.payload if item_job is not None else {}
+            candidate = (
+                item_payload.get("approved_layout_version_id")
+                if isinstance(item_payload, dict)
+                else None
+            )
+            if isinstance(candidate, str) and candidate:
+                layout_asset_version = candidate
+                break
+    if layout_image_url is None:
+        for item in reversed(chain):
+            item_metadata = item.metadata_json if isinstance(item.metadata_json, dict) else {}
+            item_stage = item_metadata.get("workflowStage")
+            if item_stage not in {"color_plan", "axonometric", "space_render"}:
+                continue
+            item_deliverables = item.deliverables if isinstance(item.deliverables, dict) else {}
+            layout_image_url = _resume_optional_public_url(
+                item_deliverables.get("approvedLayoutImageUrl"),
+                label="已批准平面布局图",
+            )
+            if layout_image_url:
+                break
+    if stage == "layout":
+        layout_asset = asset
+        layout_asset_version = version_id
+        layout_image_url = output_url
+
+    color_asset_version: str | None = None
+    color_image_url: str | None = None
+    if color_asset is not None:
+        color_metadata = (
+            color_asset.metadata_json if isinstance(color_asset.metadata_json, dict) else {}
+        )
+        color_deliverables = (
+            color_asset.deliverables if isinstance(color_asset.deliverables, dict) else {}
+        )
+        color_asset_version = color_metadata.get("approvedVersionId")
+        color_image_url = _resume_optional_public_url(
+            color_deliverables.get("approvedOutputUrl"),
+            label="已批准彩平图",
+        )
+    if color_image_url is None:
+        for item in reversed(chain):
+            item_metadata = item.metadata_json if isinstance(item.metadata_json, dict) else {}
+            if item_metadata.get("workflowStage") not in {"axonometric", "space_render"}:
+                continue
+            item_deliverables = item.deliverables if isinstance(item.deliverables, dict) else {}
+            color_image_url = _resume_optional_public_url(
+                item_deliverables.get("approvedColorPlanImageUrl"),
+                label="已批准彩平图",
+            )
+            if color_image_url:
+                break
+    if stage == "color_plan":
+        color_asset = asset
+        color_asset_version = version_id
+        color_image_url = output_url
+
+    if stage in {"color_plan", "axonometric"} and layout_image_url is None:
+        raise HTTPException(status_code=409, detail="资产缺少可恢复的已批准平面布局图")
+    if stage == "axonometric" and color_image_url is None:
+        raise HTTPException(status_code=409, detail="资产缺少可恢复的已批准彩平图")
+
+    current_payload = job.payload if isinstance(job.payload, dict) else {}
+    space_id = approved.get("spaceId") or current_payload.get("space_id")
+    space_id = space_id if isinstance(space_id, str) and space_id else None
+    space_name = approved.get("spaceName")
+    if not isinstance(space_name, str) or not space_name:
+        space_name = next(
+            (
+                room.get("name")
+                for room in semantic_layout.get("rooms", [])
+                if isinstance(room, dict) and room.get("id") == space_id
+            ),
+            None,
+        )
+    if stage in {"space_render", "style_scheme", "tone_scheme", "local_edit"}:
+        room_ids = {
+            room.get("id")
+            for room in semantic_layout.get("rooms", [])
+            if isinstance(room, dict) and isinstance(room.get("id"), str)
+        }
+        if space_id not in room_ids:
+            raise HTTPException(status_code=409, detail="批准空间与 SemanticLayout 不一致")
+
+    stage01_lineage: dict[str, Any] = {}
+    if layout_asset is not None:
+        layout_job = session.get(Job, layout_asset.job_id)
+        layout_result = (
+            layout_job.result
+            if layout_job is not None and isinstance(layout_job.result, dict)
+            else {}
+        )
+        raw_stage01 = layout_result.get("stage01Lineage")
+        if isinstance(raw_stage01, dict):
+            stage01_lineage = {
+                key: raw_stage01.get(key)
+                for key in ("analysisJobId", "approvedVersionId", "sourceSha256")
+                if raw_stage01.get(key) is not None
+            }
+
+    return {
+        "asset_id": asset.id,
+        "job_id": asset.job_id,
+        "project_id": asset.project_id,
+        "parent_asset_id": asset.parent_asset_id,
+        "module_key": "layout" if stage == "layout" else "ai_workflow",
+        "workflow_stage": stage,
+        "approval_status": "approved",
+        "approved_variant_id": variant_id,
+        "approved_version_id": version_id,
+        "approved_output_url": output_url,
+        "approved_output_sha256": _workflow_output_sha256(output_url),
+        "semantic_layout": deepcopy(semantic_layout),
+        "approved_layout_asset_id": layout_asset.id if layout_asset else None,
+        "approved_layout_version_id": layout_asset_version,
+        "approved_layout_image_url": layout_image_url,
+        "approved_color_plan_asset_id": color_asset.id if color_asset else None,
+        "approved_color_plan_version_id": color_asset_version,
+        "approved_color_plan_image_url": color_image_url,
+        "source_space_image_url": (
+            output_url
+            if stage in {"space_render", "style_scheme", "tone_scheme", "local_edit"}
+            else None
+        ),
+        "space_id": space_id,
+        "space_name": space_name,
+        "eligible_next_stages": WORKFLOW_NEXT_STAGES[stage],
+        "lineage": {
+            "projectId": asset.project_id,
+            "parentAssetId": asset.parent_asset_id,
+            "ancestorAssetIds": [item.id for item in chain[:-1]],
+            "assets": chain_entries,
+            "stage01": stage01_lineage,
+        },
+    }
+
+
+def _validate_parent_asset(
+    session: Session,
+    asset_id: str | None,
+    *,
+    project_id: str | None,
+    workflow_stage: Literal[
+        "color_plan",
+        "axonometric",
+        "space_render",
+        "style_scheme",
+        "tone_scheme",
+        "local_edit",
+    ],
+) -> str | None:
+    if not asset_id:
+        return project_id
+    asset = get_local_scene_asset(session, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="上游资产不存在或不属于当前本地账户")
+    if project_id is not None and asset.project_id != project_id:
+        raise HTTPException(status_code=409, detail="上游资产与当前任务不属于同一项目")
+
+    metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    parent_module = metadata.get("moduleKey")
+    parent_stage = metadata.get("workflowStage")
+    if parent_module == "ai_workflow" and metadata.get("approvalStatus") != "approved":
+        raise HTTPException(status_code=409, detail="上游 AI 工作流资产尚未审批通过")
+    if workflow_stage == "color_plan":
+        allowed = parent_module in {"layout", "floorplan"}
+        requirement = "彩平图的上游资产必须是已批准的平面布局或户型资产"
+        if parent_module == "layout" and metadata.get("approvalStatus") != "approved":
+            raise HTTPException(status_code=409, detail="上游 AI 平面布局资产尚未审批通过")
+    elif workflow_stage == "axonometric":
+        allowed = parent_module == "ai_workflow" and parent_stage == "color_plan"
+        requirement = "轴侧图的上游资产必须是已批准的 AI 彩平方案"
+    elif workflow_stage == "space_render":
+        allowed = parent_module == "ai_workflow" and parent_stage in {
+            "color_plan",
+            "axonometric",
+        }
+        requirement = "分空间效果图的上游资产必须是已批准的彩平或轴侧方案"
+    elif workflow_stage == "style_scheme":
+        allowed = parent_module == "ai_workflow" and parent_stage == "space_render"
+        requirement = "风格方案的上游资产必须是已批准的空间效果图"
+    elif workflow_stage == "tone_scheme":
+        allowed = parent_module == "ai_workflow" and parent_stage == "style_scheme"
+        requirement = "色调方案的上游资产必须是已批准的风格方案"
+    else:
+        allowed = parent_module == "ai_workflow" and parent_stage == "tone_scheme"
+        requirement = "局部修改的上游资产必须是已批准的色调方案"
+    if not allowed:
+        raise HTTPException(status_code=409, detail=requirement)
+    return project_id if project_id is not None else asset.project_id
+
+
+def _validate_parent_approved_space(
+    session: Session,
+    asset_id: str,
+    *,
+    space_id: str,
+    source_space_version_id: str,
+    source_space_path: Path,
+) -> dict[str, str]:
+    """Validate and snapshot the exact approved parent used by a derivative.
+
+    The browser uploads the approved image again for stages 6 through 8.  Merely
+    trusting ``asset_parent_id`` would allow a stale or unrelated image to be
+    attached to an otherwise valid parent.  Both the immutable approval version
+    and the image bytes therefore have to match the parent's current approval.
+    """
+
+    asset = get_local_scene_asset(session, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="上游空间资产不存在")
+    metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    approved_variant_id = metadata.get("approvedVariantId")
+    if not isinstance(approved_variant_id, str) or not approved_variant_id:
+        raise HTTPException(status_code=409, detail="上游空间资产尚未选择批准方案")
+    approved_version_id = metadata.get("approvedVersionId")
+    if not isinstance(approved_version_id, str) or not approved_version_id:
+        raise HTTPException(status_code=409, detail="上游空间资产缺少批准版本")
+    if source_space_version_id != approved_version_id:
+        raise HTTPException(
+            status_code=409,
+            detail="提交的空间图版本不是上游资产当前批准版本，请重新选择基准图",
+        )
+    job = session.get(Job, asset.job_id)
+    result = job.result if job is not None and isinstance(job.result, dict) else {}
+    outputs = result.get("outputs") if isinstance(result.get("outputs"), list) else []
+    approved_output = next(
+        (
+            output
+            for output in outputs
+            if isinstance(output, dict)
+            and output.get("variantId") == approved_variant_id
+            and output.get("status") == "succeeded"
+        ),
+        None,
+    )
+    if not isinstance(approved_output, dict):
+        raise HTTPException(status_code=409, detail="上游批准方案缺少可复用的成功输出")
+    if approved_output.get("spaceId") != space_id:
+        raise HTTPException(status_code=409, detail="上游批准方案与当前 spaceId 不一致")
+
+    approved_url = approved_output.get("url")
+    if not isinstance(approved_url, str) or not approved_url:
+        raise HTTPException(status_code=409, detail="上游批准方案缺少本地输出文件")
+    parsed = urlsplit(approved_url)
+    artifact_prefix = "/artifacts/"
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith(artifact_prefix):
+        raise HTTPException(status_code=409, detail="上游批准方案不是可校验的本地资产")
+    relative_name = unquote(parsed.path[len(artifact_prefix) :])
+    if not relative_name or Path(relative_name).name != relative_name:
+        raise HTTPException(status_code=409, detail="上游批准方案的本地资产路径无效")
+    approved_path = settings.artifact_dir / relative_name
+    if not approved_path.is_file():
+        raise HTTPException(status_code=409, detail="上游批准方案的本地输出文件不存在")
+
+    def sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as source_file:
+                while chunk := source_file.read(1024 * 1024):
+                    digest.update(chunk)
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail="无法校验上游批准方案文件") from exc
+        return digest.hexdigest()
+
+    approved_sha256 = sha256_file(approved_path)
+    source_sha256 = sha256_file(source_space_path)
+    if source_sha256 != approved_sha256:
+        raise HTTPException(
+            status_code=409,
+            detail="上传的空间图与上游资产当前批准输出不一致",
+        )
+    return {
+        "parent_approved_version_id": approved_version_id,
+        "parent_variant_id": approved_variant_id,
+        "source_sha256": source_sha256,
+    }
+
+
+async def _save_style_references(
+    references: list[UploadFile] | None,
+) -> list[str]:
+    uploads = references or []
+    if len(uploads) > 7:
+        raise HTTPException(status_code=422, detail="风格参考图最多上传 7 张")
+    return [str(await save_upload(upload)) for upload in uploads]
 
 
 @app.get("/health")
 def health() -> dict:
     enhancement = enhancement_capability()
+    legacy_enhancement = {
+        **enhancement,
+        "legacyOnly": True,
+        "productionEnabled": False,
+        "detail": (f"历史兼容能力，不参与 V0.6 阶段 3～5。{enhancement.get('detail', '')}"),
+    }
     return {
         "status": "ok",
         "service": settings.app_name,
-        "version": "0.5.0",
-        "blenderEnabled": settings.blender_enabled,
+        "version": "0.6.0",
+        "productionGeneration": "ai_workflow",
+        "blenderWorkflowEnabled": False,
+        "legacyBlenderAvailable": settings.blender_enabled,
         "floorplanAiConfigured": bool(settings.floorplan_ai_endpoint),
         "floorplanVision": {
             "configured": settings.floorplan_vision_configured,
             "provider": settings.floorplan_vision_provider,
             "model": settings.kuyao_vision_model,
         },
-        "floorplanEnhancement": enhancement,
+        "floorplanEnhancement": legacy_enhancement,
+        "aiDesignWorkflow": {
+            "configured": settings.kuyao_image_edit_configured,
+            "provider": "kuyao" if settings.kuyao_image_edit_configured else None,
+            "model": settings.kuyao_image_model,
+            "blenderRequired": False,
+            "stages": [
+                "color_plan",
+                "axonometric",
+                "space_render",
+                "style_scheme",
+                "tone_scheme",
+                "local_edit",
+            ],
+        },
     }
 
 
@@ -131,8 +838,22 @@ def list_scene_assets(
         str | None,
         Query(
             alias="moduleKey",
-            pattern="^(floorplan|layout|white_model|effect_render|material_replacement)$",
+            pattern=(
+                "^(floorplan|layout|white_model|effect_render|material_replacement|ai_workflow)$"
+            ),
         ),
+    ] = None,
+    workflow_stage: Annotated[
+        Literal[
+            "color_plan",
+            "axonometric",
+            "space_render",
+            "style_scheme",
+            "tone_scheme",
+            "local_edit",
+        ]
+        | None,
+        Query(alias="workflowStage"),
     ] = None,
 ) -> list[dict]:
     backfill_scene_assets(session)
@@ -146,6 +867,12 @@ def list_scene_assets(
     values = [scene_asset_read(asset) for asset in assets]
     if module_key:
         values = [value for value in values if value["module_key"] == module_key]
+    if workflow_stage:
+        values = [
+            value
+            for value in values
+            if value.get("metadata", {}).get("workflowStage") == workflow_stage
+        ]
     return values[offset : offset + limit]
 
 
@@ -166,6 +893,120 @@ def get_scene_asset(asset_id: str, session: SessionDep) -> dict:
     asset = get_local_scene_asset(session, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="资产不存在")
+    return scene_asset_detail(session, asset)
+
+
+@app.get(
+    f"{settings.api_prefix}/assets/{{asset_id}}/workflow-resume",
+    response_model=WorkflowResumeAsset,
+)
+def get_workflow_resume_asset(asset_id: str, session: SessionDep) -> dict[str, Any]:
+    """Return the approved, public inputs needed to continue stages 03 through 08."""
+
+    backfill_scene_assets(session)
+    asset = get_local_scene_asset(session, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    return _workflow_resume_bundle(session, asset)
+
+
+@app.post(
+    f"{settings.api_prefix}/assets/{{asset_id}}/approve",
+    response_model=SceneAssetDetail,
+)
+def approve_scene_asset_variant(
+    asset_id: str,
+    payload: SceneAssetApprovalRequest,
+    session: SessionDep,
+) -> dict:
+    backfill_scene_assets(session)
+    asset = get_local_scene_asset(session, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    module_key = scene_asset_read(asset)["module_key"]
+    if module_key not in {"ai_workflow", "layout"}:
+        raise HTTPException(status_code=409, detail="该资产模块不支持方案审批")
+
+    variant_id = payload.variant_id.strip()
+    if not variant_id:
+        raise HTTPException(status_code=422, detail="variantId 不能为空")
+    job = session.get(Job, asset.job_id)
+    result = job.result if job is not None and isinstance(job.result, dict) else {}
+    if module_key == "layout":
+        layouts = result.get("layouts") if isinstance(result.get("layouts"), list) else []
+        approved_output_url = next(
+            (
+                layout["previewUrl"]
+                for layout in layouts
+                if isinstance(layout, dict)
+                and layout.get("layoutId") == variant_id
+                and isinstance(layout.get("previewUrl"), str)
+                and layout["previewUrl"]
+            ),
+            None,
+        )
+        invalid_variant_detail = "layoutId 不属于该布局资产的有效方案"
+    else:
+        outputs = result.get("outputs") if isinstance(result.get("outputs"), list) else []
+        approved_output_url = next(
+            (
+                output["url"]
+                for output in outputs
+                if isinstance(output, dict)
+                and output.get("variantId") == variant_id
+                and output.get("status") == "succeeded"
+                and isinstance(output.get("url"), str)
+                and output["url"]
+            ),
+            None,
+        )
+        invalid_variant_detail = "variantId 不属于该资产的成功输出"
+    if approved_output_url is None:
+        raise HTTPException(status_code=422, detail=invalid_variant_detail)
+
+    existing_metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    if (
+        existing_metadata.get("approvalStatus") == "approved"
+        and existing_metadata.get("approvedVariantId") == variant_id
+        and isinstance(existing_metadata.get("approvedVersionId"), str)
+    ):
+        # Re-approving the exact same variant is idempotent.  In particular, do
+        # not mint a new version id that would make existing descendants appear
+        # to point at a stale approval.
+        return scene_asset_detail(session, asset)
+    downstream_asset = session.scalar(
+        select(SceneAsset).where(SceneAsset.parent_asset_id == asset.id).limit(1)
+    )
+    if downstream_asset is not None and existing_metadata.get("approvalStatus") == "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="该批准版本已有下游资产，不能直接改批；请从新方案创建新的工作流分支",
+        )
+
+    approved_at = utc_now().isoformat()
+    approved_version_id = f"{asset.id}:{variant_id}:{approved_at}"
+    metadata = dict(asset.metadata_json or {})
+    metadata.update(
+        {
+            "approvalStatus": "approved",
+            "approvedVariantId": variant_id,
+            "approvedVersionId": approved_version_id,
+            "approvedAt": approved_at,
+            "approvalComment": payload.comment.strip() if payload.comment else None,
+        }
+    )
+    deliverables = dict(asset.deliverables or {})
+    deliverables.update(
+        {
+            "approvedOutputUrl": approved_output_url,
+            "approvedVariantId": variant_id,
+            "approvedVersionId": approved_version_id,
+        }
+    )
+    asset.metadata_json = metadata
+    asset.deliverables = deliverables
+    session.commit()
+    session.refresh(asset)
     return scene_asset_detail(session, asset)
 
 
@@ -294,38 +1135,478 @@ def retired_layout_solver() -> None:
 async def create_ai_layout_job(
     background_tasks: BackgroundTasks,
     session: SessionDep,
-    source_image: UploadFile | None = File(None),
+    source_image: UploadFile = File(...),
     room_type: Literal[
         "whole_home",
         "living_room",
         "dining_room",
         "bedroom",
     ] = Form("whole_home"),
-    width_mm: int = Form(8150, ge=2400, le=30000),
-    depth_mm: int = Form(6060, ge=2400, le=30000),
     count: int = Form(1, ge=1, le=2),
     design_prompt: str = Form("", max_length=500),
-    template_ids: str | None = Form(None),
+    semantic_layout: str = Form(..., min_length=2, max_length=500_000),
+    stage01_analysis_job_id: str = Form(..., min_length=1, max_length=160),
+    stage01_approved_version_id: str = Form(..., min_length=1, max_length=220),
+    stage01_source_sha256: str = Form(
+        ...,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    ),
+    stage01_detected_bounds: str = Form(..., min_length=2, max_length=500),
     project_id: str | None = Form(None),
 ) -> Job:
-    try:
-        selected_template_ids = resolve_ai_layout_template_ids(template_ids)
-    except ProcessorError as exc:
-        raise HTTPException(status_code=422, detail=exc.message) from exc
-    source = await save_upload(source_image) if source_image is not None else None
+    semantic_value = _semantic_layout_form(semantic_layout)
+    width_mm, depth_mm = _confirmed_stage01_dimensions(semantic_value)
+    detected_bounds = _stage01_bounds_form(stage01_detected_bounds)
+    analysis_job = session.get(Job, stage01_analysis_job_id)
+    if (
+        analysis_job is None
+        or analysis_job.type != "FLOORPLAN_ANALYZE"
+        or analysis_job.status != "SUCCEEDED"
+    ):
+        raise HTTPException(status_code=422, detail="Stage 01 分析任务不存在或尚未成功")
+    if not stage01_approved_version_id.startswith(f"{stage01_analysis_job_id}:"):
+        raise HTTPException(status_code=422, detail="Stage 01 批准版本与分析任务不一致")
+    analysis_result = analysis_job.result if isinstance(analysis_job.result, dict) else {}
+    analysis_semantic = analysis_result.get("semanticLayout")
+    analysis_semantic = analysis_semantic if isinstance(analysis_semantic, dict) else {}
+    approved_source_sha256 = str(semantic_value.get("sourceSha256") or "").lower()
+    analyzed_source_sha256 = str(analysis_semantic.get("sourceSha256") or "").lower()
+    submitted_source_sha256 = stage01_source_sha256.lower()
+    if not approved_source_sha256 or not analyzed_source_sha256:
+        raise HTTPException(status_code=422, detail="Stage 01 缺少可验证的原图摘要")
+    if not (submitted_source_sha256 == approved_source_sha256 == analyzed_source_sha256):
+        raise HTTPException(status_code=422, detail="Stage 01 原图、语义与分析任务不属于同一版本")
+    analysis_bounds = analysis_result.get("detectedBounds")
+    if not isinstance(analysis_bounds, dict) or any(
+        not isinstance(analysis_bounds.get(key), (int, float))
+        or abs(float(analysis_bounds[key]) - detected_bounds[key]) > 0.01
+        for key in ("x", "y", "width", "height")
+    ):
+        raise HTTPException(status_code=422, detail="Stage 01 标注边界与分析任务不一致")
+    if project_id and analysis_job.project_id and project_id != analysis_job.project_id:
+        raise HTTPException(status_code=422, detail="Stage 01 与 Stage 02 不属于同一项目")
+    source = await save_upload(source_image)
     payload = {
-        "source_path": str(source) if source is not None else None,
+        "source_path": str(source),
         "room_type": room_type,
         "width_mm": width_mm,
         "depth_mm": depth_mm,
         "count": count,
         "design_prompt": design_prompt.strip(),
-        "template_ids": selected_template_ids,
+        "semantic_layout": semantic_value,
+        "stage01_analysis_job_id": stage01_analysis_job_id,
+        "stage01_approved_version_id": stage01_approved_version_id,
+        "stage01_source_sha256": stage01_source_sha256,
+        "stage01_detected_bounds": detected_bounds,
     }
     job = create_job(
         session,
         job_type="LAYOUT_AI",
         payload=payload,
+        project_id=project_id or analysis_job.project_id,
+        parent_job_id=analysis_job.id,
+    )
+    background_tasks.add_task(run_job, job.id)
+    return job
+
+
+@app.post(
+    f"{settings.api_prefix}/ai-workflow/color-plans",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_ai_color_plan_job(
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+    approved_layout_image: UploadFile = File(...),
+    semantic_layout: str = Form(..., min_length=2, max_length=500_000),
+    variants: str = Form(",".join(COLOR_PLAN_VARIANTS), max_length=160),
+    approved_layout_version_id: str | None = Form(None, max_length=120),
+    layout_approved: bool = Form(...),
+    design_prompt: str = Form("", max_length=1000),
+    style_references: list[UploadFile] | None = File(None),
+    asset_parent_id: str | None = Form(None, max_length=40),
+    project_id: str | None = Form(None),
+) -> Job:
+    """Stage 3: derive one or more AI color-plan styles from an approved layout."""
+
+    project_id = _validate_parent_asset(
+        session,
+        asset_parent_id,
+        project_id=project_id,
+        workflow_stage="color_plan",
+    )
+    semantic_value = _semantic_layout_form(semantic_layout)
+    selected_variants = _csv_values(
+        variants,
+        defaults=COLOR_PLAN_VARIANTS,
+        allowed=COLOR_PLAN_VARIANTS,
+        maximum=4,
+        label="彩平图类型",
+    )
+    source = await save_upload(approved_layout_image)
+    reference_paths = await _save_style_references(style_references)
+    payload = _validated_workflow_payload(
+        AIColorPlanJobPayload,
+        {
+            "project_id": project_id,
+            "approved_layout_path": str(source),
+            "approved_layout_version_id": approved_layout_version_id,
+            "layout_approved": layout_approved,
+            "semantic_layout": semantic_value,
+            "variant_group_id": new_id("variants"),
+            "variants": selected_variants,
+            "design_prompt": design_prompt.strip(),
+            "style_reference_paths": reference_paths,
+            "asset_parent_id": asset_parent_id,
+        },
+    )
+    job = create_job(
+        session,
+        job_type="AI_COLOR_PLAN",
+        payload=payload.model_dump(),
+        project_id=project_id,
+    )
+    background_tasks.add_task(run_job, job.id)
+    return job
+
+
+@app.post(
+    f"{settings.api_prefix}/ai-workflow/axonometric-views",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_ai_axonometric_job(
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+    approved_layout_image: UploadFile = File(...),
+    semantic_layout: str = Form(..., min_length=2, max_length=500_000),
+    approved_color_plan_image: UploadFile = File(...),
+    variants: str = Form(",".join(AXONOMETRIC_VARIANTS), max_length=160),
+    approved_layout_version_id: str | None = Form(None, max_length=120),
+    layout_approved: bool = Form(...),
+    design_prompt: str = Form("", max_length=1000),
+    style_references: list[UploadFile] | None = File(None),
+    asset_parent_id: str | None = Form(None, max_length=40),
+    project_id: str | None = Form(None),
+) -> Job:
+    """Stage 4: generate batched day/night/alternate-angle AI axonometric views."""
+
+    project_id = _validate_parent_asset(
+        session,
+        asset_parent_id,
+        project_id=project_id,
+        workflow_stage="axonometric",
+    )
+    semantic_value = _semantic_layout_form(semantic_layout)
+    selected_variants = _csv_values(
+        variants,
+        defaults=AXONOMETRIC_VARIANTS,
+        allowed=AXONOMETRIC_VARIANTS,
+        maximum=3,
+        label="轴侧图类型",
+    )
+    source = await save_upload(approved_layout_image)
+    color_plan = await save_upload(approved_color_plan_image)
+    reference_paths = await _save_style_references(style_references)
+    payload = _validated_workflow_payload(
+        AIAxonometricJobPayload,
+        {
+            "project_id": project_id,
+            "approved_layout_path": str(source),
+            "approved_layout_version_id": approved_layout_version_id,
+            "layout_approved": layout_approved,
+            "semantic_layout": semantic_value,
+            "variant_group_id": new_id("variants"),
+            "variants": selected_variants,
+            "approved_color_plan_path": str(color_plan),
+            "design_prompt": design_prompt.strip(),
+            "style_reference_paths": reference_paths,
+            "asset_parent_id": asset_parent_id,
+        },
+    )
+    job = create_job(
+        session,
+        job_type="AI_AXONOMETRIC",
+        payload=payload.model_dump(),
+        project_id=project_id,
+    )
+    background_tasks.add_task(run_job, job.id)
+    return job
+
+
+@app.post(
+    f"{settings.api_prefix}/ai-workflow/space-renders",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_ai_space_render_job(
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+    approved_layout_image: UploadFile = File(...),
+    semantic_layout: str = Form(..., min_length=2, max_length=500_000),
+    selected_space_ids: str | None = Form(None, max_length=2000),
+    approved_color_plan_image: UploadFile = File(...),
+    approved_layout_version_id: str | None = Form(None, max_length=120),
+    layout_approved: bool = Form(...),
+    view_preset: Literal[
+        "eye_level_wide",
+        "corner_wide",
+        "straight_on",
+    ] = Form("eye_level_wide"),
+    design_prompt: str = Form("", max_length=1000),
+    style_references: list[UploadFile] | None = File(None),
+    asset_parent_id: str | None = Form(None, max_length=40),
+    project_id: str | None = Form(None),
+) -> Job:
+    """Stage 5: generate one consistent interior image for each selected semantic room."""
+
+    project_id = _validate_parent_asset(
+        session,
+        asset_parent_id,
+        project_id=project_id,
+        workflow_stage="space_render",
+    )
+    semantic_value = _semantic_layout_form(semantic_layout)
+    selected_spaces = (
+        _csv_values(
+            selected_space_ids,
+            maximum=12,
+            label="空间",
+        )
+        if selected_space_ids and selected_space_ids.strip()
+        else []
+    )
+    source = await save_upload(approved_layout_image)
+    color_plan = await save_upload(approved_color_plan_image)
+    reference_paths = await _save_style_references(style_references)
+    payload = _validated_workflow_payload(
+        AISpaceRenderJobPayload,
+        {
+            "project_id": project_id,
+            "approved_layout_path": str(source),
+            "approved_layout_version_id": approved_layout_version_id,
+            "layout_approved": layout_approved,
+            "semantic_layout": semantic_value,
+            "variant_group_id": new_id("variants"),
+            "selected_space_ids": selected_spaces,
+            "approved_color_plan_path": str(color_plan),
+            "view_preset": view_preset,
+            "design_prompt": design_prompt.strip(),
+            "style_reference_paths": reference_paths,
+            "asset_parent_id": asset_parent_id,
+        },
+    )
+    job = create_job(
+        session,
+        job_type="AI_SPACE_RENDER",
+        payload=payload.model_dump(),
+        project_id=project_id,
+    )
+    background_tasks.add_task(run_job, job.id)
+    return job
+
+
+@app.post(
+    f"{settings.api_prefix}/ai-workflow/style-schemes",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_ai_style_scheme_job(
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+    source_space_image: UploadFile = File(...),
+    semantic_layout: str = Form(..., min_length=2, max_length=500_000),
+    space_id: str = Form(..., min_length=1, max_length=120),
+    variants: str = Form(
+        ",".join(STYLE_SCHEME_VARIANTS[:3]),
+        max_length=160,
+    ),
+    source_approved: bool = Form(...),
+    source_space_version_id: str = Form(..., min_length=1, max_length=220),
+    design_prompt: str = Form("", max_length=1000),
+    style_references: list[UploadFile] | None = File(None),
+    asset_parent_id: str = Form(..., min_length=1, max_length=40),
+    project_id: str | None = Form(None),
+) -> Job:
+    """Stage 6: generate same-camera style alternatives for one approved space."""
+
+    project_id = _validate_parent_asset(
+        session,
+        asset_parent_id,
+        project_id=project_id,
+        workflow_stage="style_scheme",
+    )
+    semantic_value = _semantic_layout_form(semantic_layout)
+    selected_variants = _csv_values(
+        variants,
+        defaults=STYLE_SCHEME_VARIANTS[:3],
+        allowed=STYLE_SCHEME_VARIANTS,
+        maximum=4,
+        label="风格方案",
+    )
+    source = await save_upload(source_space_image)
+    lineage = _validate_parent_approved_space(
+        session,
+        asset_parent_id,
+        space_id=space_id,
+        source_space_version_id=source_space_version_id,
+        source_space_path=source,
+    )
+    reference_paths = await _save_style_references(style_references)
+    payload = _validated_workflow_payload(
+        AIStyleSchemeJobPayload,
+        {
+            "project_id": project_id,
+            "source_space_path": str(source),
+            "source_space_version_id": source_space_version_id,
+            "source_approved": source_approved,
+            "semantic_layout": semantic_value,
+            "space_id": space_id,
+            "variant_group_id": new_id("variants"),
+            "variants": selected_variants,
+            "design_prompt": design_prompt.strip(),
+            "style_reference_paths": reference_paths,
+            "asset_parent_id": asset_parent_id,
+            **lineage,
+        },
+    )
+    job = create_job(
+        session,
+        job_type="AI_STYLE_SCHEME",
+        payload=payload.model_dump(),
+        project_id=project_id,
+    )
+    background_tasks.add_task(run_job, job.id)
+    return job
+
+
+@app.post(
+    f"{settings.api_prefix}/ai-workflow/tone-schemes",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_ai_tone_scheme_job(
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+    source_space_image: UploadFile = File(...),
+    semantic_layout: str = Form(..., min_length=2, max_length=500_000),
+    space_id: str = Form(..., min_length=1, max_length=120),
+    variants: str = Form(",".join(TONE_SCHEME_VARIANTS), max_length=160),
+    source_approved: bool = Form(...),
+    source_space_version_id: str = Form(..., min_length=1, max_length=220),
+    design_prompt: str = Form("", max_length=1000),
+    asset_parent_id: str = Form(..., min_length=1, max_length=40),
+    project_id: str | None = Form(None),
+) -> Job:
+    """Stage 7: generate color-temperature and lighting moods for one approved style."""
+
+    project_id = _validate_parent_asset(
+        session,
+        asset_parent_id,
+        project_id=project_id,
+        workflow_stage="tone_scheme",
+    )
+    semantic_value = _semantic_layout_form(semantic_layout)
+    selected_variants = _csv_values(
+        variants,
+        defaults=TONE_SCHEME_VARIANTS,
+        allowed=TONE_SCHEME_VARIANTS,
+        maximum=3,
+        label="色调方案",
+    )
+    source = await save_upload(source_space_image)
+    lineage = _validate_parent_approved_space(
+        session,
+        asset_parent_id,
+        space_id=space_id,
+        source_space_version_id=source_space_version_id,
+        source_space_path=source,
+    )
+    payload = _validated_workflow_payload(
+        AIToneSchemeJobPayload,
+        {
+            "project_id": project_id,
+            "source_space_path": str(source),
+            "source_space_version_id": source_space_version_id,
+            "source_approved": source_approved,
+            "semantic_layout": semantic_value,
+            "space_id": space_id,
+            "variant_group_id": new_id("variants"),
+            "variants": selected_variants,
+            "design_prompt": design_prompt.strip(),
+            "asset_parent_id": asset_parent_id,
+            **lineage,
+        },
+    )
+    job = create_job(
+        session,
+        job_type="AI_TONE_SCHEME",
+        payload=payload.model_dump(),
+        project_id=project_id,
+    )
+    background_tasks.add_task(run_job, job.id)
+    return job
+
+
+@app.post(
+    f"{settings.api_prefix}/ai-workflow/local-edits",
+    response_model=JobRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_ai_local_edit_job(
+    background_tasks: BackgroundTasks,
+    session: SessionDep,
+    source_space_image: UploadFile = File(...),
+    mark_image: UploadFile = File(...),
+    semantic_layout: str = Form(..., min_length=2, max_length=500_000),
+    space_id: str = Form(..., min_length=1, max_length=120),
+    edit_prompt: str = Form(..., min_length=1, max_length=1000),
+    source_approved: bool = Form(...),
+    source_space_version_id: str = Form(..., min_length=1, max_length=220),
+    asset_parent_id: str = Form(..., min_length=1, max_length=40),
+    project_id: str | None = Form(None),
+) -> Job:
+    """Stage 8: edit only the red-marked regions and restore every other pixel."""
+
+    project_id = _validate_parent_asset(
+        session,
+        asset_parent_id,
+        project_id=project_id,
+        workflow_stage="local_edit",
+    )
+    semantic_value = _semantic_layout_form(semantic_layout)
+    source = await save_upload(source_space_image)
+    lineage = _validate_parent_approved_space(
+        session,
+        asset_parent_id,
+        space_id=space_id,
+        source_space_version_id=source_space_version_id,
+        source_space_path=source,
+    )
+    mark = await save_upload(mark_image)
+    payload = _validated_workflow_payload(
+        AILocalEditJobPayload,
+        {
+            "project_id": project_id,
+            "source_space_path": str(source),
+            "source_space_version_id": source_space_version_id,
+            "source_approved": source_approved,
+            "semantic_layout": semantic_value,
+            "space_id": space_id,
+            "variant_group_id": new_id("variants"),
+            "mark_path": str(mark),
+            "edit_prompt": edit_prompt.strip(),
+            "asset_parent_id": asset_parent_id,
+            **lineage,
+        },
+    )
+    job = create_job(
+        session,
+        job_type="AI_LOCAL_EDIT",
+        payload=payload.model_dump(),
         project_id=project_id,
     )
     background_tasks.add_task(run_job, job.id)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 import struct
 import zlib
@@ -163,11 +165,17 @@ def test_health_and_projects() -> None:
     with TestClient(app) as client:
         health = client.get("/health").json()
         assert health["status"] == "ok"
-        assert health["version"] == "0.5.0"
+        assert health["version"] == "0.6.0"
+        assert health["productionGeneration"] == "ai_workflow"
+        assert health["blenderWorkflowEnabled"] is False
+        assert "legacyBlenderAvailable" in health
         assert "floorplanAiConfigured" in health
         assert "floorplanEnhancement" in health
         assert health["floorplanVision"]["configured"] is False
         assert health["floorplanEnhancement"]["configured"] is False
+        assert health["floorplanEnhancement"]["legacyOnly"] is True
+        assert health["floorplanEnhancement"]["productionEnabled"] is False
+        assert health["aiDesignWorkflow"]["blenderRequired"] is False
         response = client.post(
             "/v1/projects",
             json={"name": "本地 MVP 测试项目"},
@@ -178,6 +186,27 @@ def test_health_and_projects() -> None:
 
 def test_four_module_jobs(monkeypatch: MonkeyPatch) -> None:
     source = image_bytes()
+    stage01 = semantic_status_payload()
+    stage01_semantic = stage01["semantic_layout"]
+    stage01_semantic["sourceSha256"] = hashlib.sha256(source).hexdigest()
+    stage01_semantic["validation"] = {
+        "status": "human_confirmed",
+        "humanConfirmed": True,
+    }
+    with SessionLocal() as session:
+        stage01_job = create_job(
+            session,
+            job_type="FLOORPLAN_ANALYZE",
+            payload={"source_path": "stage01-api-test.png"},
+        )
+        stage01_job.status = "SUCCEEDED"
+        stage01_job.progress = 1.0
+        stage01_job.result = {
+            "semanticLayout": stage01_semantic,
+            "detectedBounds": stage01["detected_bounds"],
+        }
+        session.commit()
+        stage01_job_id = stage01_job.id
     monkeypatch.setitem(
         PROCESSORS,
         "LAYOUT_AI",
@@ -198,11 +227,15 @@ def test_four_module_jobs(monkeypatch: MonkeyPatch) -> None:
             client,
             client.post(
                 "/v1/layouts/ai",
+                files={"source_image": ("stage01.png", source, "image/png")},
                 data={
                     "room_type": "living_room",
-                    "width_mm": "5200",
-                    "depth_mm": "4200",
                     "count": "1",
+                    "semantic_layout": json.dumps(stage01_semantic),
+                    "stage01_analysis_job_id": stage01_job_id,
+                    "stage01_approved_version_id": f"{stage01_job_id}:approved",
+                    "stage01_source_sha256": stage01_semantic["sourceSha256"],
+                    "stage01_detected_bounds": json.dumps(stage01["detected_bounds"]),
                 },
             ),
         )
