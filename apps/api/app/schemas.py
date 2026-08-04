@@ -40,6 +40,8 @@ class JobRead(APIModel):
     error_code: str | None = None
     error_message: str | None = None
     created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     updated_at: datetime
 
 

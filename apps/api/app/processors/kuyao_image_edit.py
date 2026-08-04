@@ -9,6 +9,7 @@ import re
 import socket
 import threading
 import time
+from time import perf_counter
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Callable, TypeAlias
@@ -581,6 +582,7 @@ def edit_floorplan_image(
     Authorization value never leave this adapter.
     """
 
+    call_started = perf_counter()
     clean_key, endpoint, clean_model, clean_size, clean_quality, clean_prompt = (
         _validate_config(
             api_key=api_key,
@@ -632,4 +634,5 @@ def edit_floorplan_image(
         "quality": clean_quality,
         "inputImageCount": len(images),
         "responseFormat": response_format,
+        "elapsedSeconds": round(perf_counter() - call_started, 2),
     }

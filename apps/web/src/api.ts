@@ -19,6 +19,8 @@ export type Job = {
   errorCode?: string
   errorMessage?: string
   createdAt: string
+  startedAt?: string | null
+  finishedAt?: string | null
   updatedAt: string
 }
 
@@ -180,6 +182,14 @@ export function createLocalEditRender(form: FormData) {
   })
 }
 
+export function retryJob(jobId: string) {
+  return apiFetch(`/v1/jobs/${jobId}/retry`, { method: 'POST' })
+}
+
+export function cancelJob(jobId: string) {
+  return apiFetch(`/v1/jobs/${jobId}/cancel`, { method: 'POST' })
+}
+
 export function approveWorkflowAsset(
   assetId: string,
   payload: { variantId: string; comment?: string },
@@ -211,10 +221,14 @@ export async function pollJob(
   jobId: string,
   onUpdate?: (job: Job) => void,
   timeoutMs = JOB_WAIT_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<Job> {
   const startedAt = Date.now()
   while (Date.now() - startedAt < timeoutMs) {
-    const response = await apiFetch(`/v1/jobs/${jobId}`, { cache: 'no-store' })
+    const response = await apiFetch(`/v1/jobs/${jobId}`, {
+      cache: 'no-store',
+      signal,
+    })
     if (!response.ok) throw new Error(`任务查询失败：${response.status}`)
     const job = (await response.json()) as Job
     onUpdate?.(job)

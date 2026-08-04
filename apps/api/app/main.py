@@ -21,7 +21,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 
@@ -35,7 +35,7 @@ from app.assets import (
 )
 from app.config import WORKSPACE_ROOT, settings
 from app.database import get_session, init_db
-from app.jobs import create_job, run_job
+from app.jobs import create_job, reclaim_stale_jobs, run_job
 from app.models import Job, Project, SceneAsset, new_id, utc_now
 from app.processors.ai_workflow import (
     AXONOMETRIC_VARIANTS,
@@ -71,6 +71,8 @@ from app.storage import save_upload
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    # C1：回收上一个进程遗留的 QUEUED/RUNNING，避免客户端轮询永久死亡的任务
+    reclaim_stale_jobs()
     yield
 
 
@@ -1783,12 +1785,17 @@ def retry_job(
 
 @app.post(f"{settings.api_prefix}/jobs/{{job_id}}/cancel", response_model=JobRead)
 def cancel_job(job_id: str, session: SessionDep) -> Job:
+    # C3：条件更新消除「检查-写入」竞态——只有未终态的行才会被置为 CANCELED
+    updated = session.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.status.notin_(["SUCCEEDED", "FAILED"]))
+        .values(status="CANCELED")
+    ).rowcount
+    session.commit()
+    session.expire_all()
     job = session.get(Job, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="任务不存在")
-    if job.status in {"SUCCEEDED", "FAILED"}:
+    if updated == 0:
         raise HTTPException(status_code=409, detail="任务已经结束，不能取消")
-    job.status = "CANCELED"
-    session.commit()
-    session.refresh(job)
     return job

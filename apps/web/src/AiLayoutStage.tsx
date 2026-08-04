@@ -8,6 +8,7 @@ import {
   type Job,
   type SceneAssetDetail,
 } from './api'
+import { BatchProgress } from './BatchProgress'
 import type { FloorplanStage01Approval } from './FloorplanModule'
 
 type AiLayoutItem = {
@@ -383,6 +384,9 @@ export default function AiLayoutStage({
             <p className="workflow-stage-help">
               阶段 01 缺少原图版本摘要，请重新识别并批准后再生成。
             </p>
+          )}
+          {job && ['QUEUED', 'RUNNING'].includes(job.status) && (
+            <BatchProgress job={job} estimate="AI 布局通常需要 1-2 分钟" />
           )}
           {job && ['QUEUED', 'RUNNING'].includes(job.status) && !busy && (
             <button

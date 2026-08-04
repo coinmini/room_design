@@ -20,6 +20,7 @@ MAX_PROMPT_CHARS = 28_000
 _PROVIDER_SEMAPHORE = threading.Semaphore(settings.provider_concurrency)
 
 ProgressCallback = Callable[[dict[str, Any]], None]
+CancelCheck = Callable[[], bool]
 # Per-stage fan-out width. The provider semaphore above caps total in-flight
 # calls across jobs, so this only shapes one batch's parallelism.
 _VARIANT_FANOUT_WORKERS = 4
@@ -30,6 +31,7 @@ def _fanout_generate(
     generate_one: Callable[[str], dict[str, Any]],
     build_result: Callable[[list[dict[str, Any]]], dict[str, Any]],
     on_progress: ProgressCallback | None,
+    should_cancel: CancelCheck | None = None,
 ) -> dict[str, Any]:
     """Run per-variant generations concurrently and publish growing outputs.
 
@@ -37,6 +39,10 @@ def _fanout_generate(
     itself. Progress payloads are forced to batchStatus="running" so the UI
     never shows a mid-batch "complete" notice; the final result keeps the real
     status. Output order always follows the input key order.
+
+    When ``should_cancel`` reports True (B3), pending futures are cancelled and
+    the partial result returns immediately; in-flight provider calls cannot be
+    aborted, so their threads are detached via ``shutdown(wait=False)``.
     """
 
     completed: list[tuple[int, dict[str, Any]]] = []
@@ -44,18 +50,32 @@ def _fanout_generate(
     def ordered_outputs() -> list[dict[str, Any]]:
         return [output for _, output in sorted(completed, key=lambda item: item[0])]
 
-    with ThreadPoolExecutor(max_workers=max(1, min(_VARIANT_FANOUT_WORKERS, len(keys)))) as executor:
+    executor = ThreadPoolExecutor(
+        max_workers=max(1, min(_VARIANT_FANOUT_WORKERS, len(keys)))
+    )
+    canceled = False
+    try:
         future_to_index = {
             executor.submit(generate_one, key): index
             for index, key in enumerate(keys)
         }
         for future in as_completed(future_to_index):
+            if should_cancel is not None and should_cancel():
+                canceled = True
+                for pending in future_to_index:
+                    pending.cancel()
+                partial = build_result(ordered_outputs())
+                partial["batchStatus"] = "canceled"
+                return partial
             completed.append((future_to_index[future], future.result()))
             if on_progress is not None:
                 partial = build_result(ordered_outputs())
                 partial["batchStatus"] = "running"
                 on_progress(partial)
-    return build_result(ordered_outputs())
+        return build_result(ordered_outputs())
+    finally:
+        # 取消路径不等待在途 provider 调用；正常路径下所有 future 已完成
+        executor.shutdown(wait=not canceled)
 
 
 COLOR_PLAN_VARIANTS = (
@@ -467,6 +487,7 @@ def _raise_if_batch_failed(result: dict[str, Any], label: str) -> None:
 def run_ai_color_plan(
     payload: dict[str, Any],
     on_progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
 ) -> dict[str, Any]:
     _require_provider()
     source = _approved_layout_source(payload)
@@ -528,7 +549,7 @@ def run_ai_color_plan(
         }
         return result
 
-    result = _fanout_generate(variants, generate_one, build_result, on_progress)
+    result = _fanout_generate(variants, generate_one, build_result, on_progress, should_cancel)
     _raise_if_batch_failed(result, "彩平图")
     return result
 
@@ -536,6 +557,7 @@ def run_ai_color_plan(
 def run_ai_axonometric(
     payload: dict[str, Any],
     on_progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
 ) -> dict[str, Any]:
     _require_provider()
     source = _approved_layout_source(payload)
@@ -616,7 +638,7 @@ def run_ai_axonometric(
         }
         return result
 
-    result = _fanout_generate(variants, generate_one, build_result, on_progress)
+    result = _fanout_generate(variants, generate_one, build_result, on_progress, should_cancel)
     _raise_if_batch_failed(result, "轴侧图")
     return result
 
@@ -636,6 +658,7 @@ def _semantic_rooms(layout: dict[str, Any]) -> dict[str, dict[str, Any]]:
 def run_ai_space_render(
     payload: dict[str, Any],
     on_progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
 ) -> dict[str, Any]:
     _require_provider()
     source = _approved_layout_source(payload)
@@ -748,7 +771,7 @@ def run_ai_space_render(
         }
         return result
 
-    result = _fanout_generate(selected_ids, generate_one, build_result, on_progress)
+    result = _fanout_generate(selected_ids, generate_one, build_result, on_progress, should_cancel)
     _raise_if_batch_failed(result, "分空间效果图")
     return result
 
@@ -848,6 +871,7 @@ def _derivative_result(
 def run_ai_style_scheme(
     payload: dict[str, Any],
     on_progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
 ) -> dict[str, Any]:
     """Stage 6: restyle one approved space without changing its camera or layout."""
 
@@ -920,7 +944,7 @@ def run_ai_style_scheme(
         }
         return result
 
-    result = _fanout_generate(variants, generate_one, build_result, on_progress)
+    result = _fanout_generate(variants, generate_one, build_result, on_progress, should_cancel)
     _raise_if_batch_failed(result, "风格方案")
     return result
 
@@ -928,6 +952,7 @@ def run_ai_style_scheme(
 def run_ai_tone_scheme(
     payload: dict[str, Any],
     on_progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
 ) -> dict[str, Any]:
     """Stage 7: vary only color temperature, exposure and mood of an approved style."""
 
@@ -993,7 +1018,7 @@ def run_ai_tone_scheme(
         }
         return result
 
-    result = _fanout_generate(variants, generate_one, build_result, on_progress)
+    result = _fanout_generate(variants, generate_one, build_result, on_progress, should_cancel)
     _raise_if_batch_failed(result, "色调方案")
     return result
 

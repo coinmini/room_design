@@ -18,9 +18,12 @@ import {
   createSpaceRenders,
   createStyleSchemeRenders,
   createToneSchemeRenders,
+  cancelJob,
   pollJob,
+  retryJob,
   type Job,
 } from './api'
+import { BatchProgress, expectedBatchCount } from './BatchProgress'
 import AiLayoutStage, { type ApprovedLayoutSelection } from './AiLayoutStage'
 import FloorplanModule, {
   type FloorplanStage01Approval,
@@ -66,6 +69,8 @@ type RenderOutput = {
   workflowStage: string
   variantId?: string
   spaceId?: string
+  // B4：重试合并时来源任务的资产 ID（审批必须落到原任务的资产上）
+  assetId?: string
 }
 
 type BatchFailure = {
@@ -686,6 +691,10 @@ function collectRenderOutputs(
           variantId:
             typeof record.variantId === 'string' ? record.variantId : undefined,
           spaceId: typeof record.spaceId === 'string' ? record.spaceId : undefined,
+          assetId:
+            typeof record.originAssetId === 'string'
+              ? record.originAssetId
+              : undefined,
         })
       }
       return
@@ -831,6 +840,59 @@ function withoutStageErrors(
   return next
 }
 
+// B4：「仅重试失败项」产生的新任务只含重跑变体；把上一批已成功的输出
+// 按 variantId 合并回来，避免画廊里 3 张已成功的图凭空消失且无法批准。
+// 合并进来的输出带 originAssetId，审批时必须落到原任务的资产上。
+function mergeRetryResult(previousJob: Job | undefined, nextJob: Job): Job {
+  const previousResult = previousJob?.result ?? null
+  const nextResult = nextJob.result ?? null
+  if (!previousResult || !nextResult) return nextJob
+  const previousOutputs = Array.isArray(previousResult.outputs)
+    ? previousResult.outputs
+    : []
+  const nextOutputs = Array.isArray(nextResult.outputs) ? nextResult.outputs : []
+  if (!previousOutputs.length) return nextJob
+  const nextVariantIds = new Set(
+    nextOutputs.map((item) => String(recordValue(item).variantId ?? '')),
+  )
+  const previousAssetId =
+    typeof previousResult.assetId === 'string' ? previousResult.assetId : undefined
+  const carried = previousOutputs
+    .map(recordValue)
+    .filter(
+      (item) =>
+        item.status === 'succeeded' &&
+        !nextVariantIds.has(String(item.variantId ?? '')),
+    )
+    .map((item) => ({ ...item, originAssetId: previousAssetId }))
+  if (!carried.length) return nextJob
+  const mergedOutputs = [...carried, ...nextOutputs]
+  const succeededCount = mergedOutputs.filter(
+    (item) => recordValue(item).status === 'succeeded',
+  ).length
+  const failedCount = mergedOutputs.filter(
+    (item) => recordValue(item).status === 'failed',
+  ).length
+  return {
+    ...nextJob,
+    result: {
+      ...nextResult,
+      outputs: mergedOutputs,
+      count: mergedOutputs.length,
+      succeededCount,
+      failedCount,
+      batchStatus: failedCount
+        ? succeededCount
+          ? 'partial'
+          : 'failed'
+        : nextResult.batchStatus === 'running'
+          ? 'running'
+          : 'complete',
+      mergedFromRetry: true,
+    },
+  }
+}
+
 function JobState({ job, busy }: { job: Job | null; busy: boolean }) {
   if (!job && !busy) return null
   const state = job?.status ?? 'QUEUED'
@@ -842,6 +904,15 @@ function JobState({ job, busy }: { job: Job | null; busy: boolean }) {
   )
 }
 
+const stageDurationEstimates: Partial<Record<GenerationStage, string>> = {
+  color_plan: '通常需要 2-4 分钟',
+  axonometric: '通常需要 2-3 分钟',
+  space_render: '通常需要 3-6 分钟',
+  style: '通常需要 2-3 分钟',
+  tone: '通常需要 2-3 分钟',
+  local_edit: '通常需要 1-2 分钟',
+}
+
 function ResultGallery({
   job,
   stage,
@@ -849,6 +920,7 @@ function ResultGallery({
   onApproveOutput,
   onSelectBaseline,
   onRetryFailures,
+  onRetryJob,
   approvingVariantId,
   approvedVariantId,
   selectingBaselineKey,
@@ -861,6 +933,7 @@ function ResultGallery({
   onApproveOutput?: (output: RenderOutput) => void
   onSelectBaseline?: (output: RenderOutput) => void
   onRetryFailures?: (ids: string[]) => void
+  onRetryJob?: () => void
   approvingVariantId?: string
   approvedVariantId?: string
   selectingBaselineKey?: string
@@ -897,23 +970,36 @@ function ResultGallery({
     return (
       <>
         {batchNotice}
+        <BatchProgress job={job} estimate={stageDurationEstimates[stage]} />
         <div className="workflow-empty-result is-running">
           <span>AI</span>
           <h3>正在生成多个方案</h3>
-          <p>任务仍在后台执行，完成后这里会显示全部图片。</p>
+          <p>任务仍在后台执行，每张图完成就会立即显示在这里。</p>
         </div>
       </>
     )
   }
 
   if (!outputs.length && ['FAILED', 'CANCELED'].includes(job.status)) {
+    const workerLost = job.errorCode === 'WORKER_LOST'
     return (
       <>
         {batchNotice}
         <div className="workflow-empty-result is-failed">
           <span>!</span>
-          <h3>{job.status === 'FAILED' ? '本次生成失败' : '本次任务已取消'}</h3>
+          <h3>
+            {workerLost
+              ? '服务重启，任务被中断'
+              : job.status === 'FAILED'
+                ? '本次生成失败'
+                : '本次任务已取消'}
+          </h3>
           <p>{job.errorMessage ?? '请检查输入与服务状态后重新生成。'}</p>
+          {workerLost && onRetryJob && (
+            <button type="button" disabled={busy} onClick={onRetryJob}>
+              {busy ? '正在重试…' : '一键重试'}
+            </button>
+          )}
         </div>
       </>
     )
@@ -923,6 +1009,7 @@ function ResultGallery({
     return (
       <>
         {batchNotice}
+        <BatchProgress job={job} estimate={stageDurationEstimates[stage]} />
         <div className="workflow-empty-result is-running">
           <span>AI</span>
           <h3>后台任务仍在执行</h3>
@@ -948,9 +1035,18 @@ function ResultGallery({
   return (
     <>
       {batchNotice}
-      {job?.status === 'RUNNING' && (
-        <div className="workflow-empty-result is-running" style={{ padding: '12px 16px', marginBottom: 12 }}>
-          <p>正在并发生成其余方案，先出图的会立即显示；全部完成后才能审批或设为基准。</p>
+      <BatchProgress
+        job={job}
+        doneCount={outputs.length}
+        estimate={stageDurationEstimates[stage]}
+        hint="先出图的会立即显示，全部完成后才能审批或设为基准。"
+      />
+      {job?.status === 'FAILED' && job.errorCode === 'WORKER_LOST' && onRetryJob && (
+        <div className="workflow-empty-result is-failed" style={{ padding: '12px 16px', marginBottom: 12 }}>
+          <p>服务重启导致任务中断，以下仅是中断前已生成的部分结果，不能审批；建议重试整批。</p>
+          <button type="button" disabled={busy} onClick={onRetryJob}>
+            {busy ? '正在重试…' : '一键重试'}
+          </button>
         </div>
       )}
       <div className="workflow-result-grid">
@@ -997,6 +1093,24 @@ function ResultGallery({
           </footer>
         </article>
         ))}
+        {job && ['QUEUED', 'RUNNING'].includes(job.status) &&
+          Array.from({
+            length: Math.max(0, expectedBatchCount(job) - outputs.length),
+          }).map((_, index) => (
+            <article
+              className="workflow-result-card is-skeleton"
+              key={`skeleton-${index}`}
+            >
+              <div>
+                <span>AI</span>
+                <strong>方案生成中…</strong>
+              </div>
+              <div className="workflow-skeleton-image" />
+              <footer>
+                <span>等待图片返回</span>
+              </footer>
+            </article>
+          ))}
       </div>
     </>
   )
@@ -1044,6 +1158,7 @@ export default function AiDesignWorkflow() {
   const [styleBaseline, setStyleBaseline] = useState<VisualBaseline | null>(null)
   const [toneBaseline, setToneBaseline] = useState<VisualBaseline | null>(null)
   const localEditAnnotatorRef = useRef<LocalEditAnnotatorHandle | null>(null)
+  const pollAbortRef = useRef<AbortController | null>(null)
   const [annotationDirty, setAnnotationDirty] = useState(false)
   const [localEditPrompt, setLocalEditPrompt] = useState('')
   const [jobs, setJobs] = useState<Partial<Record<GenerationStage, Job>>>({})
@@ -1399,9 +1514,20 @@ export default function AiDesignWorkflow() {
     return form
   }
 
-  const run = async (stage: GenerationStage, request: Promise<Response>) => {
+  const run = async (
+    stage: GenerationStage,
+    request: Promise<Response>,
+    options?: { mergePrevious?: boolean },
+  ) => {
     setBusyStage(stage)
     setErrors((current) => ({ ...current, [stage]: '' }))
+    // B4：重试失败项时保留上一批已成功输出，合并进新任务的展示
+    const previousJob = options?.mergePrevious ? jobs[stage] : undefined
+    const present = (nextJob: Job) =>
+      options?.mergePrevious ? mergeRetryResult(previousJob, nextJob) : nextJob
+    // B3：本地轮询可随取消按钮中断；服务端任务由 cancel 端点置为 CANCELED
+    const abort = new AbortController()
+    pollAbortRef.current = abort
     try {
       const response = await request
       if (!response.ok) {
@@ -1411,11 +1537,15 @@ export default function AiDesignWorkflow() {
         throw new Error(apiError(payload?.detail, response.status))
       }
       const created = (await response.json()) as Job
-      setJobs((current) => ({ ...current, [stage]: created }))
-      const completed = await pollJob(created.id, (nextJob) =>
-        setJobs((current) => ({ ...current, [stage]: nextJob })),
+      setJobs((current) => ({ ...current, [stage]: present(created) }))
+      const completed = await pollJob(
+        created.id,
+        (nextJob) =>
+          setJobs((current) => ({ ...current, [stage]: present(nextJob) })),
+        undefined,
+        abort.signal,
       )
-      setJobs((current) => ({ ...current, [stage]: completed }))
+      setJobs((current) => ({ ...current, [stage]: present(completed) }))
       if (completed.status === 'FAILED') {
         setErrors((current) => ({
           ...current,
@@ -1423,10 +1553,35 @@ export default function AiDesignWorkflow() {
         }))
       }
     } catch (value) {
-      setErrors((current) => ({ ...current, [stage]: errorMessage(value) }))
+      // 用户点取消主动中断本地轮询，不展示为错误
+      const intentionalAbort =
+        abort.signal.aborted &&
+        value instanceof DOMException &&
+        value.name === 'AbortError'
+      if (!intentionalAbort) {
+        setErrors((current) => ({ ...current, [stage]: errorMessage(value) }))
+      }
     } finally {
+      if (pollAbortRef.current === abort) pollAbortRef.current = null
       setBusyStage(null)
     }
+  }
+
+  // B3：取消当前正在生成的阶段任务；服务端保留取消前已生成的部分结果
+  const cancelActiveJob = async () => {
+    const stage = busyStage
+    const currentJob = stage ? jobs[stage] : undefined
+    if (!stage || !currentJob) return
+    try {
+      const response = await cancelJob(currentJob.id)
+      if (response.ok) {
+        const canceled = (await response.json()) as Job
+        setJobs((current) => ({ ...current, [stage]: canceled }))
+      }
+    } catch {
+      // 取消请求失败也要停止本地等待，避免界面卡死
+    }
+    pollAbortRef.current?.abort()
   }
 
   const resumeWaiting = async (stage: GenerationStage) => {
@@ -1456,9 +1611,11 @@ export default function AiDesignWorkflow() {
     if (!isGenerationStage(activeStage) || busyStage !== null) return
     const form = commonForm(activeStage)
     if (!form) return
+    // B4：仅重试失败项时，新任务只包含重跑变体，需合并上一批已成功输出
+    const runOptions = retryIds?.length ? { mergePrevious: true } : undefined
     if (activeStage === 'color_plan') {
       form.append('variants', (retryIds ?? colorVariants).join(','))
-      await run(activeStage, createColorPlanRenders(form))
+      await run(activeStage, createColorPlanRenders(form), runOptions)
       return
     }
     if (activeStage === 'style') {
@@ -1468,7 +1625,7 @@ export default function AiDesignWorkflow() {
           .map((value) => value.replace(/^style_/, ''))
           .join(','),
       )
-      await run(activeStage, createStyleSchemeRenders(form))
+      await run(activeStage, createStyleSchemeRenders(form), runOptions)
       return
     }
     if (activeStage === 'tone') {
@@ -1478,7 +1635,7 @@ export default function AiDesignWorkflow() {
           .map((value) => value.replace(/^tone_/, ''))
           .join(','),
       )
-      await run(activeStage, createToneSchemeRenders(form))
+      await run(activeStage, createToneSchemeRenders(form), runOptions)
       return
     }
     if (activeStage === 'local_edit') {
@@ -1494,18 +1651,20 @@ export default function AiDesignWorkflow() {
     form.append('approved_color_plan_image', approvedColorPlanImage)
     if (activeStage === 'axonometric') {
       form.append('variants', (retryIds ?? axonometricVariants).join(','))
-      await run(activeStage, createAxonometricRenders(form))
+      await run(activeStage, createAxonometricRenders(form), runOptions)
       return
     }
     form.append('selected_space_ids', (retryIds ?? selectedSpaceIds).join(','))
     form.append('view_preset', viewPreset)
-    await run(activeStage, createSpaceRenders(form))
+    await run(activeStage, createSpaceRenders(form), runOptions)
   }
 
   const approveGeneratedColorPlan = async (output: RenderOutput) => {
     const result = jobs.color_plan?.result
+    // B4：重试合并视图里，来自上一批的输出必须审批到原任务的资产上
     const resultAssetId =
-      result && typeof result.assetId === 'string' ? result.assetId : ''
+      output.assetId ??
+      (result && typeof result.assetId === 'string' ? result.assetId : '')
     if (!resultAssetId) {
       setErrors((current) => ({
         ...current,
@@ -1595,8 +1754,10 @@ export default function AiDesignWorkflow() {
     output: RenderOutput,
   ) => {
     const result = jobs[stage]?.result
+    // B4：重试合并视图里，来自上一批的输出必须审批到原任务的资产上
     const resultAssetId =
-      result && typeof result.assetId === 'string' ? result.assetId : ''
+      output.assetId ??
+      (result && typeof result.assetId === 'string' ? result.assetId : '')
     if (!resultAssetId || !output.variantId) {
       setErrors((current) => ({
         ...current,
@@ -2361,6 +2522,15 @@ export default function AiDesignWorkflow() {
                 ? 'AI 正在批量生成…'
                 : `生成 ${stageSelectionCount} 个${stageTitles[activeGenerationStage].slice(3)}`}
             </button>
+            {busyStage === activeGenerationStage && activeJob && (
+              <button
+                type="button"
+                className="workflow-resume-button"
+                onClick={() => void cancelActiveJob()}
+              >
+                取消生成（保留已出图）
+              </button>
+            )}
             {canResume && (
               <button
                 type="button"
@@ -2438,6 +2608,12 @@ export default function AiDesignWorkflow() {
                   : '批准并进入局部修改'
             }
             onRetryFailures={(ids) => void submitStage(ids)}
+            onRetryJob={() => {
+              const currentJob = jobs[activeGenerationStage]
+              if (currentJob) {
+                void run(activeGenerationStage, retryJob(currentJob.id))
+              }
+            }}
             approvingVariantId={approvingVariantId}
             approvedVariantId={approvedVariantId}
           />

@@ -35,7 +35,7 @@ fi
   FLOORPLAN_AI_ENDPOINT="${FLOORPLAN_AI_ENDPOINT:-http://127.0.0.1:8189/v1/enhance}" \
     FLOORPLAN_AI_HEALTH_ENDPOINT="${FLOORPLAN_AI_HEALTH_ENDPOINT:-http://127.0.0.1:8189/health}" \
     FLOORPLAN_AI_TIMEOUT_SECONDS="${FLOORPLAN_AI_TIMEOUT_SECONDS:-900}" \
-    uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+    uvicorn app.main:app --reload --host 127.0.0.1 --port 8000 --timeout-graceful-shutdown 15
 ) &
 
 (

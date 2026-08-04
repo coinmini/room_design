@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { apiFetch, assetUrl, pollJob, type Job } from './api'
+import { BatchProgress } from './BatchProgress'
 
 type EditorMode = 'review' | 'draw-wall' | 'select-room'
 type RenderQuality = 'preview' | 'base' | 'final'
@@ -2476,6 +2477,16 @@ export default function FloorplanModule({
                 </div>
               )}
             </>
+          )}
+          {runner.busy && runner.job && ['QUEUED', 'RUNNING'].includes(runner.job.status) && (
+            <BatchProgress
+              job={runner.job}
+              estimate={
+                isWorkflowStage01
+                  ? '视觉识别通常需要 1-3 分钟'
+                  : '本机渲染通常需要 4-8 分钟'
+              }
+            />
           )}
           {runner.busy && runner.job?.status === 'RUNNING' && (
             <div className="notice job-running-notice">

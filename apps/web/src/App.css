@@ -5460,6 +5460,47 @@ textarea {
   box-shadow: var(--shadow-xs);
 }
 
+.workflow-batch-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  color: #4a5a68;
+  font-size: 12px;
+  background: #f2f7fb;
+  border: 1px solid #d8e6f0;
+  border-radius: 10px;
+}
+
+.workflow-batch-progress span:first-child {
+  font-weight: 650;
+  color: #2c3e50;
+}
+
+.workflow-result-card.is-skeleton {
+  border-style: dashed;
+}
+
+.workflow-skeleton-image {
+  aspect-ratio: 3 / 2;
+  width: 100%;
+  padding: 0 !important;
+  background: linear-gradient(100deg, #eef1f4 40%, #f7f9fb 50%, #eef1f4 60%);
+  background-size: 200% 100%;
+  animation: workflow-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes workflow-skeleton-shimmer {
+  0% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -80% 0;
+  }
+}
+
 .workflow-result-card > div,
 .workflow-result-card footer {
   display: flex;
