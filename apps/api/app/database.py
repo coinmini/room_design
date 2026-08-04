@@ -31,6 +31,7 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_job_timing_columns()
     _ensure_job_idempotency_column()
+    _ensure_canvas_tables()
 
 
 def _ensure_job_timing_columns() -> None:
@@ -89,3 +90,87 @@ def get_session() -> Generator[Session, None, None]:
     finally:
         session.close()
 
+
+
+def _ensure_canvas_tables() -> None:
+    """无 alembic 的轻量迁移：为既有库补充 canvases / canvas_nodes 表（W0-d）。"""
+    if settings.database_url.startswith("sqlite"):
+        with engine.begin() as conn:
+            existing = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(canvases)")
+            }
+            if not existing:
+                conn.exec_driver_sql(
+                    "CREATE TABLE canvases ("
+                    "id VARCHAR(40) PRIMARY KEY, "
+                    "project_id VARCHAR(40) NOT NULL, "
+                    "name VARCHAR(120) NOT NULL, "
+                    "viewport_json TEXT DEFAULT '{}', "
+                    "updated_at DATETIME, "
+                    "deleted_at DATETIME"
+                    ")"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX ix_canvases_project_id ON canvases (project_id)"
+                )
+            existing_nodes = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(canvas_nodes)")
+            }
+            if not existing_nodes:
+                conn.exec_driver_sql(
+                    "CREATE TABLE canvas_nodes ("
+                    "id VARCHAR(40) PRIMARY KEY, "
+                    "canvas_id VARCHAR(40) NOT NULL, "
+                    "asset_id VARCHAR(40), "
+                    "variant_id VARCHAR(160), "
+                    "job_id VARCHAR(40), "
+                    "x FLOAT DEFAULT 0.0, "
+                    "y FLOAT DEFAULT 0.0, "
+                    "w FLOAT DEFAULT 0.0, "
+                    "h FLOAT DEFAULT 0.0, "
+                    "z INTEGER DEFAULT 0, "
+                    "source_node_id VARCHAR(40), "
+                    "created_at DATETIME, "
+                    "updated_at DATETIME, "
+                    "deleted_at DATETIME"
+                    ")"
+                )
+                conn.exec_driver_sql(
+                    "CREATE INDEX ix_canvas_nodes_canvas_id ON canvas_nodes (canvas_id)"
+                )
+    else:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "CREATE TABLE IF NOT EXISTS canvases ("
+                "id VARCHAR(40) PRIMARY KEY, "
+                "project_id VARCHAR(40) NOT NULL, "
+                "name VARCHAR(120) NOT NULL, "
+                "viewport_json JSONB DEFAULT '{}', "
+                "updated_at TIMESTAMPTZ, "
+                "deleted_at TIMESTAMPTZ"
+                ")"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_canvases_project_id ON canvases (project_id)"
+            )
+            conn.exec_driver_sql(
+                "CREATE TABLE IF NOT EXISTS canvas_nodes ("
+                "id VARCHAR(40) PRIMARY KEY, "
+                "canvas_id VARCHAR(40) NOT NULL, "
+                "asset_id VARCHAR(40), "
+                "variant_id VARCHAR(160), "
+                "job_id VARCHAR(40), "
+                "x FLOAT DEFAULT 0.0, "
+                "y FLOAT DEFAULT 0.0, "
+                "w FLOAT DEFAULT 0.0, "
+                "h FLOAT DEFAULT 0.0, "
+                "z INTEGER DEFAULT 0, "
+                "source_node_id VARCHAR(40), "
+                "created_at TIMESTAMPTZ, "
+                "updated_at TIMESTAMPTZ, "
+                "deleted_at TIMESTAMPTZ"
+                ")"
+            )
+            conn.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS ix_canvas_nodes_canvas_id ON canvas_nodes (canvas_id)"
+            )

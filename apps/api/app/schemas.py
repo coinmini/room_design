@@ -337,3 +337,62 @@ class AILocalEditJobPayload(AIWorkflowDerivativeJobBase):
     workflow_stage: Literal["local_edit"] = "local_edit"
     mark_path: str = Field(min_length=1)
     edit_prompt: str = Field(min_length=1, max_length=1000)
+
+
+class CanvasCreate(APIModel):
+    project_id: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=120)
+    viewport_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanvasRead(APIModel):
+    id: str
+    project_id: str
+    name: str
+    viewport_json: dict[str, Any] = Field(default_factory=dict)
+    updated_at: datetime
+
+
+class CanvasDetail(CanvasRead):
+    nodes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class CanvasNodeCreate(APIModel):
+    canvas_id: str = Field(min_length=1, max_length=40)
+    asset_id: str | None = Field(default=None, min_length=1, max_length=40)
+    variant_id: str | None = Field(default=None, max_length=160)
+    job_id: str | None = Field(default=None, min_length=1, max_length=40)
+    x: float = 0.0
+    y: float = 0.0
+    w: float = 0.0
+    h: float = 0.0
+    z: int = 0
+    source_node_id: str | None = Field(default=None, min_length=1, max_length=40)
+
+
+class CanvasNodeRead(APIModel):
+    id: str
+    canvas_id: str
+    asset_id: str | None = None
+    variant_id: str | None = None
+    job_id: str | None = None
+    x: float
+    y: float
+    w: float
+    h: float
+    z: int
+    source_node_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CanvasNodePatch(APIModel):
+    x: float | None = None
+    y: float | None = None
+    w: float | None = None
+    h: float | None = None
+    z: int | None = None
+
+
+class CanvasNodeBatchPatch(APIModel):
+    nodes: list[dict[str, Any]] = Field(min_length=1)

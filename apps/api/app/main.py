@@ -37,7 +37,7 @@ from app.assets import (
 from app.config import WORKSPACE_ROOT, settings
 from app.database import SessionLocal, get_session, init_db
 from app.jobs import create_job, dispatch_job, reclaim_stale_jobs, shutdown_job_executor
-from app.models import Job, Project, SceneAsset, new_id, utc_now
+from app.models import Canvas, CanvasNode, Job, Project, SceneAsset, new_id, utc_now
 from app.processors.ai_workflow import (
     AXONOMETRIC_VARIANTS,
     COLOR_PLAN_VARIANTS,
@@ -54,6 +54,13 @@ from app.schemas import (
     AIToneSchemeJobPayload,
     APIModel,
     AssetModuleRead,
+    CanvasCreate,
+    CanvasDetail,
+    CanvasNodeBatchPatch,
+    CanvasNodeCreate,
+    CanvasNodePatch,
+    CanvasNodeRead,
+    CanvasRead,
     CameraPreset,
     EffectRenderRequest,
     FloorplanSceneRequest,
@@ -1886,3 +1893,192 @@ def list_jobs(
         statement = statement.where(Job.status == status)
     statement = statement.offset(offset).limit(limit)
     return list(session.scalars(statement))
+
+
+# W0-d: Canvas persistence endpoints
+
+
+@app.post(
+    f"{settings.api_prefix}/canvases",
+    response_model=CanvasRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_canvas(payload: CanvasCreate, session: SessionDep) -> Canvas:
+    canvas = Canvas(
+        project_id=payload.project_id,
+        name=payload.name,
+        viewport_json=payload.viewport_json or {},
+    )
+    session.add(canvas)
+    session.commit()
+    session.refresh(canvas)
+    return canvas
+
+
+@app.get(f"{settings.api_prefix}/canvases", response_model=list[CanvasRead])
+def list_canvases(
+    session: SessionDep,
+    project_id: Annotated[
+        str,
+        Query(alias="projectId", min_length=1, max_length=40),
+    ],
+) -> list[Canvas]:
+    statement = (
+        select(Canvas)
+        .where(Canvas.project_id == project_id, Canvas.deleted_at.is_(None))
+        .order_by(Canvas.updated_at.desc())
+    )
+    return list(session.scalars(statement))
+
+
+@app.get(f"{settings.api_prefix}/canvases/{{canvas_id}}", response_model=CanvasDetail)
+def get_canvas(canvas_id: str, session: SessionDep) -> dict[str, Any]:
+    canvas = session.get(Canvas, canvas_id)
+    if canvas is None or canvas.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="画布不存在")
+    nodes = list(
+        session.scalars(
+            select(CanvasNode)
+            .where(CanvasNode.canvas_id == canvas_id, CanvasNode.deleted_at.is_(None))
+            .order_by(CanvasNode.z, CanvasNode.created_at)
+        )
+    )
+    return {
+        "id": canvas.id,
+        "project_id": canvas.project_id,
+        "name": canvas.name,
+        "viewport_json": canvas.viewport_json,
+        "updated_at": canvas.updated_at,
+        "nodes": [
+            {
+                "id": node.id,
+                "canvas_id": node.canvas_id,
+                "asset_id": node.asset_id,
+                "variant_id": node.variant_id,
+                "job_id": node.job_id,
+                "x": node.x,
+                "y": node.y,
+                "w": node.w,
+                "h": node.h,
+                "z": node.z,
+                "source_node_id": node.source_node_id,
+                "created_at": node.created_at,
+                "updated_at": node.updated_at,
+            }
+            for node in nodes
+        ],
+    }
+
+
+@app.patch(f"{settings.api_prefix}/canvases/{{canvas_id}}", response_model=CanvasRead)
+def update_canvas(
+    canvas_id: str,
+    payload: CanvasCreate,
+    session: SessionDep,
+) -> Canvas:
+    canvas = session.get(Canvas, canvas_id)
+    if canvas is None or canvas.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="画布不存在")
+    canvas.name = payload.name
+    if payload.viewport_json is not None:
+        canvas.viewport_json = payload.viewport_json
+    session.commit()
+    session.refresh(canvas)
+    return canvas
+
+
+@app.delete(f"{settings.api_prefix}/canvases/{{canvas_id}}")
+def delete_canvas(canvas_id: str, session: SessionDep) -> dict[str, str]:
+    canvas = session.get(Canvas, canvas_id)
+    if canvas is None or canvas.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="画布不存在")
+    canvas.deleted_at = utc_now()
+    session.commit()
+    return {"status": "deleted"}
+
+
+@app.post(
+    f"{settings.api_prefix}/canvases/{{canvas_id}}/nodes",
+    response_model=CanvasNodeRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_canvas_node(
+    canvas_id: str,
+    payload: CanvasNodeCreate,
+    session: SessionDep,
+) -> CanvasNode:
+    canvas = session.get(Canvas, canvas_id)
+    if canvas is None or canvas.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="画布不存在")
+    node = CanvasNode(
+        canvas_id=canvas_id,
+        asset_id=payload.asset_id,
+        variant_id=payload.variant_id,
+        job_id=payload.job_id,
+        x=payload.x,
+        y=payload.y,
+        w=payload.w,
+        h=payload.h,
+        z=payload.z,
+        source_node_id=payload.source_node_id,
+    )
+    session.add(node)
+    session.commit()
+    session.refresh(node)
+    return node
+
+
+@app.patch(
+    f"{settings.api_prefix}/canvases/{{canvas_id}}/nodes/batch",
+    response_model=list[CanvasNodeRead],
+)
+def batch_patch_canvas_nodes(
+    canvas_id: str,
+    payload: CanvasNodeBatchPatch,
+    session: SessionDep,
+) -> list[CanvasNode]:
+    canvas = session.get(Canvas, canvas_id)
+    if canvas is None or canvas.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="画布不存在")
+    result: list[CanvasNode] = []
+    for item in payload.nodes:
+        node_id = item.get("id")
+        if not isinstance(node_id, str) or not node_id:
+            continue
+        node = session.get(CanvasNode, node_id)
+        if node is None or node.deleted_at is not None or node.canvas_id != canvas_id:
+            continue
+        if "x" in item and item["x"] is not None:
+            node.x = float(item["x"])
+        if "y" in item and item["y"] is not None:
+            node.y = float(item["y"])
+        if "w" in item and item["w"] is not None:
+            node.w = float(item["w"])
+        if "h" in item and item["h"] is not None:
+            node.h = float(item["h"])
+        if "z" in item and item["z"] is not None:
+            node.z = int(item["z"])
+        result.append(node)
+    session.commit()
+    for node in result:
+        session.refresh(node)
+    return result
+
+
+@app.delete(
+    f"{settings.api_prefix}/canvases/{{canvas_id}}/nodes/{{node_id}}",
+)
+def delete_canvas_node(
+    canvas_id: str,
+    node_id: str,
+    session: SessionDep,
+) -> dict[str, str]:
+    canvas = session.get(Canvas, canvas_id)
+    if canvas is None or canvas.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="画布不存在")
+    node = session.get(CanvasNode, node_id)
+    if node is None or node.deleted_at is not None or node.canvas_id != canvas_id:
+        raise HTTPException(status_code=404, detail="节点不存在")
+    node.deleted_at = utc_now()
+    session.commit()
+    return {"status": "deleted"}

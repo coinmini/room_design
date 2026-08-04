@@ -122,3 +122,72 @@ class SceneAsset(Base):
         default=utc_now,
         onupdate=utc_now,
     )
+
+
+class Canvas(Base):
+    __tablename__ = "canvases"
+
+    id: Mapped[str] = mapped_column(
+        String(40),
+        primary_key=True,
+        default=lambda: new_id("canvas"),
+    )
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    viewport_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class CanvasNode(Base):
+    __tablename__ = "canvas_nodes"
+
+    id: Mapped[str] = mapped_column(
+        String(40),
+        primary_key=True,
+        default=lambda: new_id("node"),
+    )
+    canvas_id: Mapped[str] = mapped_column(
+        ForeignKey("canvases.id"),
+        nullable=False,
+        index=True,
+    )
+    asset_id: Mapped[str | None] = mapped_column(
+        ForeignKey("scene_assets.id"),
+        nullable=True,
+    )
+    variant_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("jobs.id"),
+        nullable=True,
+    )
+    x: Mapped[float] = mapped_column(default=0.0)
+    y: Mapped[float] = mapped_column(default=0.0)
+    w: Mapped[float] = mapped_column(default=0.0)
+    h: Mapped[float] = mapped_column(default=0.0)
+    z: Mapped[int] = mapped_column(default=0)
+    source_node_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
