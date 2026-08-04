@@ -34,7 +34,7 @@ from app.assets import (
     scene_asset_read,
 )
 from app.config import WORKSPACE_ROOT, settings
-from app.database import get_session, init_db
+from app.database import SessionLocal, get_session, init_db
 from app.jobs import create_job, dispatch_job, reclaim_stale_jobs, shutdown_job_executor
 from app.models import Job, Project, SceneAsset, new_id, utc_now
 from app.processors.ai_workflow import (
@@ -73,6 +73,17 @@ async def lifespan(_: FastAPI):
     init_db()
     # C1：回收上一个进程遗留的 QUEUED/RUNNING，避免客户端轮询永久死亡的任务
     reclaim_stale_jobs()
+    # W0-a：启动时一次性回填历史资产，之后不再在请求热路径调用
+    backfill_session = SessionLocal()
+    try:
+        count = backfill_scene_assets(backfill_session)
+        if count:
+            print(f"backfilled {count} scene assets")
+    except Exception:
+        import traceback
+        traceback.print_exc()
+    finally:
+        backfill_session.close()
     yield
     # C4：有界关闭作业线程池——排队任务取消（保持 QUEUED，下次启动由 C1 回收），
     # 运行中任务随 daemon 线程在进程退出时中断
@@ -864,15 +875,21 @@ def list_scene_assets(
         | None,
         Query(alias="workflowStage"),
     ] = None,
+    project_id: Annotated[
+        str | None,
+        Query(alias="projectId", min_length=1, max_length=40),
+    ] = None,
 ) -> list[dict]:
-    backfill_scene_assets(session)
     statement = select(SceneAsset).where(
         SceneAsset.owner_id == LOCAL_OWNER_ID,
         SceneAsset.thumbnail_url.is_not(None),
     )
     if generation_mode:
         statement = statement.where(SceneAsset.generation_mode == generation_mode)
-    assets = list(session.scalars(statement.order_by(SceneAsset.created_at.desc())))
+    if project_id:
+        statement = statement.where(SceneAsset.project_id == project_id)
+    statement = statement.order_by(SceneAsset.created_at.desc()).offset(offset).limit(limit)
+    assets = list(session.scalars(statement))
     values = [scene_asset_read(asset) for asset in assets]
     if module_key:
         values = [value for value in values if value["module_key"] == module_key]
@@ -882,7 +899,7 @@ def list_scene_assets(
             for value in values
             if value.get("metadata", {}).get("workflowStage") == workflow_stage
         ]
-    return values[offset : offset + limit]
+    return values
 
 
 @app.get(
@@ -893,12 +910,17 @@ def list_asset_modules() -> list[dict[str, str]]:
     return asset_modules()
 
 
+
+
+@app.post(f"{settings.api_prefix}/assets/backfill")
+def trigger_backfill(session: SessionDep) -> dict[str, int]:
+    count = backfill_scene_assets(session)
+    return {"backfilled": count}
 @app.get(
     f"{settings.api_prefix}/assets/{{asset_id}}",
     response_model=SceneAssetDetail,
 )
 def get_scene_asset(asset_id: str, session: SessionDep) -> dict:
-    backfill_scene_assets(session)
     asset = get_local_scene_asset(session, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="资产不存在")
@@ -912,7 +934,6 @@ def get_scene_asset(asset_id: str, session: SessionDep) -> dict:
 def get_workflow_resume_asset(asset_id: str, session: SessionDep) -> dict[str, Any]:
     """Return the approved, public inputs needed to continue stages 03 through 08."""
 
-    backfill_scene_assets(session)
     asset = get_local_scene_asset(session, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="资产不存在")
@@ -929,7 +950,6 @@ def approve_scene_asset_variant(
     session: SessionDep,
     idempotency_key: IdempotencyKeyHeader = None,
 ) -> dict:
-    backfill_scene_assets(session)
     asset = get_local_scene_asset(session, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="资产不存在")
@@ -1031,7 +1051,6 @@ def render_scene_asset_variant(
     session: SessionDep,
     idempotency_key: IdempotencyKeyHeader = None,
 ) -> Job:
-    backfill_scene_assets(session)
     asset = get_local_scene_asset(session, asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail="资产不存在")
@@ -1821,3 +1840,23 @@ def cancel_job(job_id: str, session: SessionDep) -> Job:
     if updated == 0:
         raise HTTPException(status_code=409, detail="任务已经结束，不能取消")
     return job
+
+
+@app.get(f"{settings.api_prefix}/jobs", response_model=list[JobRead])
+def list_jobs(
+    session: SessionDep,
+    project_id: Annotated[
+        str | None,
+        Query(alias="projectId", min_length=1, max_length=40),
+    ] = None,
+    status: Annotated[str | None, Query(min_length=1, max_length=20)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> list[Job]:
+    statement = select(Job).order_by(Job.created_at.desc())
+    if project_id:
+        statement = statement.where(Job.project_id == project_id)
+    if status:
+        statement = statement.where(Job.status == status)
+    statement = statement.offset(offset).limit(limit)
+    return list(session.scalars(statement))
