@@ -222,6 +222,10 @@ def test_ai_workflow_requires_explicit_layout_approval(
         "variants": "simple_2d",
     }
     with TestClient(app) as client:
+        project_id = client.post("/v1/projects", json={"name": "approval test"}).json()["id"]
+        floorplan_asset = _create_floorplan_asset(project_id)
+
+        # W0-b: asset_parent_id 必填，缺失时先报 422
         missing = client.post(
             "/v1/ai-workflow/color-plans",
             files={"approved_layout_image": ("plan.png", source, "image/png")},
@@ -232,7 +236,7 @@ def test_ai_workflow_requires_explicit_layout_approval(
         rejected = client.post(
             "/v1/ai-workflow/color-plans",
             files={"approved_layout_image": ("plan.png", source, "image/png")},
-            data={**base_data, "layout_approved": "false"},
+            data={**base_data, "layout_approved": "false", "asset_parent_id": floorplan_asset["id"]},
         )
         assert rejected.status_code == 422
         assert "已批准" in rejected.json()["detail"]
@@ -241,6 +245,9 @@ def test_ai_workflow_requires_explicit_layout_approval(
 def test_ai_workflow_rejects_empty_rooms_and_requires_approved_color_plan() -> None:
     source = image_bytes()
     with TestClient(app) as client:
+        project_id = client.post("/v1/projects", json={"name": "empty rooms test"}).json()["id"]
+        floorplan_asset = _create_floorplan_asset(project_id)
+
         empty_rooms = client.post(
             "/v1/ai-workflow/color-plans",
             files={"approved_layout_image": ("plan.png", source, "image/png")},
@@ -248,6 +255,7 @@ def test_ai_workflow_rejects_empty_rooms_and_requires_approved_color_plan() -> N
                 "semantic_layout": json.dumps({"rooms": []}),
                 "layout_approved": "true",
                 "variants": "simple_2d",
+                "asset_parent_id": floorplan_asset["id"],
             },
         )
         assert empty_rooms.status_code == 422
@@ -257,6 +265,7 @@ def test_ai_workflow_rejects_empty_rooms_and_requires_approved_color_plan() -> N
             "semantic_layout": json.dumps(semantic_layout(), ensure_ascii=False),
             "layout_approved": "true",
         }
+        # W0-b: asset_parent_id 必填，缺失时报 422
         missing_axis_color_plan = client.post(
             "/v1/ai-workflow/axonometric-views",
             files={"approved_layout_image": ("plan.png", source, "image/png")},

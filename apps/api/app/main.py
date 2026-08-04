@@ -1219,6 +1219,13 @@ async def create_ai_layout_job(
         raise HTTPException(status_code=422, detail="Stage 01 标注边界与分析任务不一致")
     if project_id and analysis_job.project_id and project_id != analysis_job.project_id:
         raise HTTPException(status_code=422, detail="Stage 01 与 Stage 02 不属于同一项目")
+    # W0-b: auto-resolve stage 01 asset as parent
+    asset_parent_id = None
+    analysis_asset = session.scalar(
+        select(SceneAsset).where(SceneAsset.job_id == analysis_job.id)
+    )
+    if analysis_asset is not None:
+        asset_parent_id = analysis_asset.id
     source = await save_upload(source_image)
     payload = {
         "source_path": str(source),
@@ -1232,6 +1239,7 @@ async def create_ai_layout_job(
         "stage01_approved_version_id": stage01_approved_version_id,
         "stage01_source_sha256": stage01_source_sha256,
         "stage01_detected_bounds": detected_bounds,
+        "asset_parent_id": asset_parent_id,
     }
     job = create_job(
         session,
@@ -1260,7 +1268,7 @@ async def create_ai_color_plan_job(
     layout_approved: bool = Form(...),
     design_prompt: str = Form("", max_length=1000),
     style_references: list[UploadFile] | None = File(None),
-    asset_parent_id: str | None = Form(None, max_length=40),
+    asset_parent_id: str = Form(..., min_length=1, max_length=40),
     project_id: str | None = Form(None),
 ) -> Job:
     """Stage 3: derive one or more AI color-plan styles from an approved layout."""
@@ -1323,7 +1331,7 @@ async def create_ai_axonometric_job(
     layout_approved: bool = Form(...),
     design_prompt: str = Form("", max_length=1000),
     style_references: list[UploadFile] | None = File(None),
-    asset_parent_id: str | None = Form(None, max_length=40),
+    asset_parent_id: str = Form(..., min_length=1, max_length=40),
     project_id: str | None = Form(None),
 ) -> Job:
     """Stage 4: generate batched day/night/alternate-angle AI axonometric views."""
@@ -1393,7 +1401,7 @@ async def create_ai_space_render_job(
     ] = Form("eye_level_wide"),
     design_prompt: str = Form("", max_length=1000),
     style_references: list[UploadFile] | None = File(None),
-    asset_parent_id: str | None = Form(None, max_length=40),
+    asset_parent_id: str = Form(..., min_length=1, max_length=40),
     project_id: str | None = Form(None),
 ) -> Job:
     """Stage 5: generate one consistent interior image for each selected semantic room."""

@@ -42,6 +42,7 @@ ASSET_MODULES: dict[str, dict[str, str]] = {
 }
 
 JOB_TYPE_TO_MODULE = {
+    "FLOORPLAN_ANALYZE": "floorplan",
     "FLOORPLAN_SCENE": "floorplan",
     "LAYOUT": "layout",
     "LAYOUT_AI": "layout",
@@ -138,6 +139,8 @@ def _asset_title(job: Job, result: dict[str, Any]) -> str:
         prefix = "AI 平面布局" if job.type == "LAYOUT_AI" else "平面布局"
         title = f"{prefix} · {room_label}" if room_label else prefix
         return title[:160]
+    if job.type == "FLOORPLAN_ANALYZE":
+        return "户型分析与标注"
     if job.type == "WHITE_MODEL_RENDER":
         title = f"白模渲染 · {room_label}" if room_label else "白模渲染"
         return title[:160]
@@ -205,6 +208,19 @@ def _asset_deliverables(job: Job, result: dict[str, Any]) -> dict[str, Any]:
             "stage01ControlImageUrl": result.get("stage01ControlImageUrl"),
             "previewUrl": preview_urls[0] if preview_urls else None,
             "previewUrls": preview_urls,
+            "capabilities": {
+                "editableModel": False,
+                "multiView": False,
+                "materialReplacement": False,
+                "glbDelivery": False,
+            },
+        }
+    if job.type == "FLOORPLAN_ANALYZE":
+        return {
+            "sourceImageUrl": result.get("sourceImageUrl") or source_image_url,
+            "overlayPreviewUrl": result.get("overlayPreviewUrl"),
+            "semanticLayout": result.get("semanticLayout"),
+            "detectedBounds": result.get("detectedBounds"),
             "capabilities": {
                 "editableModel": False,
                 "multiView": False,
@@ -424,6 +440,8 @@ def _generation_mode(job: Job, result: dict[str, Any]) -> str:
         return "structured_3d" if payload.get("use_blender") else "local_preview"
     if job.type == "MATERIAL_REPLACEMENT":
         return "local_edit"
+    if job.type == "FLOORPLAN_ANALYZE":
+        return "analysis"
     if job.type in AI_WORKFLOW_JOB_TYPES:
         return "ai_image"
     return "structured_3d"
@@ -433,6 +451,7 @@ def _asset_type(job: Job, generation_mode: str) -> str:
     if job.type == "FLOORPLAN_SCENE":
         return "structured_scene" if generation_mode == "structured_3d" else "ai_render"
     return {
+        "FLOORPLAN_ANALYZE": "floorplan_analysis",
         "LAYOUT": "layout_plan",
         "LAYOUT_AI": "layout_plan",
         "WHITE_MODEL_RENDER": "white_model_render",
@@ -451,6 +470,7 @@ def _thumbnail(deliverables: dict[str, Any]) -> str | None:
     for key in (
         "finalRenderUrl",
         "previewUrl",
+        "overlayPreviewUrl",
         "dollhouseUrl",
         "baseRenderUrl",
         "comparisonUrl",
@@ -474,6 +494,15 @@ def ensure_scene_asset(session: Session, job: Job) -> SceneAsset | None:
     payload = _mapping(job.payload)
     generation_mode = _generation_mode(job, result)
     parent_asset_id = payload.get("asset_parent_id")
+    # W0-b: LAYOUT_AI 自动从 stage01_analysis_job_id 解析上游资产
+    if parent_asset_id is None and job.type == "LAYOUT_AI":
+        analysis_job_id = payload.get("stage01_analysis_job_id")
+        if isinstance(analysis_job_id, str) and analysis_job_id:
+            analysis_asset = session.scalar(
+                select(SceneAsset).where(SceneAsset.job_id == analysis_job_id)
+            )
+            if analysis_asset is not None:
+                parent_asset_id = analysis_asset.id
     parent_asset = (
         session.get(SceneAsset, parent_asset_id)
         if isinstance(parent_asset_id, str)
