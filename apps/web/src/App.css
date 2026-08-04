@@ -2802,6 +2802,42 @@ textarea {
   stroke-linejoin: round;
 }
 
+.semantic-room-geometry {
+  pointer-events: none;
+}
+
+.semantic-vertex-dot {
+  fill: #7357b8;
+  stroke: #ffffff;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.semantic-vertex-label {
+  fill: #4c397c;
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.semantic-edge-label {
+  fill: #1f6f5f;
+  font-size: 11px;
+  font-weight: 650;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
 .semantic-furniture {
   pointer-events: none;
 }

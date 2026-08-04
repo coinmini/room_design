@@ -632,6 +632,76 @@ function semanticRectFromPolygon(polygon: SemanticPoint[]): SemanticRect {
   }
 }
 
+// 需求 1：选中房间后，在结构图上标注 P1~Pn 角点坐标与每条边的长度（mm）
+function SelectedRoomGeometryOverlay({
+  analysis,
+  draft,
+  room,
+}: {
+  analysis: FloorplanAnalysis
+  draft: SemanticLayout
+  room: SemanticRoom
+}) {
+  const polygon = semanticRoomPolygon(room)
+  const pixels = polygon.map((point) =>
+    semanticPointToPixel(analysis, draft, point),
+  )
+  // 多边形质心：边长标注沿外法线偏移，避免被边线本身压住
+  const centroid = pixels.reduce(
+    (acc, pixel) => ({ x: acc.x + pixel.x / pixels.length, y: acc.y + pixel.y / pixels.length }),
+    { x: 0, y: 0 },
+  )
+  return (
+    <g className="semantic-room-geometry">
+      {polygon.map((point, index) => {
+        const pixel = pixels[index]
+        const nextPoint = polygon[(index + 1) % polygon.length]
+        const nextPixel = pixels[(index + 1) % pixels.length]
+        const lengthMm = Math.round(
+          Math.hypot(nextPoint.xMm - point.xMm, nextPoint.yMm - point.yMm),
+        )
+        const midX = (pixel.x + nextPixel.x) / 2
+        const midY = (pixel.y + nextPixel.y) / 2
+        const edgeDx = nextPixel.x - pixel.x
+        const edgeDy = nextPixel.y - pixel.y
+        const edgeLen = Math.hypot(edgeDx, edgeDy) || 1
+        // 单位法线，取朝向质心外侧的方向
+        let normalX = -edgeDy / edgeLen
+        let normalY = edgeDx / edgeLen
+        if ((midX - centroid.x) * normalX + (midY - centroid.y) * normalY < 0) {
+          normalX = -normalX
+          normalY = -normalY
+        }
+        const labelOffset = 14
+        return (
+          <g key={`${room.id}-vertex-${index + 1}`}>
+            <text
+              className="semantic-edge-label"
+              x={midX + normalX * labelOffset}
+              y={midY + normalY * labelOffset}
+            >
+              {lengthMm}
+            </text>
+            <circle
+              className="semantic-vertex-dot"
+              cx={pixel.x}
+              cy={pixel.y}
+              r={5}
+            />
+            <text
+              className="semantic-vertex-label"
+              x={pixel.x}
+              y={pixel.y - 10}
+            >
+              {`P${index + 1} (${point.xMm}, ${point.yMm})`}
+            </text>
+          </g>
+        )
+      })}
+    </g>
+  )
+}
+
 function boundedInteger(
   value: number,
   min: number,
@@ -1009,8 +1079,9 @@ export default function FloorplanModule({
     }
   }
 
-  // Clicking an entity directly on the plan opens a floating editor next to
-  // the click point, so users never have to scroll the long correction list.
+  // Clicking an entity directly on the plan opens a floating editor; the panel
+  // is parked on the opposite side of the stage from the entity so it never
+  // covers the vertex markers and edge labels of the room being edited.
   const openEntityPopover = (
     kind: SelectedSemanticEntity['kind'],
     id: string,
@@ -1022,14 +1093,68 @@ export default function FloorplanModule({
     const bounds = stage.getBoundingClientRect()
     const panelWidth = 336
     const panelHeight = Math.min(460, Math.max(240, bounds.height - 16))
-    const x = Math.max(
-      8,
-      Math.min(point.clientX - bounds.left + 14, bounds.width - panelWidth - 8),
-    )
-    const y = Math.max(
-      8,
-      Math.min(point.clientY - bounds.top + 14, bounds.height - panelHeight - 8),
-    )
+
+    // 实体在舞台坐标系中的中心（考虑 viewBox meet 缩放与居中留白）
+    const entityStageCenter = (): { x: number; y: number } | null => {
+      if (!analysis || !semanticDraft) return null
+      const scale = Math.min(
+        bounds.width / analysis.imageWidth,
+        bounds.height / analysis.imageHeight,
+      )
+      const offsetX = (bounds.width - analysis.imageWidth * scale) / 2
+      const offsetY = (bounds.height - analysis.imageHeight * scale) / 2
+      const toStage = (pixel: { x: number; y: number }) => ({
+        x: offsetX + pixel.x * scale,
+        y: offsetY + pixel.y * scale,
+      })
+      if (kind === 'room') {
+        const room = semanticDraft.rooms.find((item) => item.id === id)
+        if (!room) return null
+        const pixels = semanticRoomPolygon(room).map((corner) =>
+          toStage(semanticPointToPixel(analysis, semanticDraft, corner)),
+        )
+        const xs = pixels.map((pixel) => pixel.x)
+        const ys = pixels.map((pixel) => pixel.y)
+        return {
+          x: (Math.min(...xs) + Math.max(...xs)) / 2,
+          y: (Math.min(...ys) + Math.max(...ys)) / 2,
+        }
+      }
+      if (kind === 'opening') {
+        const opening = semanticDraft.openings.find((item) => item.id === id)
+        if (!opening) return null
+        const start = toStage(
+          semanticPointToPixel(analysis, semanticDraft, opening.segment.start),
+        )
+        const end = toStage(
+          semanticPointToPixel(analysis, semanticDraft, opening.segment.end),
+        )
+        return { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }
+      }
+      const furniture = semanticDraft.furniture.find((item) => item.id === id)
+      if (!furniture) return null
+      return toStage(
+        semanticPointToPixel(analysis, semanticDraft, furniture.center),
+      )
+    }
+
+    const center = entityStageCenter()
+    const x = center
+      ? center.x < bounds.width / 2
+        ? bounds.width - panelWidth - 8
+        : 8
+      : Math.max(
+          8,
+          Math.min(point.clientX - bounds.left + 14, bounds.width - panelWidth - 8),
+        )
+    const y = center
+      ? center.y < bounds.height / 2
+        ? bounds.height - panelHeight - 8
+        : 8
+      : Math.max(
+          8,
+          Math.min(point.clientY - bounds.top + 14, bounds.height - panelHeight - 8),
+        )
     setEntityPopover({ kind, id, x, y })
   }
 
@@ -1089,38 +1214,64 @@ export default function FloorplanModule({
     }))
   }
 
+  // 顶点联动容差：其他房间中与被改顶点重合（≤3mm）的角点随动，
+  // 保证共享墙/共角的房间在单边修改后仍然贴合。
+  const VERTEX_LINK_TOLERANCE_MM = 3
+
   const updateSemanticRoomVertex = (
     roomId: string,
     pointIndex: number,
     axis: keyof SemanticPoint,
     value: number,
   ) => {
-    commitSemanticDraft((current) => ({
-      ...current,
-      rooms: current.rooms.map((room) => {
-        if (room.id !== roomId) return room
-        const polygon = semanticRoomPolygon(room).map((point, index) =>
-          index === pointIndex
-            ? {
-                ...point,
-                [axis]: boundedInteger(
-                  value,
-                  0,
-                  axis === 'xMm'
-                    ? current.plan.widthMm
-                    : current.plan.depthMm,
-                  point[axis],
-                ),
-              }
-            : point,
-        )
-        return {
-          ...room,
-          polygon,
-          rect: semanticRectFromPolygon(polygon),
-        }
-      }),
-    }))
+    commitSemanticDraft((current) => {
+      const targetRoom = current.rooms.find((room) => room.id === roomId)
+      if (!targetRoom) return current
+      const oldPoint = semanticRoomPolygon(targetRoom)[pointIndex]
+      if (!oldPoint) return current
+      const boundValue = boundedInteger(
+        value,
+        0,
+        axis === 'xMm' ? current.plan.widthMm : current.plan.depthMm,
+        oldPoint[axis],
+      )
+      const delta = {
+        xMm: axis === 'xMm' ? boundValue - oldPoint.xMm : 0,
+        yMm: axis === 'yMm' ? boundValue - oldPoint.yMm : 0,
+      }
+      if (!delta.xMm && !delta.yMm) return current
+      const isLinkedVertex = (point: SemanticPoint) =>
+        Math.abs(point.xMm - oldPoint.xMm) <= VERTEX_LINK_TOLERANCE_MM &&
+        Math.abs(point.yMm - oldPoint.yMm) <= VERTEX_LINK_TOLERANCE_MM
+      const clamp = (point: SemanticPoint): SemanticPoint => ({
+        xMm: boundedInteger(point.xMm, 0, current.plan.widthMm, 0),
+        yMm: boundedInteger(point.yMm, 0, current.plan.depthMm, 0),
+      })
+      return {
+        ...current,
+        rooms: current.rooms.map((room) => {
+          const polygon = semanticRoomPolygon(room).map((point, index) => {
+            const isTarget = room.id === roomId && index === pointIndex
+            // 被改顶点直接取新值；其他房间的重合角点施加同样的位移
+            if (isTarget) {
+              return clamp({ ...point, [axis]: boundValue })
+            }
+            if (isLinkedVertex(point)) {
+              return clamp({
+                xMm: point.xMm + delta.xMm,
+                yMm: point.yMm + delta.yMm,
+              })
+            }
+            return point
+          })
+          return {
+            ...room,
+            polygon,
+            rect: semanticRectFromPolygon(polygon),
+          }
+        }),
+      }
+    })
   }
 
   const updateSemanticOpening = (
@@ -2654,6 +2805,20 @@ export default function FloorplanModule({
                       </g>
                     )
                   })}
+                  {semanticDraft &&
+                    selectedSemanticEntity?.kind === 'room' &&
+                    (() => {
+                      const selectedRoom = semanticDraft.rooms.find(
+                        (item) => item.id === selectedSemanticEntity.id,
+                      )
+                      return selectedRoom ? (
+                        <SelectedRoomGeometryOverlay
+                          analysis={analysis}
+                          draft={semanticDraft}
+                          room={selectedRoom}
+                        />
+                      ) : null
+                    })()}
                   {semanticDraft?.furniture.map((item) => {
                     const center = semanticPointToPixel(
                       analysis,
