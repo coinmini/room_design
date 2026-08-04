@@ -4,8 +4,11 @@ import base64
 import binascii
 import ipaddress
 import math
+import random
 import re
 import socket
+import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Callable, TypeAlias
@@ -13,7 +16,11 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
-from app.processors.common import ProcessorError
+from app.processors.common import (
+    MAX_PROVIDER_ERROR_BODY_BYTES,
+    ProcessorError,
+    sanitize_provider_error_detail,
+)
 from app.storage import artifact_path, artifact_url
 
 
@@ -43,6 +50,39 @@ _MIME_SUFFIXES = {
     "image/png": ".png",
     "image/webp": ".webp",
 }
+
+# Transient gateway conditions worth one bounded second chance. Read timeouts
+# are deliberately excluded: the provider accepted the request and is
+# generating, so a retry would double the true worst case and the bill.
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+_RETRY_BACKOFF_SECONDS = (1.0, 4.0)
+_MAX_RETRY_AFTER_SECONDS = 30.0
+
+_SHARED_CLIENT: httpx.Client | None = None
+_SHARED_CLIENT_LOCK = threading.Lock()
+
+
+def _shared_client() -> httpx.Client:
+    """Process-wide keep-alive client; httpx.Client is thread-safe."""
+
+    global _SHARED_CLIENT
+    if _SHARED_CLIENT is None:
+        with _SHARED_CLIENT_LOCK:
+            if _SHARED_CLIENT is None:
+                _SHARED_CLIENT = httpx.Client(
+                    limits=httpx.Limits(
+                        max_connections=16,
+                        max_keepalive_connections=16,
+                        keepalive_expiry=300,
+                    )
+                )
+    return _SHARED_CLIENT
+
+
+def _request_timeout(read_seconds: float) -> httpx.Timeout:
+    """Only the read phase owns the long generation budget."""
+
+    return httpx.Timeout(connect=5.0, write=120.0, read=read_seconds, pool=10.0)
 
 
 def _detect_image_mime(raw: bytes) -> str | None:
@@ -149,6 +189,23 @@ def _multipart_files(
     return files
 
 
+def _read_capped_error_body(response: httpx.Response) -> bytes:
+    chunks: list[bytes] = []
+    received = 0
+    try:
+        for chunk in response.iter_bytes():
+            received += len(chunk)
+            if received > MAX_PROVIDER_ERROR_BODY_BYTES:
+                keep = MAX_PROVIDER_ERROR_BODY_BYTES - (received - len(chunk))
+                if keep > 0:
+                    chunks.append(chunk[:keep])
+                break
+            chunks.append(chunk)
+    except httpx.HTTPError:
+        pass
+    return b"".join(chunks)
+
+
 def _post_edit(
     *,
     client: httpx.Client,
@@ -174,11 +231,25 @@ def _post_edit(
                 "n": "1",
             },
             files=_multipart_files(images),
-            timeout=timeout_seconds,
+            timeout=_request_timeout(timeout_seconds),
         ) as response:
             if not 200 <= response.status_code < 300:
-                # Error bodies are intentionally discarded: providers sometimes echo secrets.
-                return httpx.Response(response.status_code)
+                # Keep only whitelisted error fields (code/type/message) plus
+                # Retry-After so callers can judge retryability; the raw body
+                # may echo secrets and is still discarded.
+                detail = sanitize_provider_error_detail(
+                    _read_capped_error_body(response),
+                    secrets=(api_key,),
+                )
+                headers = {}
+                retry_after = response.headers.get("Retry-After")
+                if retry_after:
+                    headers["Retry-After"] = retry_after
+                return httpx.Response(
+                    response.status_code,
+                    headers=headers,
+                    content=detail.encode("utf-8"),
+                )
             content_length = response.headers.get("Content-Length")
             if content_length:
                 try:
@@ -209,6 +280,13 @@ def _post_edit(
             )
     except ProcessorError:
         raise
+    except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+        # Connect-phase failures never reached the provider: safe to retry.
+        del exc
+        raise ProcessorError(
+            KUYAO_IMAGE_PROVIDER_UNAVAILABLE,
+            "无法连接 Kuyao 图像增强服务",
+        ) from None
     except httpx.TimeoutException as exc:
         # The request owns the Authorization header and image bodies; never retain it.
         del exc
@@ -221,11 +299,50 @@ def _post_edit(
         ) from None
 
 
+def _retry_delay_seconds(response: httpx.Response | None, attempt: int) -> float:
+    base = _RETRY_BACKOFF_SECONDS[min(attempt, len(_RETRY_BACKOFF_SECONDS) - 1)]
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                base = max(base, min(float(retry_after), _MAX_RETRY_AFTER_SECONDS))
+            except ValueError:
+                pass
+    return base + random.uniform(0.0, 0.5 * base)
+
+
+def _post_edit_with_retry(**kwargs: Any) -> httpx.Response:
+    """Two bounded extra attempts on connect failures and transient statuses."""
+
+    last_attempt = len(_RETRY_BACKOFF_SECONDS)
+    for attempt in range(last_attempt + 1):
+        try:
+            response = _post_edit(**kwargs)
+        except ProcessorError as exc:
+            if (
+                exc.code == KUYAO_IMAGE_PROVIDER_UNAVAILABLE
+                and attempt < last_attempt
+            ):
+                time.sleep(_retry_delay_seconds(None, attempt))
+                continue
+            raise
+        if (
+            response.status_code in _RETRYABLE_STATUS_CODES
+            and attempt < last_attempt
+        ):
+            time.sleep(_retry_delay_seconds(response, attempt))
+            continue
+        return response
+    raise AssertionError("unreachable")
+
+
 def _response_item(response: httpx.Response) -> dict[str, Any]:
     if not 200 <= response.status_code < 300:
+        detail = response.text.strip()[:200]
+        suffix = f"：{detail}" if detail else ""
         raise ProcessorError(
             KUYAO_IMAGE_PROVIDER_REJECTED,
-            f"Kuyao 图像增强服务拒绝请求（HTTP {response.status_code}）",
+            f"Kuyao 图像增强服务拒绝请求（HTTP {response.status_code}）{suffix}",
         )
     try:
         payload = response.json()
@@ -351,7 +468,7 @@ def _download_image(
             with client.stream(
                 "GET",
                 current_url,
-                timeout=timeout_seconds,
+                timeout=_request_timeout(timeout_seconds),
                 follow_redirects=False,
             ) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
@@ -477,30 +594,25 @@ def edit_floorplan_image(
     )
     images = [_read_input_image(path) for path in _input_paths(source_path, reference_paths)]
 
-    owns_client = http_client is None
-    client = http_client or httpx.Client()
-    try:
-        response = _post_edit(
-            client=client,
-            endpoint=endpoint,
-            api_key=clean_key,
-            images=images,
-            model=clean_model,
-            size=clean_size,
-            quality=clean_quality,
-            prompt=clean_prompt,
-            timeout_seconds=timeout_seconds,
-        )
-        item = _response_item(response)
-        raw, mime_type, response_format = _extract_image(
-            item=item,
-            client=client,
-            timeout_seconds=timeout_seconds,
-            host_resolver=host_resolver or _system_host_resolver,
-        )
-    finally:
-        if owns_client:
-            client.close()
+    client = http_client or _shared_client()
+    response = _post_edit_with_retry(
+        client=client,
+        endpoint=endpoint,
+        api_key=clean_key,
+        images=images,
+        model=clean_model,
+        size=clean_size,
+        quality=clean_quality,
+        prompt=clean_prompt,
+        timeout_seconds=timeout_seconds,
+    )
+    item = _response_item(response)
+    raw, mime_type, response_format = _extract_image(
+        item=item,
+        client=client,
+        timeout_seconds=timeout_seconds,
+        host_resolver=host_resolver or _system_host_resolver,
+    )
 
     output = artifact_path("floorplan-kuyao-final", _MIME_SUFFIXES[mime_type])
     try:

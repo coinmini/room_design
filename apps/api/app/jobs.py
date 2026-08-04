@@ -44,6 +44,15 @@ PROCESSORS: dict[str, Processor] = {
     "AI_LOCAL_EDIT": run_ai_local_edit,
 }
 
+# 多变体批次处理器（A1）：支持运行中增量回写部分结果
+PROGRESS_PROCESSORS = {
+    run_ai_color_plan,
+    run_ai_axonometric,
+    run_ai_space_render,
+    run_ai_style_scheme,
+    run_ai_tone_scheme,
+}
+
 
 def create_job(
     session: Session,
@@ -74,7 +83,24 @@ def run_job(job_id: str) -> None:
         job.status = "RUNNING"
         session.commit()
         processor = PROCESSORS[job.type]
-        processor_result = processor(job.payload)
+
+        def publish_progress(partial: dict[str, Any]) -> None:
+            """best-effort 部分结果回写；终态写入决定最终结果，失败不影响主流程。"""
+            try:
+                with SessionLocal() as ps:
+                    pj = ps.get(Job, job_id)
+                    if pj is None or pj.status != "RUNNING":
+                        return
+                    # SQLAlchemy JSON 列不检测嵌套变更，必须整体重新赋值
+                    pj.result = {**partial, "batchStatus": "running"}
+                    ps.commit()
+            except Exception:
+                pass
+
+        if processor in PROGRESS_PROCESSORS:
+            processor_result = processor(job.payload, on_progress=publish_progress)
+        else:
+            processor_result = processor(job.payload)
         # Cancellation may be committed by another request while the provider is running.
         # Refresh before persisting provider output so a late result cannot revive the job.
         session.expire(job)

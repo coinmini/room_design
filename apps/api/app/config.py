@@ -31,7 +31,8 @@ class Settings(BaseSettings):
     floorplan_final_image_provider: str = "auto"
     kuyao_image_model: str = "gpt-image-2"
     kuyao_image_quality: str = "high"
-    kuyao_image_timeout_seconds: int = 900
+    kuyao_image_timeout_seconds: int = 300
+    provider_concurrency: int = 4
     kuyao_style_reference_image: str = ""
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
 

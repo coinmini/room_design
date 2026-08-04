@@ -869,6 +869,8 @@ function ResultGallery({
 }) {
   const result = job?.result ?? null
   const outputs = collectRenderOutputs(result, stage)
+  // 批次仍在运行时只允许预览，不允许审批/设基准（部分结果尚无最终 assetId）
+  const batchFinalized = job?.status === 'SUCCEEDED'
   const batchNotice = (
     <BatchNotice
       result={result}
@@ -946,6 +948,11 @@ function ResultGallery({
   return (
     <>
       {batchNotice}
+      {job?.status === 'RUNNING' && (
+        <div className="workflow-empty-result is-running" style={{ padding: '12px 16px', marginBottom: 12 }}>
+          <p>正在并发生成其余方案，先出图的会立即显示；全部完成后才能审批或设为基准。</p>
+        </div>
+      )}
       <div className="workflow-result-grid">
         {outputs.map((output) => (
         <article className="workflow-result-card" key={`${output.key}-${output.url}`}>
@@ -957,7 +964,7 @@ function ResultGallery({
           <footer>
             <span>{output.workflowStage.replaceAll('_', ' ')}</span>
             <div>
-              {onApproveOutput && (
+              {onApproveOutput && batchFinalized && (
                 <button
                   type="button"
                   disabled={Boolean(approvingVariantId)}
@@ -970,7 +977,7 @@ function ResultGallery({
                         : '设为批准彩平'}
                 </button>
               )}
-              {onSelectBaseline && output.variantId && (
+              {onSelectBaseline && output.variantId && batchFinalized && (
                 <button
                   type="button"
                   disabled={Boolean(selectingBaselineKey)}

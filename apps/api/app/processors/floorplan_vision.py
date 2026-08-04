@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import statistics
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal, TypeAlias
@@ -15,7 +16,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.config import settings
-from app.processors.common import ProcessorError
+from app.processors.common import ProcessorError, sanitize_provider_error_detail
 
 
 VisionSource: TypeAlias = str | Path | bytes | bytearray | memoryview
@@ -577,6 +578,27 @@ def _request_payload(
     }
 
 
+_SHARED_CLIENT: httpx.Client | None = None
+_SHARED_CLIENT_LOCK = threading.Lock()
+
+
+def _shared_client() -> httpx.Client:
+    """Process-wide keep-alive client; httpx.Client is thread-safe."""
+
+    global _SHARED_CLIENT
+    if _SHARED_CLIENT is None:
+        with _SHARED_CLIENT_LOCK:
+            if _SHARED_CLIENT is None:
+                _SHARED_CLIENT = httpx.Client(
+                    limits=httpx.Limits(
+                        max_connections=8,
+                        max_keepalive_connections=8,
+                        keepalive_expiry=300,
+                    )
+                )
+    return _SHARED_CLIENT
+
+
 def _post_chat_completion(
     *,
     endpoint: str,
@@ -586,16 +608,10 @@ def _post_chat_completion(
     http_client: httpx.Client | None,
 ) -> httpx.Response:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    timeout = httpx.Timeout(connect=5.0, write=120.0, read=timeout_seconds, pool=10.0)
     try:
-        if http_client is not None:
-            return http_client.post(
-                endpoint,
-                headers=headers,
-                json=payload,
-                timeout=timeout_seconds,
-            )
-        with httpx.Client(timeout=timeout_seconds) as client:
-            return client.post(endpoint, headers=headers, json=payload)
+        client = http_client or _shared_client()
+        return client.post(endpoint, headers=headers, json=payload, timeout=timeout)
     except httpx.TimeoutException as exc:
         # Do not retain the HTTP exception as ``__cause__``: it owns the request
         # object, whose headers and body contain the API key and image data URL.
@@ -606,11 +622,16 @@ def _post_chat_completion(
         raise ProcessorError(VISION_PROVIDER_UNAVAILABLE, "无法连接外部视觉模型服务") from None
 
 
-def _message_content(response: httpx.Response) -> Any:
+def _message_content(response: httpx.Response, *, api_key: str = "") -> Any:
     if not 200 <= response.status_code < 300:
+        detail = sanitize_provider_error_detail(
+            response.content,
+            secrets=(api_key,),
+        )
+        suffix = f"：{detail}" if detail else ""
         raise ProcessorError(
             VISION_PROVIDER_REJECTED,
-            f"外部视觉模型服务拒绝请求（HTTP {response.status_code}）",
+            f"外部视觉模型服务拒绝请求（HTTP {response.status_code}）{suffix}",
         )
     try:
         payload = response.json()
@@ -1091,7 +1112,7 @@ def recognize_floorplan(
         payload=payload,
         http_client=http_client,
     )
-    recognition = _decode_recognition(_message_content(response))
+    recognition = _decode_recognition(_message_content(response, api_key=api_key))
     physical_plan = recognition.physical_plan
     object_estimate = None
     if (

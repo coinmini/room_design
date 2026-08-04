@@ -505,3 +505,189 @@ def test_invalid_json_does_not_survive_in_exception_chain(tmp_path: Path) -> Non
     assert error.value.code == KUYAO_IMAGE_RESPONSE_INVALID
     assert API_KEY not in str(error.value)
     assert error.value.__cause__ is None
+
+
+def test_provider_error_keeps_whitelisted_detail_without_leaking_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.processors.kuyao_image_edit._retry_delay_seconds",
+        lambda *_args, **_kwargs: 0,
+    )
+    source = _image(tmp_path / "base.png")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "content_policy_violation",
+                    "type": "invalid_request_error",
+                    "message": "prompt blocked by policy",
+                    "echoed_secret": API_KEY,
+                }
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ProcessorError) as error:
+            edit_floorplan_image(
+                source,
+                api_key=API_KEY,
+                base_url="https://www.kuyaoapi.com/v1",
+                prompt="增强",
+                http_client=client,
+            )
+    finally:
+        client.close()
+
+    assert error.value.code == KUYAO_IMAGE_PROVIDER_REJECTED
+    message = str(error.value)
+    assert "HTTP 400" in message
+    assert "content_policy_violation" in message
+    assert "prompt blocked by policy" in message
+    assert API_KEY not in message
+    # 400 is permanent: no retry.
+    assert len(requests) == 1
+
+
+def test_transient_502_is_retried_and_eventually_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.processors.kuyao_image_edit._retry_delay_seconds",
+        lambda *_args, **_kwargs: 0,
+    )
+    source = _image(tmp_path / "base.png")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) < 3:
+            return httpx.Response(502, json={"error": {"message": "bad gateway"}})
+        return httpx.Response(
+            200,
+            json={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        result = edit_floorplan_image(
+            source,
+            api_key=API_KEY,
+            base_url="https://www.kuyaoapi.com/v1",
+            prompt="增强",
+            http_client=client,
+        )
+    finally:
+        client.close()
+
+    assert len(requests) == 3
+    assert Path(result["path"]).read_bytes() == PNG_BYTES
+
+
+def test_429_retries_are_bounded_and_honor_retry_after(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delays: list[float] = []
+
+    def fake_delay(response: httpx.Response | None, attempt: int) -> float:
+        assert response is not None
+        assert response.headers.get("Retry-After") == "7"
+        delays.append(attempt)
+        return 0
+
+    monkeypatch.setattr(
+        "app.processors.kuyao_image_edit._retry_delay_seconds", fake_delay
+    )
+    source = _image(tmp_path / "base.png")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            429,
+            headers={"Retry-After": "7"},
+            json={"error": {"code": "rate_limit", "message": "slow down"}},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(ProcessorError) as error:
+            edit_floorplan_image(
+                source,
+                api_key=API_KEY,
+                base_url="https://www.kuyaoapi.com/v1",
+                prompt="增强",
+                http_client=client,
+            )
+    finally:
+        client.close()
+
+    # 1 initial attempt + 2 bounded retries, then the detail surfaces.
+    assert len(requests) == 3
+    assert delays == [0, 1]
+    assert error.value.code == KUYAO_IMAGE_PROVIDER_REJECTED
+    assert "rate_limit" in str(error.value)
+
+
+def test_connect_error_is_retried_but_read_timeout_is_not(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.processors.kuyao_image_edit._retry_delay_seconds",
+        lambda *_args, **_kwargs: 0,
+    )
+    source = _image(tmp_path / "base.png")
+    requests: list[httpx.Request] = []
+
+    def connect_then_ok(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == 1:
+            raise httpx.ConnectError("connection refused", request=request)
+        return httpx.Response(
+            200,
+            json={"data": [{"b64_json": base64.b64encode(PNG_BYTES).decode("ascii")}]},
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(connect_then_ok))
+    try:
+        result = edit_floorplan_image(
+            source,
+            api_key=API_KEY,
+            base_url="https://www.kuyaoapi.com/v1",
+            prompt="增强",
+            http_client=client,
+        )
+    finally:
+        client.close()
+    assert len(requests) == 2
+    assert Path(result["path"]).read_bytes() == PNG_BYTES
+
+    def read_timeout(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        raise httpx.ReadTimeout("still generating", request=request)
+
+    requests.clear()
+    client = httpx.Client(transport=httpx.MockTransport(read_timeout))
+    try:
+        with pytest.raises(ProcessorError) as error:
+            edit_floorplan_image(
+                source,
+                api_key=API_KEY,
+                base_url="https://www.kuyaoapi.com/v1",
+                prompt="增强",
+                http_client=client,
+            )
+    finally:
+        client.close()
+    # Read timeouts mean the provider is already generating: never retried.
+    assert len(requests) == 1
+    assert error.value.code == KUYAO_IMAGE_TIMEOUT

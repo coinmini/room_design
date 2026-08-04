@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import cv2
 import numpy as np
@@ -12,6 +14,48 @@ from app.config import settings
 from app.processors.common import ProcessorError
 from app.processors.kuyao_image_edit import edit_floorplan_image
 from app.storage import artifact_path, artifact_url
+
+
+MAX_PROMPT_CHARS = 28_000
+_PROVIDER_SEMAPHORE = threading.Semaphore(settings.provider_concurrency)
+
+ProgressCallback = Callable[[dict[str, Any]], None]
+# Per-stage fan-out width. The provider semaphore above caps total in-flight
+# calls across jobs, so this only shapes one batch's parallelism.
+_VARIANT_FANOUT_WORKERS = 4
+
+
+def _fanout_generate(
+    keys: list[str],
+    generate_one: Callable[[str], dict[str, Any]],
+    build_result: Callable[[list[dict[str, Any]]], dict[str, Any]],
+    on_progress: ProgressCallback | None,
+) -> dict[str, Any]:
+    """Run per-variant generations concurrently and publish growing outputs.
+
+    ``generate_one`` must convert provider failures into failed output dicts
+    itself. Progress payloads are forced to batchStatus="running" so the UI
+    never shows a mid-batch "complete" notice; the final result keeps the real
+    status. Output order always follows the input key order.
+    """
+
+    completed: list[tuple[int, dict[str, Any]]] = []
+
+    def ordered_outputs() -> list[dict[str, Any]]:
+        return [output for _, output in sorted(completed, key=lambda item: item[0])]
+
+    with ThreadPoolExecutor(max_workers=max(1, min(_VARIANT_FANOUT_WORKERS, len(keys)))) as executor:
+        future_to_index = {
+            executor.submit(generate_one, key): index
+            for index, key in enumerate(keys)
+        }
+        for future in as_completed(future_to_index):
+            completed.append((future_to_index[future], future.result()))
+            if on_progress is not None:
+                partial = build_result(ordered_outputs())
+                partial["batchStatus"] = "running"
+                on_progress(partial)
+    return build_result(ordered_outputs())
 
 
 COLOR_PLAN_VARIANTS = (
@@ -327,17 +371,25 @@ def _generate(
     prompt: str,
     size: str,
 ) -> dict[str, Any]:
-    return edit_floorplan_image(
-        source,
-        api_key=settings.floorplan_vision_api_key,
-        base_url=settings.kuyao_base_url,
-        prompt=prompt,
-        model=settings.kuyao_image_model,
-        size=size,
-        quality=settings.kuyao_image_quality,
-        timeout_seconds=settings.kuyao_image_timeout_seconds,
-        reference_paths=list(references),
-    )
+    if len(prompt) > MAX_PROMPT_CHARS:
+        raise ProcessorError(
+            "INPUT_REJECTED",
+            f"提示词超过长度限制（{MAX_PROMPT_CHARS} 字符），请简化输入后重试",
+        )
+    # Client-side rate limit: keeps the variant fan-out from turning an
+    # occasional 429 into a systemic one.
+    with _PROVIDER_SEMAPHORE:
+        return edit_floorplan_image(
+            source,
+            api_key=settings.floorplan_vision_api_key,
+            base_url=settings.kuyao_base_url,
+            prompt=prompt,
+            model=settings.kuyao_image_model,
+            size=size,
+            quality=settings.kuyao_image_quality,
+            timeout_seconds=settings.kuyao_image_timeout_seconds,
+            reference_paths=list(references),
+        )
 
 
 def _base_result(
@@ -412,7 +464,10 @@ def _raise_if_batch_failed(result: dict[str, Any], label: str) -> None:
     )
 
 
-def run_ai_color_plan(payload: dict[str, Any]) -> dict[str, Any]:
+def run_ai_color_plan(
+    payload: dict[str, Any],
+    on_progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
     _require_provider()
     source = _approved_layout_source(payload)
     semantic_layout = _semantic_layout_value(payload)
@@ -423,8 +478,8 @@ def run_ai_color_plan(payload: dict[str, Any]) -> dict[str, Any]:
         raise ProcessorError("INPUT_REJECTED", "彩平图类型无效")
     size = _target_size(source)
     references = _reference_paths(payload)
-    outputs: list[dict[str, Any]] = []
-    for variant in variants:
+
+    def generate_one(variant: str) -> dict[str, Any]:
         prompt = (
             "Generate one presentation-ready full-home color floor plan. "
             + _common_geometry_lock(semantic_layout)
@@ -442,43 +497,46 @@ def run_ai_color_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 size=size,
             )
         except ProcessorError as exc:
-            outputs.append(
-                _failed_output(
-                    variant_id=variant,
-                    variant_group_id=payload["variant_group_id"],
-                    error=exc,
-                )
+            return _failed_output(
+                variant_id=variant,
+                variant_group_id=payload["variant_group_id"],
+                error=exc,
             )
-            continue
-        outputs.append(
-            {
-                "variantId": variant,
-                "variantGroupId": payload["variant_group_id"],
-                "status": "succeeded",
-                "url": generated["url"],
-                "provider": generated["provider"],
-                "model": generated["model"],
-                "size": generated["size"],
-                "quality": generated["quality"],
-            }
+        return {
+            "variantId": variant,
+            "variantGroupId": payload["variant_group_id"],
+            "status": "succeeded",
+            "url": generated["url"],
+            "provider": generated["provider"],
+            "model": generated["model"],
+            "size": generated["size"],
+            "quality": generated["quality"],
+        }
+
+    def build_result(outputs: list[dict[str, Any]]) -> dict[str, Any]:
+        result = _base_result(
+            payload,
+            stage="color_plan",
+            source=source,
+            semantic_layout=semantic_layout,
+            outputs=outputs,
         )
-    result = _base_result(
-        payload,
-        stage="color_plan",
-        source=source,
-        semantic_layout=semantic_layout,
-        outputs=outputs,
-    )
-    result["inputRoles"] = {
-        "image1": "approved_layout_geometry_authority",
-        "semanticLayout": "geometry_and_room_semantics_authority",
-        "styleReferences": "appearance_only",
-    }
+        result["inputRoles"] = {
+            "image1": "approved_layout_geometry_authority",
+            "semanticLayout": "geometry_and_room_semantics_authority",
+            "styleReferences": "appearance_only",
+        }
+        return result
+
+    result = _fanout_generate(variants, generate_one, build_result, on_progress)
     _raise_if_batch_failed(result, "彩平图")
     return result
 
 
-def run_ai_axonometric(payload: dict[str, Any]) -> dict[str, Any]:
+def run_ai_axonometric(
+    payload: dict[str, Any],
+    on_progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
     _require_provider()
     source = _approved_layout_source(payload)
     semantic_layout = _semantic_layout_value(payload)
@@ -493,8 +551,8 @@ def run_ai_axonometric(payload: dict[str, Any]) -> dict[str, Any]:
     )
     references = _reference_paths(payload, approved_color_plan)
     size = _target_size(source)
-    outputs: list[dict[str, Any]] = []
-    for variant in variants:
+
+    def generate_one(variant: str) -> dict[str, Any]:
         prompt = (
             "Generate one presentation-ready full-home architectural axonometric image. "
             + _common_geometry_lock(semantic_layout)
@@ -518,47 +576,47 @@ def run_ai_axonometric(payload: dict[str, Any]) -> dict[str, Any]:
                 size=size,
             )
         except ProcessorError as exc:
-            outputs.append(
-                _failed_output(
-                    variant_id=variant,
-                    variant_group_id=payload["variant_group_id"],
-                    error=exc,
-                )
+            return _failed_output(
+                variant_id=variant,
+                variant_group_id=payload["variant_group_id"],
+                error=exc,
             )
-            continue
-        outputs.append(
-            {
-                "variantId": variant,
-                "variantGroupId": payload["variant_group_id"],
-                "status": "succeeded",
-                "url": generated["url"],
-                "provider": generated["provider"],
-                "model": generated["model"],
-                "size": generated["size"],
-                "quality": generated["quality"],
-            }
-        )
-    result = _base_result(
-        payload,
-        stage="axonometric",
-        source=source,
-        semantic_layout=semantic_layout,
-        outputs=outputs,
-    )
-    result["approvedColorPlan"] = (
-        {
-            "imageUrl": artifact_url(approved_color_plan),
-            "sha256": _image_sha256(approved_color_plan),
+        return {
+            "variantId": variant,
+            "variantGroupId": payload["variant_group_id"],
+            "status": "succeeded",
+            "url": generated["url"],
+            "provider": generated["provider"],
+            "model": generated["model"],
+            "size": generated["size"],
+            "quality": generated["quality"],
         }
-        if approved_color_plan
-        else None
-    )
-    result["inputRoles"] = {
-        "image1": "approved_layout_geometry_authority",
-        "semanticLayout": "geometry_and_room_semantics_authority",
-        "approvedColorPlan": "appearance_baseline",
-        "styleReferences": "appearance_only",
-    }
+
+    def build_result(outputs: list[dict[str, Any]]) -> dict[str, Any]:
+        result = _base_result(
+            payload,
+            stage="axonometric",
+            source=source,
+            semantic_layout=semantic_layout,
+            outputs=outputs,
+        )
+        result["approvedColorPlan"] = (
+            {
+                "imageUrl": artifact_url(approved_color_plan),
+                "sha256": _image_sha256(approved_color_plan),
+            }
+            if approved_color_plan
+            else None
+        )
+        result["inputRoles"] = {
+            "image1": "approved_layout_geometry_authority",
+            "semanticLayout": "geometry_and_room_semantics_authority",
+            "approvedColorPlan": "appearance_baseline",
+            "styleReferences": "appearance_only",
+        }
+        return result
+
+    result = _fanout_generate(variants, generate_one, build_result, on_progress)
     _raise_if_batch_failed(result, "轴侧图")
     return result
 
@@ -575,7 +633,10 @@ def _semantic_rooms(layout: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return rooms
 
 
-def run_ai_space_render(payload: dict[str, Any]) -> dict[str, Any]:
+def run_ai_space_render(
+    payload: dict[str, Any],
+    on_progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
     _require_provider()
     source = _approved_layout_source(payload)
     semantic_layout = _semantic_layout_value(payload)
@@ -600,9 +661,9 @@ def run_ai_space_render(payload: dict[str, Any]) -> dict[str, Any]:
     references = _reference_paths(payload, approved_color_plan)
     view_preset = str(payload.get("view_preset") or "eye_level_wide")
     size = "1536x1024"
-    outputs: list[dict[str, Any]] = []
     semantic_prompt = _semantic_prompt(semantic_layout)
-    for room_id in selected_ids:
+
+    def generate_one(room_id: str) -> dict[str, Any]:
         room = rooms[room_id]
         room_name = str(room.get("name") or room.get("type") or room_id)
         room_json = json.dumps(room, ensure_ascii=False, separators=(",", ":"))
@@ -635,59 +696,59 @@ def run_ai_space_render(payload: dict[str, Any]) -> dict[str, Any]:
                 size=size,
             )
         except ProcessorError as exc:
-            outputs.append(
-                _failed_output(
-                    variant_id=f"space_{room_id}",
-                    variant_group_id=payload["variant_group_id"],
-                    error=exc,
-                    extra={
-                        "spaceId": room_id,
-                        "spaceName": room_name,
-                        "spaceType": room.get("type"),
-                        "viewPreset": view_preset,
-                    },
-                )
+            return _failed_output(
+                variant_id=f"space_{room_id}",
+                variant_group_id=payload["variant_group_id"],
+                error=exc,
+                extra={
+                    "spaceId": room_id,
+                    "spaceName": room_name,
+                    "spaceType": room.get("type"),
+                    "viewPreset": view_preset,
+                },
             )
-            continue
-        outputs.append(
-            {
-                "variantId": f"space_{room_id}",
-                "variantGroupId": payload["variant_group_id"],
-                "status": "succeeded",
-                "spaceId": room_id,
-                "spaceName": room_name,
-                "spaceType": room.get("type"),
-                "viewPreset": view_preset,
-                "url": generated["url"],
-                "provider": generated["provider"],
-                "model": generated["model"],
-                "size": generated["size"],
-                "quality": generated["quality"],
-            }
-        )
-    result = _base_result(
-        payload,
-        stage="space_render",
-        source=source,
-        semantic_layout=semantic_layout,
-        outputs=outputs,
-    )
-    result["selectedSpaceIds"] = selected_ids
-    result["viewPreset"] = view_preset
-    result["approvedColorPlan"] = (
-        {
-            "imageUrl": artifact_url(approved_color_plan),
-            "sha256": _image_sha256(approved_color_plan),
+        return {
+            "variantId": f"space_{room_id}",
+            "variantGroupId": payload["variant_group_id"],
+            "status": "succeeded",
+            "spaceId": room_id,
+            "spaceName": room_name,
+            "spaceType": room.get("type"),
+            "viewPreset": view_preset,
+            "url": generated["url"],
+            "provider": generated["provider"],
+            "model": generated["model"],
+            "size": generated["size"],
+            "quality": generated["quality"],
         }
-        if approved_color_plan
-        else None
-    )
-    result["inputRoles"] = {
-        "image1": "approved_layout_geometry_authority",
-        "semanticLayout": "geometry_room_and_adjacency_authority",
-        "approvedColorPlan": "whole_home_appearance_baseline",
-        "styleReferences": "appearance_only",
-    }
+
+    def build_result(outputs: list[dict[str, Any]]) -> dict[str, Any]:
+        result = _base_result(
+            payload,
+            stage="space_render",
+            source=source,
+            semantic_layout=semantic_layout,
+            outputs=outputs,
+        )
+        result["selectedSpaceIds"] = selected_ids
+        result["viewPreset"] = view_preset
+        result["approvedColorPlan"] = (
+            {
+                "imageUrl": artifact_url(approved_color_plan),
+                "sha256": _image_sha256(approved_color_plan),
+            }
+            if approved_color_plan
+            else None
+        )
+        result["inputRoles"] = {
+            "image1": "approved_layout_geometry_authority",
+            "semanticLayout": "geometry_room_and_adjacency_authority",
+            "approvedColorPlan": "whole_home_appearance_baseline",
+            "styleReferences": "appearance_only",
+        }
+        return result
+
+    result = _fanout_generate(selected_ids, generate_one, build_result, on_progress)
     _raise_if_batch_failed(result, "分空间效果图")
     return result
 
@@ -784,7 +845,10 @@ def _derivative_result(
     }
 
 
-def run_ai_style_scheme(payload: dict[str, Any]) -> dict[str, Any]:
+def run_ai_style_scheme(
+    payload: dict[str, Any],
+    on_progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
     """Stage 6: restyle one approved space without changing its camera or layout."""
 
     _require_provider()
@@ -799,8 +863,8 @@ def run_ai_style_scheme(payload: dict[str, Any]) -> dict[str, Any]:
     lock = _space_geometry_lock(semantic_layout, space_id)
     references = _reference_paths(payload)
     size = _target_size(source)
-    outputs: list[dict[str, Any]] = []
-    for variant in variants:
+
+    def generate_one(variant: str) -> dict[str, Any]:
         prompt = (
             "Create one presentation-ready alternate interior style for the exact approved space. "
             + lock
@@ -822,46 +886,49 @@ def run_ai_style_scheme(payload: dict[str, Any]) -> dict[str, Any]:
                 size=size,
             )
         except ProcessorError as exc:
-            outputs.append(
-                _failed_output(
-                    variant_id=f"style_{variant}",
-                    variant_group_id=payload["variant_group_id"],
-                    error=exc,
-                    extra={"spaceId": space_id, "styleId": variant},
-                )
+            return _failed_output(
+                variant_id=f"style_{variant}",
+                variant_group_id=payload["variant_group_id"],
+                error=exc,
+                extra={"spaceId": space_id, "styleId": variant},
             )
-            continue
-        outputs.append(
-            {
-                "variantId": f"style_{variant}",
-                "variantGroupId": payload["variant_group_id"],
-                "status": "succeeded",
-                "spaceId": space_id,
-                "styleId": variant,
-                "url": generated["url"],
-                "provider": generated["provider"],
-                "model": generated["model"],
-                "size": generated["size"],
-                "quality": generated["quality"],
-            }
+        return {
+            "variantId": f"style_{variant}",
+            "variantGroupId": payload["variant_group_id"],
+            "status": "succeeded",
+            "spaceId": space_id,
+            "styleId": variant,
+            "url": generated["url"],
+            "provider": generated["provider"],
+            "model": generated["model"],
+            "size": generated["size"],
+            "quality": generated["quality"],
+        }
+
+    def build_result(outputs: list[dict[str, Any]]) -> dict[str, Any]:
+        result = _derivative_result(
+            payload,
+            stage="style_scheme",
+            source=source,
+            semantic_layout=semantic_layout,
+            outputs=outputs,
         )
-    result = _derivative_result(
-        payload,
-        stage="style_scheme",
-        source=source,
-        semantic_layout=semantic_layout,
-        outputs=outputs,
-    )
-    result["inputRoles"] = {
-        "image1": "approved_space_camera_and_geometry_authority",
-        "semanticLayout": "room_semantics_authority",
-        "styleReferences": "appearance_only",
-    }
+        result["inputRoles"] = {
+            "image1": "approved_space_camera_and_geometry_authority",
+            "semanticLayout": "room_semantics_authority",
+            "styleReferences": "appearance_only",
+        }
+        return result
+
+    result = _fanout_generate(variants, generate_one, build_result, on_progress)
     _raise_if_batch_failed(result, "风格方案")
     return result
 
 
-def run_ai_tone_scheme(payload: dict[str, Any]) -> dict[str, Any]:
+def run_ai_tone_scheme(
+    payload: dict[str, Any],
+    on_progress: ProgressCallback | None = None,
+) -> dict[str, Any]:
     """Stage 7: vary only color temperature, exposure and mood of an approved style."""
 
     _require_provider()
@@ -875,8 +942,8 @@ def run_ai_tone_scheme(payload: dict[str, Any]) -> dict[str, Any]:
         raise ProcessorError("INPUT_REJECTED", "色调方案类型无效")
     lock = _space_geometry_lock(semantic_layout, space_id)
     size = _target_size(source)
-    outputs: list[dict[str, Any]] = []
-    for variant in variants:
+
+    def generate_one(variant: str) -> dict[str, Any]:
         prompt = (
             "Create one alternate color-tone treatment of the exact approved interior image. "
             + lock
@@ -893,40 +960,40 @@ def run_ai_tone_scheme(payload: dict[str, Any]) -> dict[str, Any]:
                 size=size,
             )
         except ProcessorError as exc:
-            outputs.append(
-                _failed_output(
-                    variant_id=f"tone_{variant}",
-                    variant_group_id=payload["variant_group_id"],
-                    error=exc,
-                    extra={"spaceId": space_id, "toneId": variant},
-                )
+            return _failed_output(
+                variant_id=f"tone_{variant}",
+                variant_group_id=payload["variant_group_id"],
+                error=exc,
+                extra={"spaceId": space_id, "toneId": variant},
             )
-            continue
-        outputs.append(
-            {
-                "variantId": f"tone_{variant}",
-                "variantGroupId": payload["variant_group_id"],
-                "status": "succeeded",
-                "spaceId": space_id,
-                "toneId": variant,
-                "url": generated["url"],
-                "provider": generated["provider"],
-                "model": generated["model"],
-                "size": generated["size"],
-                "quality": generated["quality"],
-            }
+        return {
+            "variantId": f"tone_{variant}",
+            "variantGroupId": payload["variant_group_id"],
+            "status": "succeeded",
+            "spaceId": space_id,
+            "toneId": variant,
+            "url": generated["url"],
+            "provider": generated["provider"],
+            "model": generated["model"],
+            "size": generated["size"],
+            "quality": generated["quality"],
+        }
+
+    def build_result(outputs: list[dict[str, Any]]) -> dict[str, Any]:
+        result = _derivative_result(
+            payload,
+            stage="tone_scheme",
+            source=source,
+            semantic_layout=semantic_layout,
+            outputs=outputs,
         )
-    result = _derivative_result(
-        payload,
-        stage="tone_scheme",
-        source=source,
-        semantic_layout=semantic_layout,
-        outputs=outputs,
-    )
-    result["inputRoles"] = {
-        "image1": "approved_style_camera_geometry_and_material_authority",
-        "semanticLayout": "room_semantics_authority",
-    }
+        result["inputRoles"] = {
+            "image1": "approved_style_camera_geometry_and_material_authority",
+            "semanticLayout": "room_semantics_authority",
+        }
+        return result
+
+    result = _fanout_generate(variants, generate_one, build_result, on_progress)
     _raise_if_batch_failed(result, "色调方案")
     return result
 
