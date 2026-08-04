@@ -29,6 +29,7 @@ from app.assets import (
     LOCAL_OWNER_ID,
     asset_modules,
     backfill_scene_assets,
+    backfill_thumbnails,
     get_local_scene_asset,
     scene_asset_detail,
     scene_asset_read,
@@ -102,6 +103,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _cache_control_artifacts(request, call_next):
+    """W0-c: Add long-term cache headers for static artifact files."""
+    response = await call_next(request)
+    if request.url.path.startswith("/artifacts/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
+
 app.mount(
     "/artifacts",
     StaticFiles(directory=settings.artifact_dir),
@@ -915,6 +927,12 @@ def list_asset_modules() -> list[dict[str, str]]:
 @app.post(f"{settings.api_prefix}/assets/backfill")
 def trigger_backfill(session: SessionDep) -> dict[str, int]:
     count = backfill_scene_assets(session)
+    return {"backfilled": count}
+
+
+@app.post(f"{settings.api_prefix}/assets/backfill-thumbnails")
+def trigger_backfill_thumbnails(session: SessionDep) -> dict[str, int]:
+    count = backfill_thumbnails(session)
     return {"backfilled": count}
 @app.get(
     f"{settings.api_prefix}/assets/{{asset_id}}",

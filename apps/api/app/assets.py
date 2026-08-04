@@ -10,6 +10,7 @@ from app.config import settings
 from app.models import Job, SceneAsset
 from app.schemas import to_camel
 from app.storage import artifact_url
+from app.thumbnails import maybe_upgrade_thumbnail_url
 
 
 LOCAL_OWNER_ID = "local-user"
@@ -515,6 +516,12 @@ def ensure_scene_asset(session: Session, job: Job) -> SceneAsset | None:
     thumbnail_url = _thumbnail(deliverables)
     if not thumbnail_url:
         return None
+    # W0-c: generate webp thumbnails and expose fullUrl
+    thumb_url, full_url = maybe_upgrade_thumbnail_url(thumbnail_url)
+    if full_url is not None:
+        thumbnail_url = thumb_url
+        deliverables = dict(deliverables)
+        deliverables["fullUrl"] = full_url
     metadata = _asset_metadata(job, result, module_key=module_key)
     existing = session.scalar(select(SceneAsset).where(SceneAsset.job_id == job.id))
     if existing is not None:
@@ -605,6 +612,28 @@ def backfill_scene_assets(session: Session) -> int:
     if successful_jobs:
         session.commit()
     return created
+
+
+def backfill_thumbnails(session: Session) -> int:
+    """Generate webp thumbnails for existing assets and update thumbnail_url + deliverables."""
+
+    assets = list(
+        session.scalars(
+            select(SceneAsset).where(SceneAsset.thumbnail_url.is_not(None))
+        )
+    )
+    updated = 0
+    for asset in assets:
+        thumb_url, full_url = maybe_upgrade_thumbnail_url(asset.thumbnail_url)
+        if full_url is not None and asset.thumbnail_url != thumb_url:
+            asset.thumbnail_url = thumb_url
+            deliverables = dict(asset.deliverables or {})
+            deliverables["fullUrl"] = full_url
+            asset.deliverables = deliverables
+            updated += 1
+    if updated:
+        session.commit()
+    return updated
 
 
 def get_local_scene_asset(session: Session, asset_id: str) -> SceneAsset | None:
