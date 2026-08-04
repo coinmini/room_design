@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 import cv2
@@ -246,7 +247,15 @@ def test_material_endpoint_accepts_new_presets_and_rejects_unknown(
             },
         )
         assert response.status_code == 202, response.text
-        job = client.get(f"/v1/jobs/{response.json()['id']}").json()
+        # C4 后任务在独立线程池异步执行：轮询直到终态
+        job_id = response.json()["id"]
+        deadline = monotonic() + 30.0
+        job: dict[str, Any] = {}
+        while monotonic() < deadline:
+            job = client.get(f"/v1/jobs/{job_id}").json()
+            if job["status"] in {"SUCCEEDED", "FAILED", "CANCELED"}:
+                break
+            sleep(0.05)
         assert job["status"] == "SUCCEEDED", job
         assert job["payload"]["wall_style"] == "travertine_beige"
         assert job["payload"]["floor_style"] == "terrazzo_light"

@@ -30,6 +30,7 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _ensure_job_timing_columns()
+    _ensure_job_idempotency_column()
 
 
 def _ensure_job_timing_columns() -> None:
@@ -51,6 +52,33 @@ def _ensure_job_timing_columns() -> None:
             )
             conn.exec_driver_sql(
                 "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ"
+            )
+
+
+def _ensure_job_idempotency_column() -> None:
+    """无 alembic 的轻量迁移：为既有库补充 jobs.idempotency_key（C5）。"""
+    if settings.database_url.startswith("sqlite"):
+        with engine.begin() as conn:
+            existing = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(jobs)")
+            }
+            if "idempotency_key" not in existing:
+                conn.exec_driver_sql(
+                    "ALTER TABLE jobs ADD COLUMN idempotency_key VARCHAR(64)"
+                )
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ix_jobs_idempotency_key ON jobs (idempotency_key)"
+            )
+    else:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS "
+                "idempotency_key VARCHAR(64)"
+            )
+            conn.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "ix_jobs_idempotency_key ON jobs (idempotency_key)"
             )
 
 

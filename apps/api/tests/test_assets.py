@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from time import monotonic, sleep
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -67,9 +68,16 @@ def fake_scene_result(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def completed_job(client: TestClient, job_id: str) -> dict[str, Any]:
-    response = client.get(f"/v1/jobs/{job_id}")
-    assert response.status_code == 200
-    job = response.json()
+    # C4 后任务在独立线程池异步执行：轮询直到终态
+    deadline = monotonic() + 30.0
+    job: dict[str, Any] = {}
+    while monotonic() < deadline:
+        response = client.get(f"/v1/jobs/{job_id}")
+        assert response.status_code == 200
+        job = response.json()
+        if job["status"] in {"SUCCEEDED", "FAILED", "CANCELED"}:
+            break
+        sleep(0.05)
     assert job["status"] == "SUCCEEDED", job
     return job
 

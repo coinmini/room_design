@@ -683,7 +683,7 @@ def run_ai_space_render(
     )
     references = _reference_paths(payload, approved_color_plan)
     view_preset = str(payload.get("view_preset") or "eye_level_wide")
-    size = "1536x1024"
+    size = _target_size(source)
     semantic_prompt = _semantic_prompt(semantic_layout)
 
     def generate_one(room_id: str) -> dict[str, Any]:

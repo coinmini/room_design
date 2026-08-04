@@ -56,6 +56,13 @@ class Job(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(48), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # C5：建任务幂等键——前端每次用户提交生成一个 UUID，网络重试复用同一键；
+    # 冲突时 create_job 返回既有 job，丢失的响应不会再静默启动第二个批次
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,

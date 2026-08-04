@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 import cv2
@@ -35,9 +36,18 @@ def white_model_bytes(*, width: int = 900, height: int = 650) -> bytes:
 
 def completed_job(client: TestClient, response) -> dict[str, Any]:
     assert response.status_code == 202, response.text
-    job = client.get(f"/v1/jobs/{response.json()['id']}")
-    assert job.status_code == 200
-    return job.json()
+    job_id = response.json()["id"]
+    # C4 后任务在独立线程池异步执行：轮询直到终态（成功或失败都由调用方断言）
+    deadline = monotonic() + 30.0
+    value: dict[str, Any] = {}
+    while monotonic() < deadline:
+        job = client.get(f"/v1/jobs/{job_id}")
+        assert job.status_code == 200
+        value = job.json()
+        if value["status"] in {"SUCCEEDED", "FAILED", "CANCELED"}:
+            return value
+        sleep(0.05)
+    raise AssertionError(f"任务 {job_id} 未在 30s 内到达终态：{value}")
 
 
 def configure_ai(monkeypatch: MonkeyPatch) -> None:

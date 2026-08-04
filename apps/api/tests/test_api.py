@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import struct
 import zlib
+from time import monotonic, sleep
 
 import cv2
 import numpy as np
@@ -152,13 +153,28 @@ def semantic_status_payload(
     }
 
 
+def wait_terminal_job(client: TestClient, job_id: str, timeout: float = 30.0) -> dict:
+    """C4 后任务在独立线程池异步执行：轮询直到终态。
+
+    原先依赖 TestClient 同步等待 BackgroundTasks 的隐式语义，现已不存在。
+    """
+    deadline = monotonic() + timeout
+    job: dict = {}
+    while monotonic() < deadline:
+        response = client.get(f"/v1/jobs/{job_id}")
+        assert response.status_code == 200
+        job = response.json()
+        if job["status"] in {"SUCCEEDED", "FAILED", "CANCELED"}:
+            return job
+        sleep(0.05)
+    raise AssertionError(f"任务 {job_id} 未在 {timeout}s 内到达终态：{job}")
+
+
 def completed_job(client: TestClient, response) -> dict:
     assert response.status_code == 202, response.text
-    job_id = response.json()["id"]
-    job = client.get(f"/v1/jobs/{job_id}")
-    assert job.status_code == 200
-    assert job.json()["status"] == "SUCCEEDED", job.json()
-    return job.json()
+    job = wait_terminal_job(client, response.json()["id"])
+    assert job["status"] == "SUCCEEDED", job
+    return job
 
 
 def test_health_and_projects() -> None:
@@ -617,9 +633,9 @@ def test_v05_external_vision_accepts_arbitrary_one_room_plan(
         }
         unconfirmed_response = client.post("/v1/floorplan-scenes", json=scene_request)
         assert unconfirmed_response.status_code == 202
-        unconfirmed_job = client.get(
-            f"/v1/jobs/{unconfirmed_response.json()['id']}"
-        ).json()
+        unconfirmed_job = wait_terminal_job(
+            client, unconfirmed_response.json()["id"]
+        )
         assert unconfirmed_job["status"] == "FAILED"
         assert unconfirmed_job["errorCode"] == "INPUT_REJECTED"
         assert "确认结构" in unconfirmed_job["errorMessage"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+from time import monotonic, sleep
 from typing import Any
 
 import cv2
@@ -141,9 +142,17 @@ def mock_ai_layout(monkeypatch: MonkeyPatch) -> list[dict[str, Any]]:
 
 def completed_job(client: TestClient, response) -> dict[str, Any]:
     assert response.status_code == 202, response.text
-    job = client.get(f"/v1/jobs/{response.json()['id']}")
-    assert job.status_code == 200
-    value = job.json()
+    job_id = response.json()["id"]
+    # C4 后任务在独立线程池异步执行：轮询直到终态
+    deadline = monotonic() + 30.0
+    value: dict[str, Any] = {}
+    while monotonic() < deadline:
+        job = client.get(f"/v1/jobs/{job_id}")
+        assert job.status_code == 200
+        value = job.json()
+        if value["status"] in {"SUCCEEDED", "FAILED", "CANCELED"}:
+            break
+        sleep(0.05)
     assert value["status"] == "SUCCEEDED", value
     return value
 

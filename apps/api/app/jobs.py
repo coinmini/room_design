@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any, Callable
 
-from sqlalchemy import update
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.assets import ensure_scene_asset
@@ -59,6 +62,42 @@ PROGRESS_PROCESSORS = {
     run_ai_tone_scheme,
 }
 
+# C4：独立作业线程池——不再与 anyio 的进程级 CapacityLimiter(40) 共享令牌，
+# 避免轮询/健康检查/取消等同步路由与作业线程互相挤占（无背压的悬崖）。
+# 一个 job 无论多少变体都只占一个线程；超出 max_workers 的任务排队等待（背压）。
+# worker 是 daemon 线程（CPython ≥3.9），进程退出时不阻塞；
+# 被中断的 RUNNING 任务由 C1 reclaim_stale_jobs 在下次启动时回收。
+_JOB_EXECUTOR_MAX_WORKERS = 8
+_executor_lock = threading.Lock()
+_job_executor: ThreadPoolExecutor | None = None
+
+
+def _executor() -> ThreadPoolExecutor:
+    """懒创建 + 关闭后可重建（测试会多次进出 lifespan）。"""
+    global _job_executor
+    with _executor_lock:
+        if _job_executor is None:
+            _job_executor = ThreadPoolExecutor(
+                max_workers=_JOB_EXECUTOR_MAX_WORKERS,
+                thread_name_prefix="job-worker",
+            )
+        return _job_executor
+
+
+def dispatch_job(job_id: str) -> None:
+    """C4：全部建任务入口的统一分发点；将来迁移队列系统只需改这一个函数。"""
+    _executor().submit(run_job, job_id)
+
+
+def shutdown_job_executor() -> None:
+    """有界关闭：排队中的任务取消（DB 中保持 QUEUED，下次启动由 C1 回收并提示重试），
+    运行中的任务随 daemon 线程在进程退出时中断，同样由 C1 回收。"""
+    global _job_executor
+    with _executor_lock:
+        if _job_executor is not None:
+            _job_executor.shutdown(wait=False, cancel_futures=True)
+            _job_executor = None
+
 
 def create_job(
     session: Session,
@@ -67,15 +106,40 @@ def create_job(
     payload: dict[str, Any],
     project_id: str | None = None,
     parent_job_id: str | None = None,
+    idempotency_key: str | None = None,
 ) -> Job:
+    # C5：携带幂等键时，重复提交返回既有 job——前端 xhrRequest 的网络自动重试
+    # 会复用同一个键，丢失的响应不会再静默启动第二个完整批次。
+    key = (idempotency_key or "").strip() or None
+    if key is not None:
+        existing = session.scalar(select(Job).where(Job.idempotency_key == key))
+        if existing is not None:
+            logger.info(
+                "idempotent resubmit: returning existing job %s (%s) for key %s",
+                existing.id,
+                existing.type,
+                key,
+            )
+            return existing
     job = Job(
         type=job_type,
         payload=payload,
         project_id=project_id,
         parent_job_id=parent_job_id,
+        idempotency_key=key,
     )
     session.add(job)
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        # 并发重复提交撞上唯一约束：回滚后返回先到的那个 job
+        session.rollback()
+        if key is None:
+            raise
+        existing = session.scalar(select(Job).where(Job.idempotency_key == key))
+        if existing is None:
+            raise
+        return existing
     session.refresh(job)
     return job
 

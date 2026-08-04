@@ -9,11 +9,11 @@ from typing import Annotated, Any, Literal, TypeVar
 from urllib.parse import unquote, urlsplit
 
 from fastapi import (
-    BackgroundTasks,
     Depends,
     FastAPI,
     File,
     Form,
+    Header,
     HTTPException,
     Query,
     UploadFile,
@@ -35,7 +35,7 @@ from app.assets import (
 )
 from app.config import WORKSPACE_ROOT, settings
 from app.database import get_session, init_db
-from app.jobs import create_job, reclaim_stale_jobs, run_job
+from app.jobs import create_job, dispatch_job, reclaim_stale_jobs, shutdown_job_executor
 from app.models import Job, Project, SceneAsset, new_id, utc_now
 from app.processors.ai_workflow import (
     AXONOMETRIC_VARIANTS,
@@ -74,6 +74,9 @@ async def lifespan(_: FastAPI):
     # C1：回收上一个进程遗留的 QUEUED/RUNNING，避免客户端轮询永久死亡的任务
     reclaim_stale_jobs()
     yield
+    # C4：有界关闭作业线程池——排队任务取消（保持 QUEUED，下次启动由 C1 回收），
+    # 运行中任务随 daemon 线程在进程退出时中断
+    shutdown_job_executor()
 
 
 app = FastAPI(
@@ -100,6 +103,9 @@ app.mount(
 )
 
 SessionDep = Annotated[Session, Depends(get_session)]
+# C5：建任务幂等键——前端每次用户提交生成一个 UUID（Idempotency-Key 头），
+# 自动网络重试复用同一键；create_job 冲突时返回既有 job
+IdempotencyKeyHeader = Annotated[str | None, Header(max_length=64)]
 WorkflowPayload = TypeVar("WorkflowPayload", bound=APIModel)
 
 WORKFLOW_STAGE_BY_JOB_TYPE = {
@@ -830,6 +836,7 @@ def list_projects(session: SessionDep) -> list[Project]:
 @app.get(f"{settings.api_prefix}/assets", response_model=list[SceneAssetRead])
 def list_scene_assets(
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
     generation_mode: Annotated[
@@ -920,6 +927,7 @@ def approve_scene_asset_variant(
     asset_id: str,
     payload: SceneAssetApprovalRequest,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
 ) -> dict:
     backfill_scene_assets(session)
     asset = get_local_scene_asset(session, asset_id)
@@ -1020,8 +1028,8 @@ def approve_scene_asset_variant(
 def render_scene_asset_variant(
     asset_id: str,
     payload: SceneAssetRenderRequest,
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
 ) -> Job:
     backfill_scene_assets(session)
     asset = get_local_scene_asset(session, asset_id)
@@ -1060,12 +1068,13 @@ def render_scene_asset_variant(
 
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="FLOORPLAN_SCENE",
         payload=scene_payload,
         project_id=asset.project_id,
         parent_job_id=source_job.id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1075,8 +1084,8 @@ def render_scene_asset_variant(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def analyze_floorplan(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     source_image: UploadFile = File(...),
     plan_width_mm: int | None = Form(None, ge=2400, le=30000),
     plan_depth_mm: int | None = Form(None, ge=2400, le=30000),
@@ -1090,11 +1099,12 @@ async def analyze_floorplan(
     }
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="FLOORPLAN_ANALYZE",
         payload=payload,
         project_id=project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1105,16 +1115,17 @@ async def analyze_floorplan(
 )
 def create_floorplan_scene(
     payload: FloorplanSceneRequest,
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
 ) -> Job:
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="FLOORPLAN_SCENE",
         payload=payload.model_dump(),
         project_id=payload.project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1135,8 +1146,8 @@ def retired_layout_solver() -> None:
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_ai_layout_job(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     source_image: UploadFile = File(...),
     room_type: Literal[
         "whole_home",
@@ -1205,12 +1216,13 @@ async def create_ai_layout_job(
     }
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="LAYOUT_AI",
         payload=payload,
         project_id=project_id or analysis_job.project_id,
         parent_job_id=analysis_job.id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1220,8 +1232,8 @@ async def create_ai_layout_job(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_ai_color_plan_job(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     approved_layout_image: UploadFile = File(...),
     semantic_layout: str = Form(..., min_length=2, max_length=500_000),
     variants: str = Form(",".join(COLOR_PLAN_VARIANTS), max_length=160),
@@ -1267,11 +1279,12 @@ async def create_ai_color_plan_job(
     )
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="AI_COLOR_PLAN",
         payload=payload.model_dump(),
         project_id=project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1281,8 +1294,8 @@ async def create_ai_color_plan_job(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_ai_axonometric_job(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     approved_layout_image: UploadFile = File(...),
     semantic_layout: str = Form(..., min_length=2, max_length=500_000),
     approved_color_plan_image: UploadFile = File(...),
@@ -1331,11 +1344,12 @@ async def create_ai_axonometric_job(
     )
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="AI_AXONOMETRIC",
         payload=payload.model_dump(),
         project_id=project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1345,8 +1359,8 @@ async def create_ai_axonometric_job(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_ai_space_render_job(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     approved_layout_image: UploadFile = File(...),
     semantic_layout: str = Form(..., min_length=2, max_length=500_000),
     selected_space_ids: str | None = Form(None, max_length=2000),
@@ -1403,11 +1417,12 @@ async def create_ai_space_render_job(
     )
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="AI_SPACE_RENDER",
         payload=payload.model_dump(),
         project_id=project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1417,8 +1432,8 @@ async def create_ai_space_render_job(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_ai_style_scheme_job(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     source_space_image: UploadFile = File(...),
     semantic_layout: str = Form(..., min_length=2, max_length=500_000),
     space_id: str = Form(..., min_length=1, max_length=120),
@@ -1477,11 +1492,12 @@ async def create_ai_style_scheme_job(
     )
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="AI_STYLE_SCHEME",
         payload=payload.model_dump(),
         project_id=project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1491,8 +1507,8 @@ async def create_ai_style_scheme_job(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_ai_tone_scheme_job(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     source_space_image: UploadFile = File(...),
     semantic_layout: str = Form(..., min_length=2, max_length=500_000),
     space_id: str = Form(..., min_length=1, max_length=120),
@@ -1545,11 +1561,12 @@ async def create_ai_tone_scheme_job(
     )
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="AI_TONE_SCHEME",
         payload=payload.model_dump(),
         project_id=project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1559,8 +1576,8 @@ async def create_ai_tone_scheme_job(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_ai_local_edit_job(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     source_space_image: UploadFile = File(...),
     mark_image: UploadFile = File(...),
     semantic_layout: str = Form(..., min_length=2, max_length=500_000),
@@ -1607,11 +1624,12 @@ async def create_ai_local_edit_job(
     )
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="AI_LOCAL_EDIT",
         payload=payload.model_dump(),
         project_id=project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1621,8 +1639,8 @@ async def create_ai_local_edit_job(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_white_model_job(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     source_image: UploadFile = File(...),
     room_type: str = Form("living_room"),
     style_preset_id: str = Form("modern_minimal_v1"),
@@ -1646,11 +1664,12 @@ async def create_white_model_job(
     }
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="WHITE_MODEL_RENDER",
         payload=payload,
         project_id=project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1685,16 +1704,17 @@ def camera_presets() -> list[CameraPreset]:
 )
 def create_effect_render_job(
     payload: EffectRenderRequest,
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
 ) -> Job:
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="EFFECT_RENDER",
         payload=payload.model_dump(),
         project_id=payload.project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1704,8 +1724,8 @@ def create_effect_render_job(
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def create_material_job(
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
     source_image: UploadFile = File(...),
     wall_mask: UploadFile | None = File(None),
     floor_mask: UploadFile | None = File(None),
@@ -1738,11 +1758,12 @@ async def create_material_job(
     }
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type="MATERIAL_REPLACEMENT",
         payload=payload,
         project_id=project_id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
@@ -1761,8 +1782,8 @@ def get_job(job_id: str, session: SessionDep) -> Job:
 )
 def retry_job(
     job_id: str,
-    background_tasks: BackgroundTasks,
     session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
 ) -> Job:
     original = session.get(Job, job_id)
     if original is None:
@@ -1774,12 +1795,13 @@ def retry_job(
         )
     job = create_job(
         session,
+        idempotency_key=idempotency_key,
         job_type=original.type,
         payload=original.payload,
         project_id=original.project_id,
         parent_job_id=original.id,
     )
-    background_tasks.add_task(run_job, job.id)
+    dispatch_job(job.id)
     return job
 
 
