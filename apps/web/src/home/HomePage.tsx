@@ -526,8 +526,8 @@ export default function HomePage() {
       if (!response.ok && response.status !== 204) {
         let detail = `删除失败：${response.status}`
         try {
-          const payload = (await response.json()) as { detail?: string } | null
-          if (payload?.detail) detail = payload.detail
+          const payload = (await response.json()) as { detail?: unknown } | null
+          detail = apiError(payload?.detail, response.status)
         } catch {
           // empty body (e.g. some 4xx) — keep status message
         }

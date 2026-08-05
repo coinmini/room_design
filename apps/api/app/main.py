@@ -1283,23 +1283,23 @@ def update_project(
 )
 def delete_project(project_id: str, session: SessionDep) -> None:
     """删除项目记录；资产/任务解绑为孤儿（project_id=null），不物理删生成图。"""
+    from sqlalchemy import delete as sa_delete
+
     project = session.get(Project, project_id)
     if project is None:
         raise HTTPException(status_code=404, detail="项目不存在")
 
-    # 画布节点 → 画布
-    canvases = list(
-        session.scalars(select(Canvas).where(Canvas.project_id == project_id))
+    # 先硬删节点再删画布：Postgres FK 不允许先删 canvases；
+    # 且 ORM 按对象 delete 时 autoflush 顺序可能颠倒导致 500。
+    canvas_ids = list(
+        session.scalars(select(Canvas.id).where(Canvas.project_id == project_id))
     )
-    for canvas in canvases:
-        nodes = list(
-            session.scalars(
-                select(CanvasNode).where(CanvasNode.canvas_id == canvas.id)
-            )
+    if canvas_ids:
+        session.execute(
+            sa_delete(CanvasNode).where(CanvasNode.canvas_id.in_(canvas_ids))
         )
-        for node in nodes:
-            session.delete(node)
-        session.delete(canvas)
+        session.execute(sa_delete(Canvas).where(Canvas.id.in_(canvas_ids)))
+        session.flush()
 
     # 资产 / 任务仅解绑，保留文件与归档
     for asset in session.scalars(
