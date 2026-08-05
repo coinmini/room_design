@@ -2,8 +2,9 @@ import type { CSSProperties } from 'react'
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import { assetUrl } from '../api'
 import type { CanvasGraphNode } from './types'
-import { stageLabel, normalizeStage } from './types'
+import { isVariantApproved, stageLabel, normalizeStage } from './types'
 import { listNodeActions, type ActionContext } from './canRunAction'
+import { canSpawnFromNode, spawnHandleTitle } from './spawnDerive'
 
 export type CanvasNodeData = {
   graphNode: CanvasGraphNode
@@ -37,6 +38,7 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
         'view_structure',
         'generate_layout',
         'approve',
+        'unapprove',
         'set_baseline',
         'generate_style_scheme',
         'generate_tone_scheme',
@@ -48,6 +50,14 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
       ].includes(a.action),
   )
 
+  // 01–07：满足前置条件时可拖出拖把线派生下一阶段
+  const canSpawn = canSpawnFromNode(node, {
+    stage01Confirmed: payload.actionCtx?.stage01Confirmed,
+  })
+  const spawnTitle = spawnHandleTitle(node, {
+    stage01Confirmed: payload.actionCtx?.stage01Confirmed,
+  })
+
   const cardStyle: CSSProperties = {
     width: 220,
     borderRadius: 12,
@@ -58,7 +68,8 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
     boxShadow: selected
       ? '0 0 0 1px var(--canvas-primary), 0 8px 24px rgba(59,130,246,.25)'
       : 'var(--canvas-shadow-soft)',
-    overflow: 'hidden',
+    // 勿 hidden：会裁掉外侧把手，导致拖出难触发
+    overflow: 'visible',
     color: 'var(--canvas-text)',
     fontSize: 12,
     position: 'relative',
@@ -71,7 +82,14 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
       }`}
       style={cardStyle}
     >
-      <Handle type="target" position={Position.Left} style={{ opacity: 0.35 }} />
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="canvas-handle canvas-handle-target"
+        /* 12px 把手 + CSS left:-6px → 中心在方框左边缘 */
+        style={{ width: 12, height: 12 }}
+      />
+      <div className="canvas-node-card-inner">
       <header
         style={{
           display: 'flex',
@@ -81,6 +99,7 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
           padding: '8px 10px',
           borderBottom: '1px solid var(--canvas-divider)',
           background: 'var(--canvas-bg-elevated)',
+          borderRadius: '12px 12px 0 0',
         }}
       >
         <div style={{ minWidth: 0 }}>
@@ -149,7 +168,7 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
           >
             ✓ 结构已确认
           </span>
-        ) : node.approved || node.approvalStatus === 'approved' ? (
+        ) : isVariantApproved(node) ? (
           <span
             className="canvas-pill"
             style={{
@@ -337,7 +356,20 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
         </div>
       ) : null}
 
-      <Handle type="source" position={Position.Right} style={{ opacity: 0.35 }} />
+      </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className={`canvas-handle canvas-handle-source${
+          canSpawn ? ' canvas-handle-spawn' : ''
+        }`}
+        /* 12/18px + CSS right:-半宽 → 中心在方框右边缘，边不会飘在缝里 */
+        style={{
+          width: canSpawn ? 18 : 12,
+          height: canSpawn ? 18 : 12,
+        }}
+        title={spawnTitle}
+      />
     </div>
   )
 }

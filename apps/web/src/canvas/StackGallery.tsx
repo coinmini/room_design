@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { assetUrl } from '../api'
 import type { CanvasGraphNode } from './types'
-import { normalizeStage, stageLabel } from './types'
+import { isVariantApproved, normalizeStage, stageLabel } from './types'
 import './theme.css'
 
 /**
@@ -207,9 +207,7 @@ export default function StackGallery({ gallery, onClose, onSelect }: Props) {
             item.variantId ||
             `方案 ${globalIndex + 1}`
           ).replaceAll('_', ' ')
-          const approved = Boolean(
-            item.approved || item.approvalStatus === 'approved',
-          )
+          const approved = isVariantApproved(item)
           return (
             <button
               key={item.id}

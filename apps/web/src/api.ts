@@ -246,6 +246,17 @@ export function approveWorkflowAsset(
   })
 }
 
+export function unapproveWorkflowAsset(
+  assetId: string,
+  payload: { variantId: string; comment?: string },
+) {
+  return apiFetch(`/v1/assets/${encodeURIComponent(assetId)}/unapprove`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function assetUrl(path?: string) {
   if (!path) return ''
   if (/^https?:\/\//.test(path)) return path

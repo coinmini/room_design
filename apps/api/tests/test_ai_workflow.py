@@ -423,6 +423,34 @@ def test_ai_workflow_stages_archive_assets_without_blender_and_keep_lineage(
             "/artifacts/approved-layout.png"
         )
 
+        # 取消批准后回到待审；再批可继续派生
+        unapproved_layout = client.post(
+            f"/v1/assets/{layout_asset['id']}/unapprove",
+            json={"variantId": "layout_ai_1", "comment": "改主意了"},
+        )
+        assert unapproved_layout.status_code == 200, unapproved_layout.text
+        assert (
+            unapproved_layout.json()["metadata"]["approvalStatus"]
+            == "review_required"
+        )
+        assert "approvedVariantId" not in unapproved_layout.json()["metadata"] or (
+            unapproved_layout.json()["metadata"].get("approvedVariantId") in (None, "")
+        )
+        # 幂等：再次取消不报错
+        unapproved_again = client.post(
+            f"/v1/assets/{layout_asset['id']}/unapprove",
+            json={"variantId": "layout_ai_1"},
+        )
+        assert unapproved_again.status_code == 200
+        # 重新批准以便后续彩平用例继续
+        reapproved_layout = client.post(
+            f"/v1/assets/{layout_asset['id']}/approve",
+            json={"variantId": "layout_ai_1", "comment": "再次采用"},
+        )
+        assert reapproved_layout.status_code == 200
+        assert reapproved_layout.json()["metadata"]["approvalStatus"] == "approved"
+        approved_version_id = reapproved_layout.json()["metadata"]["approvedVersionId"]
+
         color_job = _completed_job(
             client,
             client.post(

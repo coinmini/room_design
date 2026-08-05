@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import AssetLibrary from '../AssetLibrary'
 import '../App.css'
 import './home.css'
+import UserSheet from './UserSheet'
 
 const CHIP_ACTIONS = [
   { label: 'PS插件', tone: 'orange' },
@@ -17,8 +19,10 @@ const CHIP_ACTIONS = [
 export default function AssetsPage() {
   const [params] = useSearchParams()
   const assetId = params.get('assetId')
-  const displayName =
-    localStorage.getItem('room_design_display_name') || '设计师'
+  const [userOpen, setUserOpen] = useState(false)
+  const [displayName, setDisplayName] = useState(
+    () => localStorage.getItem('room_design_display_name') || '设计师',
+  )
 
   return (
     <div className="fb-home fb-assets-page">
@@ -37,7 +41,12 @@ export default function AssetsPage() {
           }
           toolbarTrailing={
             <div className="fb-assets-toolbar-chips">
-              <div className="fb-user-chip">
+              <button
+                type="button"
+                className="fb-user-chip"
+                aria-label="打开个人中心"
+                onClick={() => setUserOpen(true)}
+              >
                 <span className="fb-user-avatar" aria-hidden>
                   {displayName.slice(0, 1)}
                 </span>
@@ -45,7 +54,7 @@ export default function AssetsPage() {
                   <strong>本地用户</strong>
                   <span>免费</span>
                 </div>
-              </div>
+              </button>
               {CHIP_ACTIONS.map((chip) => (
                 <button
                   key={chip.label}
@@ -59,6 +68,17 @@ export default function AssetsPage() {
           }
         />
       </main>
+
+      <UserSheet
+        open={userOpen}
+        onClose={() => {
+          setUserOpen(false)
+          setDisplayName(
+            localStorage.getItem('room_design_display_name') || '设计师',
+          )
+        }}
+        displayName={displayName}
+      />
     </div>
   )
 }

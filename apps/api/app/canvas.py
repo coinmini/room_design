@@ -339,6 +339,8 @@ def build_project_canvas_graph(
             module_key = "floorplan"
 
         for variant in variants:
+            # 批准态必须按 variant：勿把资产级 approvalStatus 广播到每一张图
+            variant_approved = bool(variant.get("approved"))
             nodes.append(
                 {
                     "id": canvas_node_id(asset.id, variant["variantId"]),
@@ -349,7 +351,7 @@ def build_project_canvas_graph(
                     "generationMode": asset.generation_mode,
                     "moduleKey": module_key,
                     "workflowStage": workflow_stage,
-                    "approvalStatus": metadata.get("approvalStatus"),
+                    "approvalStatus": "approved" if variant_approved else None,
                     "parentAssetId": asset.parent_asset_id,
                     "parentVariantId": parent_variant_id,
                     "createdAt": asset.created_at.isoformat()

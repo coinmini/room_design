@@ -19,11 +19,13 @@ import {
 } from '../api'
 import type { CanvasGraphNode } from '../canvas/types'
 import { normalizeStage } from '../canvas/types'
-import { approveVariantIdempotent } from './actions'
+import { approveVariantIdempotent, unapproveVariant } from './actions'
 import {
   AXONOMETRIC_VARIANTS,
   COLOR_PLAN_VARIANTS,
+  STYLE_SCHEME_VARIANT_LABELS,
   STYLE_SCHEME_VARIANTS,
+  TONE_SCHEME_VARIANT_LABELS,
   TONE_SCHEME_VARIANTS,
 } from './constants'
 import { apiError, fetchArtifactAsFile, recordValue } from './media'
@@ -34,6 +36,14 @@ export type JobListener = (job: Job) => void
 export type StagePanelRequest =
   | { kind: 'upload_floorplan' }
   | { kind: 'space_select'; rooms: Array<{ id: string; name: string }> }
+  | {
+      kind: 'style_select'
+      options: Array<{ id: string; name: string }>
+    }
+  | {
+      kind: 'tone_select'
+      options: Array<{ id: string; name: string }>
+    }
   | {
       kind: 'local_edit'
       sourceUrl: string
@@ -344,20 +354,56 @@ async function runColorPlan(
   signal?: AbortSignal,
 ): Promise<Job> {
   if (!node.assetId) throw new Error('缺少上游资产')
-  // 需要已批准 layout
+  // 需要本 variant 已批准（支持多 variant 分叉批准）
   const asset = await fetchAsset(node.assetId)
   const metadata = recordValue(asset.metadata)
-  if (metadata.approvalStatus !== 'approved') {
+  const deliverables = recordValue(asset.deliverables)
+  const variantApprovals = recordValue(metadata.variantApprovals)
+  const thisApproval = node.variantId
+    ? recordValue(variantApprovals[node.variantId])
+    : {}
+  const thisApproved =
+    Boolean(node.approved) ||
+    (typeof thisApproval.versionId === 'string' && Boolean(thisApproval.versionId)) ||
+    (metadata.approvalStatus === 'approved' &&
+      pickString(metadata.approvedVariantId) === node.variantId)
+  if (!thisApproved && metadata.approvalStatus !== 'approved') {
     throw new Error('请先批准当前布局节点')
   }
-  const deliverables = recordValue(asset.deliverables)
+  if (!thisApproved && node.variantId) {
+    // 资产已批但不是本 variant：先批本节点
+    const approved = await approveVariantIdempotent({
+      assetId: node.assetId,
+      variantId: node.variantId,
+      comment: '生成彩平前自动批准布局方案',
+    })
+    // 用批准结果继续
+    const url = pickString(node.url, asset.thumbnailUrl as string)
+    if (!url) throw new Error('布局节点缺少预览图')
+    const layoutImage = await fetchArtifactAsFile(url, 'approved-layout')
+    const semantic = await resolveSemanticLayout(node.assetId)
+    const form = new FormData()
+    form.append('approved_layout_image', layoutImage)
+    form.append('layout_approved', 'true')
+    form.append('semantic_layout', semantic)
+    form.append('variants', COLOR_PLAN_VARIANTS.join(','))
+    form.append('asset_parent_id', node.assetId)
+    form.append('project_id', projectId)
+    form.append('approved_layout_version_id', approved.approvedVersionId)
+    if (designPrompt) form.append('design_prompt', designPrompt)
+    return postAndPoll(createColorPlanRenders(form), onJob, signal)
+  }
   const url = pickString(
-    deliverables.approvedOutputUrl,
     node.url,
+    pickString(thisApproval.outputUrl),
+    deliverables.approvedOutputUrl,
     asset.thumbnailUrl as string,
   )
+  if (!url) throw new Error('布局节点缺少预览图')
   const layoutImage = await fetchArtifactAsFile(url, 'approved-layout')
   const versionId = pickString(
+    node.approvedVersionId,
+    pickString(thisApproval.versionId),
     metadata.approvedVersionId,
     deliverables.approvedVersionId,
   )
@@ -447,6 +493,8 @@ async function runDerivative(
   extras?: {
     markFile?: File
     editPrompt?: string
+    /** 风格/色调：用户勾选的 variant id 列表 */
+    selectedVariants?: string[]
   },
   onJob?: JobListener,
   signal?: AbortSignal,
@@ -504,12 +552,24 @@ async function runDerivative(
   form.append('project_id', projectId)
 
   if (kind === 'style') {
-    form.append('variants', STYLE_SCHEME_VARIANTS.join(','))
+    const allowed = new Set<string>(STYLE_SCHEME_VARIANTS)
+    const picked = (extras?.selectedVariants || []).filter((id) =>
+      allowed.has(id),
+    )
+    const variants = picked.length
+      ? picked
+      : [...STYLE_SCHEME_VARIANTS]
+    form.append('variants', variants.join(','))
     if (designPrompt) form.append('design_prompt', designPrompt)
     return postAndPoll(createStyleSchemeRenders(form), onJob, signal)
   }
   if (kind === 'tone') {
-    form.append('variants', TONE_SCHEME_VARIANTS.join(','))
+    const allowed = new Set<string>(TONE_SCHEME_VARIANTS)
+    const picked = (extras?.selectedVariants || []).filter((id) =>
+      allowed.has(id),
+    )
+    const variants = picked.length ? picked : [...TONE_SCHEME_VARIANTS]
+    form.append('variants', variants.join(','))
     if (designPrompt) form.append('design_prompt', designPrompt)
     return postAndPoll(createToneSchemeRenders(form), onJob, signal)
   }
@@ -535,12 +595,22 @@ export type CanvasActionExtras = {
   designPrompt?: string
   file?: File
   selectedSpaceIds?: string[]
+  /** 风格方案勾选的 variant id */
+  selectedStyleVariants?: string[]
+  /** 色调方案勾选的 variant id */
+  selectedToneVariants?: string[]
   markFile?: File
   editPrompt?: string
   planWidthMm?: number
   planDepthMm?: number
   /** 01 结构编辑器确认结果；生成布局必填 */
   stage01Approval?: Stage01ApprovalPayload
+  /** 已通过拖把线/生成对话框确认，可直接提交派生任务 */
+  spawnDialogConfirmed?: boolean
+  /** @deprecated 使用 spawnDialogConfirmed */
+  layoutDialogConfirmed?: boolean
+  /** @deprecated 使用 spawnDialogConfirmed */
+  colorPlanDialogConfirmed?: boolean
 }
 
 /**
@@ -598,6 +668,19 @@ export async function executeCanvasAction(params: {
       message: result.reused
         ? `已是批准状态：${node.variantId}`
         : `已批准：${node.variantId}`,
+    }
+  }
+
+  if (action === 'unapprove') {
+    if (!node.assetId || !node.variantId) throw new Error('节点不可取消批准')
+    await unapproveVariant({
+      assetId: node.assetId,
+      variantId: node.variantId,
+      comment: '画布取消批准',
+    })
+    return {
+      ok: true,
+      message: `已取消批准：${node.variantId}`,
     }
   }
 
@@ -676,12 +759,23 @@ export async function executeCanvasAction(params: {
   }
 
   if (action === 'generate_style_scheme') {
+    if (!extras?.selectedStyleVariants?.length) {
+      const panel: StagePanelRequest = {
+        kind: 'style_select',
+        options: STYLE_SCHEME_VARIANTS.map((id) => ({
+          id,
+          name: STYLE_SCHEME_VARIANT_LABELS[id] || id,
+        })),
+      }
+      onNeedPanel?.(panel)
+      return { ok: false, needPanel: panel }
+    }
     const job = await runDerivative(
       projectId,
       node,
       'style',
       extras?.designPrompt || '',
-      undefined,
+      { selectedVariants: extras.selectedStyleVariants },
       onJob,
       signal,
     )
@@ -689,12 +783,23 @@ export async function executeCanvasAction(params: {
   }
 
   if (action === 'generate_tone_scheme') {
+    if (!extras?.selectedToneVariants?.length) {
+      const panel: StagePanelRequest = {
+        kind: 'tone_select',
+        options: TONE_SCHEME_VARIANTS.map((id) => ({
+          id,
+          name: TONE_SCHEME_VARIANT_LABELS[id] || id,
+        })),
+      }
+      onNeedPanel?.(panel)
+      return { ok: false, needPanel: panel }
+    }
     const job = await runDerivative(
       projectId,
       node,
       'tone',
       extras?.designPrompt || '',
-      undefined,
+      { selectedVariants: extras.selectedToneVariants },
       onJob,
       signal,
     )

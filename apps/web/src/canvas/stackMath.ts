@@ -4,7 +4,7 @@
  */
 
 import type { CanvasGraphNode } from './types'
-import { normalizeStage, stageLabel } from './types'
+import { isVariantApproved, normalizeStage, stageLabel } from './types'
 
 /**
  * 会一次出多图的阶段：同 asset / job 下多 variant 默认堆叠。
@@ -90,8 +90,8 @@ export function applyImageStacks(
   for (const [key, items] of groups) {
     // 稳定顺序：批准优先，再按 label / variantId
     const ordered = [...items].sort((a, b) => {
-      const ap = a.approved || a.approvalStatus === 'approved' ? 0 : 1
-      const bp = b.approved || b.approvalStatus === 'approved' ? 0 : 1
+      const ap = isVariantApproved(a) ? 0 : 1
+      const bp = isVariantApproved(b) ? 0 : 1
       if (ap !== bp) return ap - bp
       return (a.label || a.variantId).localeCompare(b.label || b.variantId, 'zh')
     })
@@ -129,13 +129,11 @@ export function applyImageStacks(
       stackItems: ordered,
       label,
       title,
-      // 堆叠本身不作为单一批准态
+      // 堆叠本身不作为单一批准态；成员各自保留 approved
       approved: false,
-      approvalStatus: ordered.some(
-        (n) => n.approved || n.approvalStatus === 'approved',
-      )
+      approvalStatus: ordered.some((n) => isVariantApproved(n))
         ? 'partial'
-        : cover.approvalStatus,
+        : null,
     })
   }
 

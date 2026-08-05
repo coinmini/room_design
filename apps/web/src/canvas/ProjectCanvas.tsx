@@ -14,12 +14,26 @@ import {
   useReactFlow,
   type Edge,
   type Node,
+  type Connection,
   type NodeMouseHandler,
+  type OnConnectEnd,
+  type OnConnectStart,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import './theme.css'
 
-import { apiFetch, assetUrl, type Job } from '../api'
+import { apiFetch, assetUrl, pollJob, type Job } from '../api'
+import {
+  actionFromJobType,
+  isActiveJobStatus,
+  loadActiveCanvasJobs,
+  parentAssetIdFromJob,
+  clearActiveCanvasJobs,
+  removeActiveCanvasJob,
+  upsertActiveCanvasJob,
+  workflowStageFromAction,
+  type ActiveCanvasJobRecord,
+} from './activeJobs'
 import FloorplanModule, {
   type FloorplanStage01Approval,
 } from '../FloorplanModule'
@@ -28,8 +42,23 @@ import {
   type Stage01ApprovalPayload,
   type StagePanelRequest,
 } from '../workflow/canvasRunner'
+import { canvasEdgeTypes } from './BorderEdge'
 import { canvasNodeTypes, type CanvasNodeData } from './CanvasNodeCard'
 import CanvasStagePanel from './CanvasStagePanel'
+import GenerateLayoutDialog, {
+  composeLayoutDesignPrompt,
+  type GenerateDialogMode,
+} from './GenerateLayoutDialog'
+import {
+  actionForDialogMode,
+  dialogModeForAction,
+  isSpawnDialogAction,
+  nodeHasApprovedSpawnSource,
+  primarySpawnForNode,
+  resolveSpawnSourceNode,
+  spawnOptionsForNode,
+  type SpawnTarget,
+} from './spawnDerive'
 import LayoutDetailDock from './LayoutDetailDock'
 import LocalEditDock, { type LocalEditSession } from './LocalEditDock'
 import StackGallery, { type StackGalleryState } from './StackGallery'
@@ -55,12 +84,20 @@ import {
   stackEndpointMap,
 } from './stackMath'
 import type { CanvasGraph, CanvasGraphNode } from './types'
-import { normalizeStage, stageLabel } from './types'
+import { isVariantApproved, normalizeStage, stageLabel } from './types'
 
 type ContextMenuState = {
   x: number
   y: number
   node: CanvasGraphNode | null
+} | null
+
+/** 拖把线松手：多项下游时的「引用该节点生成」菜单 */
+type SpawnMenuState = {
+  x: number
+  y: number
+  node: CanvasGraphNode
+  options: SpawnTarget[]
 } | null
 
 /** 右键菜单贴边：避免画布底部/右侧被裁切 */
@@ -99,6 +136,11 @@ type SkeletonSlot = {
 function expectedSkeletonSlots(
   action: string,
   parent: CanvasGraphNode | null,
+  extras?: {
+    selectedSpaceIds?: string[]
+    selectedStyleVariants?: string[]
+    selectedToneVariants?: string[]
+  },
 ): Omit<SkeletonSlot, 'id' | 'groupId'>[] {
   const parentAssetId = parent?.assetId || undefined
   const parentNodeId = parent?.id
@@ -135,6 +177,15 @@ function expectedSkeletonSlots(
     }))
   }
   if (action === 'generate_style_scheme') {
+    const ids = extras?.selectedStyleVariants
+    if (ids?.length) {
+      return ids.map((id, i) => ({
+        label: `风格 ${i + 1}`,
+        workflowStage: 'style_scheme',
+        parentAssetId,
+        parentNodeId,
+      }))
+    }
     return [1, 2, 3].map((n) => ({
       label: `风格 ${n}`,
       workflowStage: 'style_scheme',
@@ -143,6 +194,15 @@ function expectedSkeletonSlots(
     }))
   }
   if (action === 'generate_tone_scheme') {
+    const ids = extras?.selectedToneVariants
+    if (ids?.length) {
+      return ids.map((id, i) => ({
+        label: `色调 ${i + 1}`,
+        workflowStage: 'tone_scheme',
+        parentAssetId,
+        parentNodeId,
+      }))
+    }
     return [1, 2, 3].map((n) => ({
       label: `色调 ${n}`,
       workflowStage: 'tone_scheme',
@@ -151,6 +211,15 @@ function expectedSkeletonSlots(
     }))
   }
   if (action === 'generate_space_render') {
+    const ids = extras?.selectedSpaceIds
+    if (ids?.length) {
+      return ids.map((id, i) => ({
+        label: `分空间 ${i + 1}`,
+        workflowStage: 'space_render',
+        parentAssetId,
+        parentNodeId,
+      }))
+    }
     return [
       {
         label: '分空间生成中…',
@@ -234,6 +303,17 @@ function ProjectCanvasInner({
   const [layoutDetail, setLayoutDetail] = useState<CanvasGraphNode | null>(null)
   /** 08 局部修改专注坞（对齐 01，非弹层） */
   const [localEdit, setLocalEdit] = useState<LocalEditSession | null>(null)
+  /** 拖把线 / 生成按钮：引用上游生成下游的对话框 */
+  const [generateDialog, setGenerateDialog] = useState<{
+    node: CanvasGraphNode
+    mode: GenerateDialogMode
+  } | null>(null)
+  /** 03 彩平等多项派生：拖把线松手菜单 */
+  const [spawnMenu, setSpawnMenu] = useState<SpawnMenuState>(null)
+  const connectStartRef = useRef<{
+    nodeId: string | null
+    handleType: string | null
+  } | null>(null)
   /** 多图堆叠：全屏一览图库（不在画布上拆成一长列） */
   const [stackGallery, setStackGallery] = useState<StackGalleryState | null>(
     null,
@@ -425,18 +505,19 @@ function ProjectCanvasInner({
           id: edge.id,
           source: edge.source,
           target: edge.target,
-          type: 'default' as const,
-          style: { stroke: 'rgba(255,255,255,0.22)', strokeWidth: 1.5 },
+          // 自定义边：端点贴源右缘 / 目标左缘，避免把手偏移导致飘线
+          type: 'border' as const,
+          style: { stroke: 'rgba(255,255,255,0.28)', strokeWidth: 1.6 },
         })),
         ...skeletonEdges.map((edge) => ({
           id: edge.id,
           source: edge.source,
           target: edge.target,
-          type: 'default' as const,
+          type: 'border' as const,
           animated: true,
           style: {
             stroke: 'rgba(59,130,246,0.55)',
-            strokeWidth: 1.5,
+            strokeWidth: 1.6,
             strokeDasharray: '6 4',
           },
         })),
@@ -733,22 +814,42 @@ function ProjectCanvasInner({
     }
   }, [])
 
-  const clearSkeletonGroup = useCallback((groupId: string) => {
-    setSkeletonSlots((current) => {
-      const next = current.filter((s) => s.groupId !== groupId)
-      skeletonSlotsRef.current = next
-      return next
-    })
-  }, [])
+  const clearSkeletonGroup = useCallback(
+    (groupId: string) => {
+      setSkeletonSlots((current) => {
+        const removed = current.filter((s) => s.groupId === groupId)
+        const next = current.filter((s) => s.groupId !== groupId)
+        skeletonSlotsRef.current = next
+        for (const slot of removed) {
+          removeActiveCanvasJob(projectId, {
+            groupId: slot.groupId,
+            jobId: slot.jobId,
+          })
+        }
+        return next
+      })
+    },
+    [projectId],
+  )
 
   const spawnSkeletons = useCallback(
-    (action: string, parent: CanvasGraphNode | null): string => {
+    (
+      action: string,
+      parent: CanvasGraphNode | null,
+      extras?: {
+        selectedSpaceIds?: string[]
+        selectedStyleVariants?: string[]
+        selectedToneVariants?: string[]
+      },
+    ): string => {
       const groupId = `gen-${action}-${Date.now()}`
-      const slots = expectedSkeletonSlots(action, parent).map((slot, index) => ({
-        ...slot,
-        id: `${groupId}-${index + 1}`,
-        groupId,
-      }))
+      const slots = expectedSkeletonSlots(action, parent, extras).map(
+        (slot, index) => ({
+          ...slot,
+          id: `${groupId}-${index + 1}`,
+          groupId,
+        }),
+      )
       setSkeletonSlots((current) => {
         const next = [...current, ...slots]
         skeletonSlotsRef.current = next
@@ -774,11 +875,227 @@ function ProjectCanvasInner({
           slot.groupId === groupId ? { ...slot, jobId: job.id } : slot,
         )
         skeletonSlotsRef.current = next
+        const groupSlots = next.filter((s) => s.groupId === groupId)
+        if (groupSlots.length) {
+          const action =
+            actionFromJobType(job.type) ||
+            (groupSlots[0].workflowStage === 'layout'
+              ? 'generate_layout'
+              : groupSlots[0].workflowStage)
+          upsertActiveCanvasJob(projectId, {
+            jobId: job.id,
+            action,
+            groupId,
+            parentAssetId: groupSlots[0].parentAssetId,
+            parentNodeId: groupSlots[0].parentNodeId,
+            slots: groupSlots.map((s) => ({
+              id: s.id,
+              label: s.label,
+              workflowStage: s.workflowStage,
+            })),
+            updatedAt: Date.now(),
+          })
+        }
         return next
       })
     },
-    [],
+    [projectId],
   )
+
+  /** 离开再进入：恢复进行中任务的占位框并继续轮询 */
+  const resumeActiveJobs = useCallback(
+    async (signal?: AbortSignal) => {
+      // 1) 服务端进行中任务
+      let serverJobs: Job[] = []
+      try {
+        const response = await apiFetch(
+          `/v1/jobs?projectId=${encodeURIComponent(projectId)}&limit=50`,
+          { cache: 'no-store', signal },
+        )
+        if (response.ok) {
+          const list = (await response.json()) as Job[]
+          serverJobs = Array.isArray(list)
+            ? list.filter((j) => isActiveJobStatus(j.status))
+            : []
+        }
+      } catch {
+        /* 网络失败时仍尝试 localStorage */
+      }
+      if (signal?.aborted) return
+
+      const local = loadActiveCanvasJobs(projectId)
+      const byJobId = new Map<string, ActiveCanvasJobRecord>()
+      for (const item of local) byJobId.set(item.jobId, item)
+
+      // 合并：以服务端活跃任务为准，补本地骨架信息
+      const toResume: ActiveCanvasJobRecord[] = []
+      for (const job of serverJobs) {
+        const action = actionFromJobType(job.type)
+        if (!action) continue
+        const cached = byJobId.get(job.id)
+        const parentAssetId =
+          cached?.parentAssetId || parentAssetIdFromJob(job)
+        const stage = workflowStageFromAction(action)
+        const count =
+          action === 'generate_layout'
+            ? Math.max(1, Number(job.payload?.count) || 2)
+            : action === 'generate_color_plan'
+              ? 4
+              : action === 'generate_axonometric' ||
+                  action === 'generate_style_scheme' ||
+                  action === 'generate_tone_scheme'
+                ? 3
+                : 1
+        const groupId = cached?.groupId || `resume-${job.id}`
+        const slots =
+          cached?.slots?.length === count
+            ? cached.slots
+            : Array.from({ length: count }, (_, i) => ({
+                id: `${groupId}-${i + 1}`,
+                label:
+                  action === 'generate_layout'
+                    ? `布局方案 ${i + 1}`
+                    : `生成中 ${i + 1}`,
+                workflowStage: stage,
+              }))
+        toResume.push({
+          jobId: job.id,
+          action,
+          groupId,
+          parentAssetId,
+          parentNodeId: cached?.parentNodeId,
+          slots,
+          updatedAt: Date.now(),
+        })
+      }
+
+      // 本地有、服务端列表可能漏掉的（刚提交）
+      for (const item of local) {
+        if (toResume.some((r) => r.jobId === item.jobId)) continue
+        try {
+          const response = await apiFetch(
+            `/v1/jobs/${encodeURIComponent(item.jobId)}`,
+            { cache: 'no-store', signal },
+          )
+          if (!response.ok) {
+            removeActiveCanvasJob(projectId, { jobId: item.jobId })
+            continue
+          }
+          const job = (await response.json()) as Job
+          if (isActiveJobStatus(job.status)) toResume.push(item)
+          else if (job.status === 'SUCCEEDED') {
+            removeActiveCanvasJob(projectId, { jobId: item.jobId })
+          } else {
+            removeActiveCanvasJob(projectId, { jobId: item.jobId })
+          }
+        } catch {
+          /* keep for next visit */
+        }
+      }
+
+      if (signal?.aborted || !toResume.length) {
+        if (!toResume.length && local.length) {
+          clearActiveCanvasJobs(projectId)
+        }
+        return
+      }
+
+      // 恢复骨架
+      const restored: SkeletonSlot[] = []
+      for (const item of toResume) {
+        for (const slot of item.slots) {
+          restored.push({
+            id: slot.id,
+            groupId: item.groupId,
+            label: slot.label,
+            workflowStage: slot.workflowStage,
+            parentAssetId: item.parentAssetId,
+            parentNodeId: item.parentNodeId,
+            jobId: item.jobId,
+          })
+        }
+        upsertActiveCanvasJob(projectId, item)
+      }
+      setSkeletonSlots((current) => {
+        const existingJobIds = new Set(
+          current.map((s) => s.jobId).filter(Boolean),
+        )
+        const merged = [
+          ...current,
+          ...restored.filter((s) => !existingJobIds.has(s.jobId)),
+        ]
+        skeletonSlotsRef.current = merged
+        return merged
+      })
+      if (graphRef.current) {
+        applyGraph(graphRef.current, selectedId)
+      }
+      setNotice(`恢复 ${toResume.length} 个进行中的生成任务…`)
+      busyActionRef.current = toResume[0]?.action ?? null
+      busyRef.current = true
+      setBusy(true)
+
+      // 并行轮询
+      await Promise.all(
+        toResume.map(async (item) => {
+          try {
+            const completed = await pollJob(
+              item.jobId,
+              undefined,
+              undefined,
+              signal,
+            )
+            removeActiveCanvasJob(projectId, {
+              jobId: item.jobId,
+              groupId: item.groupId,
+            })
+            clearSkeletonGroup(item.groupId)
+            if (completed.status === 'SUCCEEDED') {
+              await loadGraph({ fit: false })
+              setNotice(
+                item.action === 'generate_layout'
+                  ? '布局生成完成'
+                  : '生成任务已完成',
+              )
+            } else {
+              setNotice(
+                `任务结束：${completed.status}${
+                  completed.errorMessage ? ` · ${completed.errorMessage}` : ''
+                }`,
+              )
+            }
+          } catch (err) {
+            if (signal?.aborted) return
+            // 超时仍保留记录，便于再次进入继续跟
+            setNotice(
+              err instanceof Error
+                ? err.message
+                : '恢复轮询失败，稍后刷新重试',
+            )
+          }
+        }),
+      )
+
+      if (!signal?.aborted) {
+        busyRef.current = false
+        busyActionRef.current = null
+        setBusy(false)
+      }
+    },
+    [projectId, applyGraph, selectedId, clearSkeletonGroup, loadGraph],
+  )
+
+  // 进入画布：恢复进行中的生成（离开首页再回来不丢进度）
+  useEffect(() => {
+    const ac = new AbortController()
+    const timer = window.setTimeout(() => {
+      void resumeActiveJobs(ac.signal)
+    }, 400)
+    return () => {
+      ac.abort()
+      window.clearTimeout(timer)
+    }
+  }, [projectId, resumeActiveJobs])
 
   const runAction = useCallback(
     async (
@@ -818,6 +1135,9 @@ function ProjectCanvasInner({
         // 面板已提交完整参数 → 立刻关掉浮层，避免生成过程中仍盖在画布上
         if (
           (action === 'generate_space_render' && extras?.selectedSpaceIds) ||
+          (action === 'generate_style_scheme' &&
+            extras?.selectedStyleVariants) ||
+          (action === 'generate_tone_scheme' && extras?.selectedToneVariants) ||
           (action === 'local_edit' && extras?.markFile) ||
           (action === 'upload_floorplan_submit' && extras?.file)
         ) {
@@ -857,6 +1177,157 @@ function ProjectCanvasInner({
           return
         }
 
+        const dialogConfirmed = Boolean(
+          extras?.spawnDialogConfirmed ||
+            extras?.layoutDialogConfirmed ||
+            extras?.colorPlanDialogConfirmed,
+        )
+
+        // 05 分空间：必须先选房间（不走通用「生成意向」对话框）
+        if (
+          action === 'generate_space_render' &&
+          node &&
+          !extras?.selectedSpaceIds?.length
+        ) {
+          busyRef.current = false
+          setBusy(false)
+          if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
+            setNotice('请先批准当前方案后再生成分空间')
+            return
+          }
+          const source = resolveSpawnSourceNode(node) ?? node
+          setSelectedId(node.id)
+          setGenerateDialog(null)
+          setSpawnMenu(null)
+          try {
+            const panelResult = await executeCanvasAction({
+              projectId,
+              node: source,
+              action: 'generate_space_render',
+              extras: { designPrompt, ...extras },
+            })
+            if (!panelResult.ok && panelResult.needPanel) {
+              setPanel(panelResult.needPanel)
+              setPanelNode(source)
+              setNotice('勾选要生成的房间，可多选')
+              return
+            }
+          } catch (value) {
+            setNotice(
+              value instanceof Error ? value.message : '无法加载房间列表',
+            )
+          }
+          return
+        }
+
+        // 06 风格：必须先勾选要生成的风格方案
+        if (
+          action === 'generate_style_scheme' &&
+          node &&
+          !extras?.selectedStyleVariants?.length
+        ) {
+          busyRef.current = false
+          setBusy(false)
+          if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
+            setNotice('请先批准当前方案后再生成风格')
+            return
+          }
+          const source = resolveSpawnSourceNode(node) ?? node
+          setSelectedId(node.id)
+          setGenerateDialog(null)
+          setSpawnMenu(null)
+          try {
+            const panelResult = await executeCanvasAction({
+              projectId,
+              node: source,
+              action: 'generate_style_scheme',
+              extras: { designPrompt, ...extras },
+            })
+            if (!panelResult.ok && panelResult.needPanel) {
+              setPanel(panelResult.needPanel)
+              setPanelNode(source)
+              setNotice('勾选要生成的风格方案，可多选')
+              return
+            }
+          } catch (value) {
+            setNotice(
+              value instanceof Error ? value.message : '无法打开风格选择',
+            )
+          }
+          return
+        }
+
+        // 07 色调：必须先勾选要生成的色调方案
+        if (
+          action === 'generate_tone_scheme' &&
+          node &&
+          !extras?.selectedToneVariants?.length
+        ) {
+          busyRef.current = false
+          setBusy(false)
+          if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
+            setNotice('请先批准当前方案后再生成色调')
+            return
+          }
+          const source = resolveSpawnSourceNode(node) ?? node
+          setSelectedId(node.id)
+          setGenerateDialog(null)
+          setSpawnMenu(null)
+          try {
+            const panelResult = await executeCanvasAction({
+              projectId,
+              node: source,
+              action: 'generate_tone_scheme',
+              extras: { designPrompt, ...extras },
+            })
+            if (!panelResult.ok && panelResult.needPanel) {
+              setPanel(panelResult.needPanel)
+              setPanelNode(source)
+              setNotice('勾选要生成的色调方案，可多选')
+              return
+            }
+          } catch (value) {
+            setNotice(
+              value instanceof Error ? value.message : '无法打开色调选择',
+            )
+          }
+          return
+        }
+
+        // 拖把线/生成按钮：先弹生成意向对话框（布局/彩平/轴侧）
+        // 分空间 / 风格 / 色调 已单独走选择面板
+        if (
+          isSpawnDialogAction(action) &&
+          action !== 'generate_space_render' &&
+          action !== 'generate_style_scheme' &&
+          action !== 'generate_tone_scheme' &&
+          node &&
+          !dialogConfirmed
+        ) {
+          busyRef.current = false
+          setBusy(false)
+          if (action === 'generate_layout') {
+            if (!node.jobId || !stage01ByJobRef.current[node.jobId]) {
+              setNotice('请先在结构编辑器中确认结构后再生成布局')
+              void openStructureEditor(node)
+              return
+            }
+          } else if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
+            setNotice('请先批准当前方案后再派生下游')
+            return
+          }
+          const mode = dialogModeForAction(action)
+          if (!mode) {
+            setNotice('当前动作不支持生成对话框')
+            return
+          }
+          const source = resolveSpawnSourceNode(node) ?? node
+          setGenerateDialog({ node: source, mode })
+          const spawn = primarySpawnForNode(source)
+          setNotice(spawn?.notice ?? '填写意向后点击箭头生成')
+          return
+        }
+
         if (action === 'generate_layout' && node?.jobId) {
           const approval = stage01ByJobRef.current[node.jobId]
           if (!approval) {
@@ -878,26 +1349,54 @@ function ProjectCanvasInner({
           return
         }
 
-        const needsSkeleton = [
-          'generate_layout',
-          'generate_color_plan',
-          'generate_axonometric',
-          'generate_space_render',
-          'generate_style_scheme',
-          'generate_tone_scheme',
-          'local_edit',
-          'upload_floorplan_submit',
-          'reanalyze',
-        ].includes(action)
-        // local_edit 仅在提交 markFile 后才需要骨架（上面已拦截无 mark 的打开坞路径）
+        const needsSkeleton =
+          [
+            'generate_layout',
+            'generate_color_plan',
+            'generate_axonometric',
+            'generate_space_render',
+            'generate_style_scheme',
+            'generate_tone_scheme',
+            'local_edit',
+            'upload_floorplan_submit',
+            'reanalyze',
+          ].includes(action) &&
+          // 分空间 / 风格 仅在已勾选后出骨架；local_edit 仅提交标注后
+          !(
+            action === 'generate_space_render' &&
+            !extras?.selectedSpaceIds?.length
+          ) &&
+          !(
+            action === 'generate_style_scheme' &&
+            !extras?.selectedStyleVariants?.length
+          ) &&
+          !(
+            action === 'generate_tone_scheme' &&
+            !extras?.selectedToneVariants?.length
+          ) &&
+          !(action === 'local_edit' && !extras?.markFile)
         if (needsSkeleton) {
           busyActionRef.current = action
-          skeletonGroupId = spawnSkeletons(action, node)
-          const n = expectedSkeletonSlots(action, node).length
+          skeletonGroupId = spawnSkeletons(action, node, {
+            selectedSpaceIds: extras?.selectedSpaceIds,
+            selectedStyleVariants: extras?.selectedStyleVariants,
+            selectedToneVariants: extras?.selectedToneVariants,
+          })
+          const n = expectedSkeletonSlots(action, node, {
+            selectedSpaceIds: extras?.selectedSpaceIds,
+            selectedStyleVariants: extras?.selectedStyleVariants,
+            selectedToneVariants: extras?.selectedToneVariants,
+          }).length
           setNotice(
             action === 'generate_layout'
               ? `正在生成 ${n} 个布局方案…右侧/下一列已显示占位框`
-              : `正在${actionLabel(action)}…`,
+              : action === 'generate_space_render'
+                ? `正在生成 ${n} 个分空间…`
+                : action === 'generate_style_scheme'
+                  ? `正在生成 ${n} 种风格方案…`
+                  : action === 'generate_tone_scheme'
+                    ? `正在生成 ${n} 种色调方案…`
+                    : `正在${actionLabel(action)}…`,
           )
           // 等 React 提交骨架 state + 一帧绘制
           await new Promise<void>((resolve) => {
@@ -952,7 +1451,15 @@ function ProjectCanvasInner({
         setPanelNode(null)
         // 先拉真实图谱，再拆占位，避免空白闪断
         await loadGraph({ fit: false })
-        if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
+        if (skeletonGroupId) {
+          clearSkeletonGroup(skeletonGroupId)
+          if (result.job?.id) {
+            removeActiveCanvasJob(projectId, {
+              jobId: result.job.id,
+              groupId: skeletonGroupId,
+            })
+          }
+        }
         // 再 apply 一次确保骨架已从 ref 去掉
         if (graphRef.current) applyGraph(graphRef.current, selectedId)
 
@@ -1029,6 +1536,157 @@ function ProjectCanvasInner({
   }
 
   // 单击堆叠 → 全屏图库；单击 01–08 方案图 → 详情坞（01 可再点图进结构编辑）
+  /**
+   * 打开指定派生动作（生成对话框 / 局部修改坞）
+   * @returns true 表示已消费
+   */
+  const tryOpenSpawnFromNode = useCallback(
+    (graphNode: CanvasGraphNode, preferredAction?: string) => {
+      if (graphNode.isSkeleton || graphNode.isTemporary) return false
+
+      const options = spawnOptionsForNode(graphNode)
+      const primary = options[0] ?? primarySpawnForNode(graphNode)
+      const action = preferredAction || primary?.action
+      if (!action) return false
+
+      const picked =
+        options.find((item) => item.action === action) ?? primary ?? null
+
+      const needsStage01 = action === 'generate_layout'
+      const needsApproval =
+        action !== 'generate_layout' &&
+        (isSpawnDialogAction(action) || action === 'local_edit')
+
+      if (needsStage01) {
+        if (!graphNode.jobId || !stage01ByJobRef.current[graphNode.jobId]) {
+          setNotice('请先确认结构后再拖出生成平面图')
+          return false
+        }
+      } else if (needsApproval && !nodeHasApprovedSpawnSource(graphNode)) {
+        setNotice('请先批准当前方案后再拖出派生下游')
+        return false
+      }
+
+      const source = resolveSpawnSourceNode(graphNode)
+      if (!source) {
+        setNotice('当前节点无法派生')
+        return false
+      }
+
+      setSelectedId(graphNode.id)
+      setSpawnMenu(null)
+
+      // 08：拖把线直接进入局部修改坞
+      if (action === 'local_edit') {
+        void openLocalEditDock(source)
+        setNotice(picked?.notice ?? '进入局部修改')
+        return true
+      }
+
+      // 05 分空间 / 06 风格 / 07 色调：走勾选面板
+      if (
+        action === 'generate_space_render' ||
+        action === 'generate_style_scheme' ||
+        action === 'generate_tone_scheme'
+      ) {
+        void runAction(action, source)
+        return true
+      }
+
+      const mode = dialogModeForAction(action)
+      if (!mode) return false
+
+      setGenerateDialog({ node: source, mode })
+      setNotice(picked?.notice ?? '填写意向后点击箭头生成')
+      return true
+    },
+    [openLocalEditDock, runAction],
+  )
+
+  /**
+   * 拖把线松手：单项直接打开；多项（如 03→04/05）弹出「引用该节点生成」菜单
+   */
+  const tryOpenSpawnMenuOrDialog = useCallback(
+    (graphNode: CanvasGraphNode, clientX: number, clientY: number) => {
+      if (graphNode.isSkeleton || graphNode.isTemporary) return false
+      const options = spawnOptionsForNode(graphNode)
+      if (!options.length) return false
+
+      const sample = options[0]
+      if (sample.needsStage01) {
+        if (!graphNode.jobId || !stage01ByJobRef.current[graphNode.jobId]) {
+          setNotice('请先确认结构后再拖出生成平面图')
+          return false
+        }
+      } else if (
+        sample.needsApproval &&
+        !nodeHasApprovedSpawnSource(graphNode)
+      ) {
+        setNotice('请先批准当前方案后再拖出派生下游')
+        return false
+      }
+
+      setSelectedId(graphNode.id)
+      setContextMenu(null)
+
+      if (options.length === 1) {
+        return tryOpenSpawnFromNode(graphNode, options[0].action)
+      }
+
+      // 多项：在松手位置弹出菜单
+      const pos = clampMenuPosition(clientX, clientY, 220, 160)
+      setSpawnMenu({
+        x: pos.x,
+        y: pos.y,
+        node: graphNode,
+        options,
+      })
+      setNotice('选择要生成的下游类型')
+      return true
+    },
+    [tryOpenSpawnFromNode],
+  )
+
+  const onConnectStart: OnConnectStart = useCallback((_event, params) => {
+    connectStartRef.current = {
+      nodeId: params.nodeId,
+      handleType: params.handleType,
+    }
+  }, [])
+
+  const onConnect: (connection: Connection) => void = useCallback(() => {
+    // 图谱边由后端资产关系决定；此处仅消费拖出交互，不落真实边
+    connectStartRef.current = null
+  }, [])
+
+  const onConnectEnd: OnConnectEnd = useCallback(
+    (event) => {
+      const start = connectStartRef.current
+      connectStartRef.current = null
+      if (!start?.nodeId || start.handleType !== 'source') return
+
+      const targetEl = event.target as Element | null
+      // 落到其它节点上则忽略（不当作「空白处生成」）
+      if (targetEl?.closest?.('.react-flow__node')) return
+
+      const rfNode = nodes.find((n) => n.id === start.nodeId)
+      if (!rfNode) return
+      const graphNode = (rfNode.data as CanvasNodeData).graphNode
+
+      let clientX = 0
+      let clientY = 0
+      if ('clientX' in event && typeof event.clientX === 'number') {
+        clientX = event.clientX
+        clientY = event.clientY
+      } else if ('changedTouches' in event && event.changedTouches?.[0]) {
+        clientX = event.changedTouches[0].clientX
+        clientY = event.changedTouches[0].clientY
+      }
+      tryOpenSpawnMenuOrDialog(graphNode, clientX, clientY)
+    },
+    [nodes, tryOpenSpawnMenuOrDialog],
+  )
+
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       const graphNode = (node.data as CanvasNodeData).graphNode
@@ -1087,17 +1745,38 @@ function ProjectCanvasInner({
       ]
     }
     const stage = normalizeStage(contextMenu.node)
+    const stackHasApproved = nodeHasApprovedSpawnSource(contextMenu.node)
     const ctx: ActionContext = {
       hasDownstream: contextMenu.node.assetId
         ? downstreamByAsset.has(contextMenu.node.assetId)
         : false,
-      isApprovedVariant: Boolean(contextMenu.node.approved),
+      isApprovedVariant:
+        Boolean(contextMenu.node.approved) || stackHasApproved,
       stage01Confirmed:
         stage === 'floorplan' && contextMenu.node.jobId
           ? Boolean(stage01ByJob[contextMenu.node.jobId])
           : undefined,
     }
-    return listNodeActions(contextMenu.node, ctx)
+    // 右键派生动作：可点则走拖把线同款对话框；未满足前置时仍可点并引导
+    return listNodeActions(contextMenu.node, ctx).map((item) => {
+      if (item.action === 'generate_layout') {
+        return {
+          ...item,
+          enabled: true,
+          reason: item.enabled
+            ? item.reason
+            : '将打开生成平面图对话框（需先确认结构）',
+        }
+      }
+      if (isSpawnDialogAction(item.action) && stackHasApproved) {
+        return {
+          ...item,
+          enabled: true,
+          reason: undefined,
+        }
+      }
+      return item
+    })
   }, [contextMenu, downstreamByAsset, stage01ByJob])
 
   const openContextMenu = useCallback(
@@ -1141,6 +1820,7 @@ function ProjectCanvasInner({
   const onPaneClick = useCallback(() => {
     setSelectedId(null)
     setContextMenu(null)
+    setSpawnMenu(null)
   }, [])
 
   const onPaneContextMenu = useCallback(
@@ -1177,6 +1857,7 @@ function ProjectCanvasInner({
           return
         }
         setContextMenu(null)
+        setSpawnMenu(null)
         setPanel(null)
         setSelectedId(null)
         return
@@ -1355,17 +2036,23 @@ function ProjectCanvasInner({
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             nodeTypes={canvasNodeTypes}
+            edgeTypes={canvasEdgeTypes}
+            defaultEdgeOptions={{ type: 'border' }}
             onNodeClick={onNodeClick}
             onNodeDoubleClick={onNodeDoubleClick}
             onNodeContextMenu={onNodeContextMenu}
             onPaneClick={onPaneClick}
             onPaneContextMenu={onPaneContextMenu}
+            onConnectStart={onConnectStart}
+            onConnect={onConnect}
+            onConnectEnd={onConnectEnd}
             onMove={(_, viewport) => setZoom(viewport.zoom)}
             minZoom={0.05}
             maxZoom={16}
             zoomOnDoubleClick={false}
             snapToGrid={snapToGrid}
             snapGrid={[16, 16]}
+            connectionRadius={96}
             proOptions={{ hideAttribution: true }}
             style={{ width: '100%', height: '100%' }}
           >
@@ -1523,6 +2210,9 @@ function ProjectCanvasInner({
             onApprove={() => {
               void runAction('approve', layoutDetailLive)
             }}
+            onUnapprove={() => {
+              void runAction('unapprove', layoutDetailLive)
+            }}
             primaryActions={(() => {
               const target = layoutDetailLive
               const stage = normalizeStage(target)
@@ -1539,15 +2229,26 @@ function ProjectCanvasInner({
                     await runAction('generate_layout', target)
                     return
                   }
+                  // 派生动作：先尽量批准，再回图谱弹对话框 / 进坞（与拖把线一致）
+                  if (isSpawnDialogAction(action) || action === 'local_edit') {
+                    if (
+                      action !== 'generate_layout' &&
+                      !isVariantApproved(target)
+                    ) {
+                      await runAction('approve', target)
+                    }
+                    if (action === 'local_edit') {
+                      setLayoutDetail(null)
+                      await runAction(action, target)
+                      return
+                    }
+                    exitLayoutDetail({ focusNodeId: target.id })
+                    await runAction(action, target)
+                    return
+                  }
                   // 先尽量批准，再派生（busy 用 ref，可连续 await）
                   if (!target.approved) {
                     await runAction('approve', target)
-                  }
-                  // local_edit 进入专注坞；其它派生先回图谱再跑
-                  if (action === 'local_edit') {
-                    setLayoutDetail(null)
-                    await runAction(action, target)
-                    return
                   }
                   exitLayoutDetail({ focusNodeId: target.id })
                   await runAction(action, target)
@@ -1644,8 +2345,24 @@ function ProjectCanvasInner({
                   disabled={'enabled' in item ? !item.enabled : false}
                   title={'reason' in item ? item.reason : undefined}
                   onClick={() => {
-                    void runAction(item.action, contextMenu.node)
+                    const node = contextMenu.node
                     setContextMenu(null)
+                    // 右键派生与拖把线共用生成对话框
+                    if (
+                      node &&
+                      (isSpawnDialogAction(item.action) ||
+                        item.action === 'local_edit')
+                    ) {
+                      if (tryOpenSpawnFromNode(node, item.action)) return
+                      if (item.action === 'generate_layout') {
+                        setNotice('请先在结构编辑器中确认结构后再生成布局')
+                        void openStructureEditor(node)
+                        return
+                      }
+                      setNotice('请先批准当前方案后再派生下游')
+                      return
+                    }
+                    void runAction(item.action, node)
                   }}
                   className="canvas-context-item"
                 >
@@ -1659,6 +2376,124 @@ function ProjectCanvasInner({
             document.body,
           )
         : null}
+
+      {/* 拖把线多项派生：引用该节点生成 */}
+      {!inAnyFocus && spawnMenu
+        ? createPortal(
+            <>
+              <div
+                className="canvas-spawn-menu-backdrop"
+                style={{
+                  position: 'fixed',
+                  inset: 0,
+                  zIndex: 10000,
+                  background: 'transparent',
+                }}
+                onClick={() => setSpawnMenu(null)}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  setSpawnMenu(null)
+                }}
+              />
+              <div
+                className="canvas-theme canvas-spawn-menu"
+                style={{
+                  left: spawnMenu.x,
+                  top: spawnMenu.y,
+                }}
+                role="menu"
+                aria-label="引用该节点生成"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="canvas-spawn-menu-title">引用该节点生成</div>
+                {spawnMenu.options.map((opt) => (
+                  <button
+                    key={opt.action}
+                    type="button"
+                    role="menuitem"
+                    className="canvas-spawn-menu-item"
+                    onClick={() => {
+                      const node = spawnMenu.node
+                      setSpawnMenu(null)
+                      if (!tryOpenSpawnFromNode(node, opt.action)) {
+                        setNotice('无法打开生成对话框，请先检查批准状态')
+                      }
+                    }}
+                  >
+                    <span className="canvas-spawn-menu-item-icon" aria-hidden>
+                      {opt.action === 'generate_axonometric' ? (
+                        <svg
+                          width="18"
+                          height="18"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                        >
+                          <path d="M12 3 3 8.5v7L12 21l9-5.5v-7L12 3Z" />
+                          <path d="M12 12 3 8.5M12 12l9-3.5M12 12v9" />
+                        </svg>
+                      ) : opt.action === 'generate_space_render' ? (
+                        <svg
+                          width="18"
+                          height="18"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                        >
+                          <rect x="3" y="4" width="18" height="14" rx="2" />
+                          <path d="M3 14h18M8 18v2M16 18v2" />
+                        </svg>
+                      ) : (
+                        <svg
+                          width="18"
+                          height="18"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                        >
+                          <path d="M12 5v14M5 12h14" />
+                        </svg>
+                      )}
+                    </span>
+                    <span>{opt.label}</span>
+                  </button>
+                ))}
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
+
+      {generateDialog ? (
+        <GenerateLayoutDialog
+          node={generateDialog.node}
+          mode={generateDialog.mode}
+          busy={busy}
+          initialPrompt={designPrompt}
+          onCancel={() => {
+            if (!busy) setGenerateDialog(null)
+          }}
+          onSubmit={({ designPrompt: prompt, modelId, styleId }) => {
+            const { node, mode } = generateDialog
+            const composed = composeLayoutDesignPrompt({
+              designPrompt: prompt,
+              modelId,
+              styleId,
+              mode,
+            })
+            setDesignPrompt(composed)
+            setGenerateDialog(null)
+            const action = actionForDialogMode(mode)
+            void runAction(action, node, {
+              designPrompt: composed,
+              spawnDialogConfirmed: true,
+            })
+          }}
+        />
+      ) : null}
 
       {panel ? (
         <CanvasStagePanel
@@ -1688,6 +2523,26 @@ function ProjectCanvasInner({
             setPanelNode(null)
             void runAction('generate_space_render', node, {
               selectedSpaceIds: spaceIds,
+              // 已选房：跳过通用生成对话框与再次选房
+              spawnDialogConfirmed: true,
+            })
+          }}
+          onSubmitStyles={(variantIds) => {
+            const node = panelNode
+            setPanel(null)
+            setPanelNode(null)
+            void runAction('generate_style_scheme', node, {
+              selectedStyleVariants: variantIds,
+              spawnDialogConfirmed: true,
+            })
+          }}
+          onSubmitTones={(variantIds) => {
+            const node = panelNode
+            setPanel(null)
+            setPanelNode(null)
+            void runAction('generate_tone_scheme', node, {
+              selectedToneVariants: variantIds,
+              spawnDialogConfirmed: true,
             })
           }}
           onSubmitLocalEdit={(markFile, editPrompt) => {

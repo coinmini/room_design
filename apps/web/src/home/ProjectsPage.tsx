@@ -5,6 +5,7 @@ import { apiFetch, assetUrl } from '../api'
 import AboutSheet from './AboutSheet'
 import FbDock from './FbDock'
 import NotifySheet, { countUnreadNotices } from './NotifySheet'
+import UserSheet from './UserSheet'
 import './home.css'
 
 type MenuAnchor = {
@@ -62,9 +63,11 @@ export default function ProjectsPage() {
   const [notice, setNotice] = useState('')
   const [aboutOpen, setAboutOpen] = useState(false)
   const [notifyOpen, setNotifyOpen] = useState(false)
+  const [userOpen, setUserOpen] = useState(false)
   const [notifyUnread, setNotifyUnread] = useState(() => countUnreadNotices())
-  const displayName =
-    localStorage.getItem('room_design_display_name') || '设计师'
+  const [displayName, setDisplayName] = useState(
+    () => localStorage.getItem('room_design_display_name') || '设计师',
+  )
 
   const menuProject = menuAnchor
     ? projects.find((p) => p.id === menuAnchor.projectId) ?? null
@@ -355,7 +358,12 @@ export default function ProjectsPage() {
       />
 
       <div className="fb-top-chips">
-        <div className="fb-user-chip">
+        <button
+          type="button"
+          className="fb-user-chip"
+          aria-label="打开个人中心"
+          onClick={() => setUserOpen(true)}
+        >
           <span className="fb-user-avatar" aria-hidden>
             {displayName.slice(0, 1)}
           </span>
@@ -363,7 +371,7 @@ export default function ProjectsPage() {
             <strong>本地用户</strong>
             <span>免费</span>
           </div>
-        </div>
+        </button>
         {CHIP_ACTIONS.map((chip) => (
           <button
             key={chip.label}
@@ -629,6 +637,23 @@ export default function ProjectsPage() {
       ) : null}
 
       <AboutSheet open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <UserSheet
+        open={userOpen}
+        onClose={() => {
+          setUserOpen(false)
+          setDisplayName(
+            localStorage.getItem('room_design_display_name') || '设计师',
+          )
+        }}
+        displayName={displayName}
+        stats={{
+          projectCount: projects.length,
+          assetCount: assets.length,
+          notifyUnread,
+        }}
+        onOpenAbout={() => setAboutOpen(true)}
+        onOpenNotify={() => setNotifyOpen(true)}
+      />
       <NotifySheet
         open={notifyOpen}
         onClose={() => setNotifyOpen(false)}

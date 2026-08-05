@@ -16,6 +16,7 @@ import {
 import AboutSheet from './AboutSheet'
 import FbDock from './FbDock'
 import NotifySheet, { countUnreadNotices } from './NotifySheet'
+import UserSheet from './UserSheet'
 import {
   SCHOOL_CARDS,
   SCHOOL_TABS,
@@ -339,12 +340,14 @@ export default function HomePage() {
   const [schoolPage, setSchoolPage] = useState(0)
   const [aboutOpen, setAboutOpen] = useState(false)
   const [notifyOpen, setNotifyOpen] = useState(false)
+  const [userOpen, setUserOpen] = useState(false)
   const [notifyUnread, setNotifyUnread] = useState(() => countUnreadNotices())
   const [schoolDetail, setSchoolDetail] = useState<SchoolCard | null>(null)
   const [schoolListOpen, setSchoolListOpen] = useState(false)
   const schoolViewportRef = useRef<HTMLDivElement>(null)
-  const displayName =
-    localStorage.getItem('room_design_display_name') || '设计师'
+  const [displayName, setDisplayName] = useState(
+    () => localStorage.getItem('room_design_display_name') || '设计师',
+  )
 
   const schoolCards = SCHOOL_CARDS[schoolTab]
   const schoolMaxPage = Math.max(0, schoolCards.length - SCHOOL_VISIBLE)
@@ -718,7 +721,12 @@ export default function HomePage() {
 
       {/* 右上用户胶囊 */}
       <div className="fb-top-chips">
-        <div className="fb-user-chip">
+        <button
+          type="button"
+          className="fb-user-chip"
+          aria-label="打开个人中心"
+          onClick={() => setUserOpen(true)}
+        >
           <span className="fb-user-avatar" aria-hidden>
             {displayName.slice(0, 1)}
           </span>
@@ -726,7 +734,7 @@ export default function HomePage() {
             <strong>本地用户</strong>
             <span>免费</span>
           </div>
-        </div>
+        </button>
         {CHIP_ACTIONS.map((chip) => (
           <button
             key={chip.label}
@@ -1100,6 +1108,25 @@ export default function HomePage() {
         open={notifyOpen}
         onClose={() => setNotifyOpen(false)}
         onUnreadChange={setNotifyUnread}
+      />
+      <UserSheet
+        open={userOpen}
+        onClose={() => {
+          setUserOpen(false)
+          setDisplayName(
+            localStorage.getItem('room_design_display_name') || '设计师',
+          )
+        }}
+        displayName={displayName}
+        stats={{
+          projectCount: projects.length,
+          assetCount: assets.length,
+          modelLabel,
+          modelReady: kuyaoReady,
+          notifyUnread,
+        }}
+        onOpenAbout={() => setAboutOpen(true)}
+        onOpenNotify={() => setNotifyOpen(true)}
       />
       <SchoolDetailSheet
         open={Boolean(schoolDetail)}

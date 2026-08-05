@@ -57,13 +57,29 @@ describe('canRunAction', () => {
     expect(result.enabled).toBe(true)
   })
 
+  it('shows unapprove only when approved, approve only when not', () => {
+    const unapproved = listNodeActions(
+      baseNode({ workflowStage: 'layout', approved: false }),
+    ).map((a) => a.action)
+    expect(unapproved).toContain('approve')
+    expect(unapproved).not.toContain('unapprove')
+
+    const approved = listNodeActions(
+      baseNode({ workflowStage: 'layout', approved: true }),
+    ).map((a) => a.action)
+    expect(approved).toContain('unapprove')
+    expect(approved).not.toContain('approve')
+    expect(approved).toContain('generate_color_plan')
+  })
+
   it('lists stage actions for space_render', () => {
     const actions = listNodeActions(
       baseNode({ workflowStage: 'space_render', approved: true }),
     )
     const names = actions.map((item) => item.action)
     expect(names).toContain('generate_style_scheme')
-    expect(names).toContain('approve')
+    expect(names).toContain('unapprove')
+    expect(names).not.toContain('approve')
   })
 
   it('guards editable targets for shortcuts', () => {

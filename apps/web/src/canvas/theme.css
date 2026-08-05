@@ -471,6 +471,65 @@
   cursor: not-allowed;
 }
 
+/* 拖把线松手：引用节点生成菜单（多项下游时） */
+.canvas-spawn-menu {
+  position: fixed;
+  z-index: 10001;
+  min-width: 200px;
+  max-width: min(260px, calc(100vw - 20px));
+  padding: 8px;
+  box-shadow: var(--canvas-shadow, 0 12px 40px rgba(0, 0, 0, 0.45));
+  background: #2a2a2e;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  color: var(--canvas-text, #ededec);
+  width: auto;
+  height: auto;
+  inset: auto;
+}
+
+.canvas-spawn-menu-title {
+  padding: 8px 12px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(237, 237, 236, 0.55);
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+
+.canvas-spawn-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--canvas-text, #ededec);
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+}
+
+.canvas-spawn-menu-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.canvas-spawn-menu-item-icon {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+.canvas-spawn-menu-item-icon svg {
+  display: block;
+}
+
 .canvas-theme .canvas-muted-pill {
   color: var(--canvas-text-muted);
 }
@@ -1976,13 +2035,16 @@
 }
 
 .canvas-stage-dialog.is-space-select {
-  /* 一次铺开全部房间，不设 max-height / 不滚动 */
-  width: min(920px, calc(100vw - 32px));
   max-height: none;
   padding: 0;
   overflow: visible;
   display: flex;
   flex-direction: column;
+}
+
+/* 05/06/07 选择弹层：收窄，选项用紧凑胶囊 */
+.canvas-stage-dialog.is-space-select.is-chip-select {
+  width: min(480px, calc(100vw - 32px));
 }
 
 .canvas-space-select {
@@ -1996,8 +2058,8 @@
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
-  padding: 14px 18px 10px;
+  gap: 12px;
+  padding: 12px 14px 8px;
   border-bottom: 1px solid var(--canvas-divider);
   background: linear-gradient(
     180deg,
@@ -2010,28 +2072,28 @@
   font-size: 10px;
   letter-spacing: 0.08em;
   color: var(--canvas-text-secondary);
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .canvas-space-select-header h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 650;
   color: var(--canvas-text);
 }
 
 .canvas-space-select-header p {
-  margin: 4px 0 0;
-  font-size: 12px;
+  margin: 3px 0 0;
+  font-size: 11px;
   line-height: 1.4;
   color: var(--canvas-text-secondary);
 }
 
 .canvas-space-select-count {
   flex-shrink: 0;
-  min-width: 48px;
-  height: 48px;
-  border-radius: 12px;
+  min-width: 40px;
+  height: 40px;
+  border-radius: 10px;
   display: grid;
   place-content: center;
   text-align: center;
@@ -2042,50 +2104,85 @@
 }
 
 .canvas-space-select-count strong {
-  font-size: 18px;
+  font-size: 15px;
   color: #93c5fd;
 }
 
 .canvas-space-select-count span {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--canvas-text-secondary);
 }
 
 .canvas-space-select-toolbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 18px;
+  gap: 6px;
+  padding: 6px 14px;
   border-bottom: 1px solid var(--canvas-divider);
+}
+
+.canvas-space-select-toolbar .canvas-btn {
+  height: 28px !important;
+  padding: 0 10px !important;
+  font-size: 12px !important;
 }
 
 .canvas-space-select-hint {
   margin-left: auto;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--canvas-text-secondary);
 }
 
-/* 多列紧凑排布，一次看完全部房间，不滚动 */
+/* 默认网格（兼容） */
 .canvas-space-select-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
-  padding: 12px 18px;
+  padding: 10px 14px;
   overflow: visible;
   max-height: none;
   background: var(--canvas-bg);
 }
 
-@media (max-width: 720px) {
-  .canvas-space-select-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+/* 05 分空间 / 06 风格 / 07 色调：胶囊横排换行，随文字宽度 */
+.canvas-space-select-grid.is-chip-compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 10px;
 }
 
-@media (max-width: 480px) {
-  .canvas-space-select-grid {
-    grid-template-columns: 1fr;
-  }
+.canvas-space-select-grid.is-chip-compact .canvas-space-room {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: 100%;
+  gap: 6px;
+  padding: 5px 11px 5px 7px;
+  border-radius: 999px;
+  border-width: 1px;
+}
+
+.canvas-space-select-grid.is-chip-compact .canvas-space-room-box {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  font-size: 9px;
+  line-height: 11px;
+}
+
+.canvas-space-select-grid.is-chip-compact .canvas-space-room-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.canvas-space-select-grid.is-chip-compact .canvas-space-room-text {
+  gap: 0;
+}
+
+.canvas-space-select-grid.is-chip-compact .canvas-space-room-id {
+  display: none;
 }
 
 .canvas-space-room {
@@ -2172,23 +2269,24 @@
 .canvas-space-select-prompt {
   display: grid;
   gap: 4px;
-  padding: 10px 18px 0;
-  font-size: 12px;
+  padding: 8px 14px 0;
+  font-size: 11px;
   color: var(--canvas-text-secondary);
 }
 
 .canvas-space-select-prompt textarea {
   width: 100%;
   box-sizing: border-box;
-  padding: 8px 10px;
+  padding: 7px 10px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: #0f1015;
   color: rgba(255, 255, 255, 0.92);
   font: inherit;
+  font-size: 12px;
   resize: vertical;
-  min-height: 44px;
-  max-height: 72px;
+  min-height: 40px;
+  max-height: 64px;
 }
 
 .canvas-space-select-prompt textarea::placeholder {
@@ -2205,9 +2303,9 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  padding: 12px 18px 14px;
+  padding: 10px 14px 12px;
   border-top: 1px solid var(--canvas-divider);
-  margin-top: 8px;
+  margin-top: 6px;
   background: var(--canvas-bg-elevated);
 }
 
@@ -2539,4 +2637,369 @@
 .canvas-theme.canvas-shell.is-structure-focus .cw-bottom-left,
 .canvas-theme.canvas-shell.is-structure-focus .cw-bottom-center {
   display: none;
+}
+
+/* —— 01 拖出连线 → 生成平面图对话框 —— */
+.canvas-theme .canvas-gen-dialog {
+  width: min(560px, calc(100vw - 32px));
+  padding: 16px 16px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(28, 28, 32, 0.98);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+}
+
+.canvas-theme .canvas-gen-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.canvas-theme .canvas-gen-kicker {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--canvas-text-muted);
+  margin-bottom: 4px;
+}
+
+.canvas-theme .canvas-gen-dialog-head h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-gen-icon-btn {
+  width: 32px;
+  height: 32px !important;
+  padding: 0 !important;
+  border-radius: 999px !important;
+}
+
+.canvas-theme .canvas-gen-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.canvas-theme .canvas-gen-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--canvas-text-secondary);
+  font-size: 12px;
+}
+
+.canvas-theme .canvas-gen-chip.is-static {
+  cursor: default;
+}
+
+.canvas-theme .canvas-gen-body {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 16px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.canvas-theme .canvas-gen-ref {
+  position: relative;
+  width: 88px;
+  height: 88px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #121218;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+.canvas-theme .canvas-gen-ref img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.canvas-theme .canvas-gen-ref-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--canvas-text-muted);
+  font-size: 11px;
+}
+
+.canvas-theme .canvas-gen-ref-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: rgba(15, 15, 18, 0.85);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.canvas-theme .canvas-gen-ref-cap {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px 6px;
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.9);
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.canvas-theme .canvas-gen-prompt {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--canvas-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 4px 2px;
+}
+
+.canvas-theme .canvas-gen-prompt::placeholder {
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-gen-section {
+  margin-bottom: 12px;
+}
+
+.canvas-theme .canvas-gen-label {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--canvas-text-muted);
+  letter-spacing: 0.04em;
+}
+
+.canvas-theme .canvas-gen-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.canvas-theme .canvas-gen-pill {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--canvas-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.canvas-theme .canvas-gen-pill:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-gen-pill.is-active {
+  border-color: rgba(59, 130, 246, 0.55);
+  background: rgba(59, 130, 246, 0.16);
+  color: #93c5fd;
+}
+
+.canvas-theme .canvas-gen-pill:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.canvas-theme .canvas-gen-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.canvas-theme .canvas-gen-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-gen-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.canvas-theme .canvas-gen-submit {
+  display: inline-grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: none;
+  border-radius: 999px;
+  background: #ededec;
+  color: #0f0f12;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.canvas-theme .canvas-gen-submit:hover:not(:disabled) {
+  background: #fff;
+  transform: translateY(-1px);
+}
+
+.canvas-theme .canvas-gen-submit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 节点把手：连线锚点 = 方框左右边中点；默认隐藏，靠近再显 */
+.canvas-theme .canvas-node-card-inner {
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+.canvas-theme .react-flow__handle.canvas-handle {
+  /*
+   * 把手中心必须在节点边框上，否则边会「飘」在两节点之间。
+   * 宽高 12px → right/left: -6px 时中心正好压在边缘。
+   */
+  width: 12px !important;
+  height: 12px !important;
+  min-width: 12px !important;
+  min-height: 12px !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.4) !important;
+  background: rgba(28, 28, 32, 0.96) !important;
+  opacity: 0 !important;
+  z-index: 5;
+  pointer-events: all !important;
+  transition:
+    opacity 0.14s ease,
+    transform 0.12s ease,
+    background 0.12s ease,
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+/* 仅扩大命中区，不改变 RF 计算用的把手中心 */
+.canvas-theme .react-flow__handle.canvas-handle::before {
+  content: '';
+  position: absolute;
+  inset: -22px;
+  border-radius: 999px;
+  background: transparent;
+  pointer-events: auto;
+}
+
+/* 半宽外露：中心 = 方框边 */
+.canvas-theme .react-flow__handle.canvas-handle-source {
+  right: -6px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+}
+
+.canvas-theme .react-flow__handle.canvas-handle-target {
+  left: -6px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+}
+
+/* 悬停节点 / 选中 / 悬停把手 / 正在连线 → 显示 */
+.canvas-theme .react-flow__node:hover .react-flow__handle.canvas-handle,
+.canvas-theme .react-flow__node.selected .react-flow__handle.canvas-handle,
+.canvas-theme .react-flow__handle.canvas-handle:hover,
+.canvas-theme .react-flow__handle.connecting,
+.canvas-theme .react-flow__handle-connecting,
+.canvas-theme .react-flow__handle-valid {
+  opacity: 1 !important;
+}
+
+.canvas-theme .react-flow__handle.canvas-handle:hover {
+  border-color: rgba(96, 165, 250, 0.9) !important;
+  background: #1e293b !important;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.22);
+  transform: translateY(-50%) scale(1.12) !important;
+}
+
+/* 01 可生成：右侧 + 把手（中心仍在右边缘） */
+.canvas-theme .react-flow__handle.canvas-handle-spawn {
+  width: 18px !important;
+  height: 18px !important;
+  min-width: 18px !important;
+  min-height: 18px !important;
+  right: -9px !important;
+  border: 1.5px solid rgba(255, 255, 255, 0.5) !important;
+  background: rgba(22, 22, 26, 0.98) !important;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.canvas-theme .react-flow__handle.canvas-handle-spawn::before {
+  inset: -24px;
+}
+
+.canvas-theme .react-flow__handle.canvas-handle-spawn::after {
+  content: '+';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+}
+
+.canvas-theme .react-flow__handle.canvas-handle-spawn:hover {
+  border-color: rgba(147, 197, 253, 0.95) !important;
+  background: #1d4ed8 !important;
+  box-shadow: 0 0 0 6px rgba(59, 130, 246, 0.28);
+  transform: translateY(-50%) scale(1.14) !important;
+}
+
+.canvas-theme .react-flow__handle.canvas-handle-spawn:hover::after {
+  color: #fff;
+}
+
+.canvas-theme .react-flow__edge-path {
+  stroke: rgba(255, 255, 255, 0.28);
+  stroke-width: 1.6;
+}
+
+.canvas-theme .react-flow__connection-path {
+  stroke: rgba(96, 165, 250, 0.85) !important;
+  stroke-width: 2.5 !important;
 }

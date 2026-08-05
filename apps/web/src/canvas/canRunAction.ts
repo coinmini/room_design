@@ -8,7 +8,7 @@ import type {
   CanvasAction,
   CanvasGraphNode,
 } from './types'
-import { normalizeStage } from './types'
+import { isVariantApproved, normalizeStage } from './types'
 
 export type ActionContext = {
   /** 该资产是否已有下游子资产（改批抑制） */
@@ -22,25 +22,54 @@ export type ActionContext = {
 
 const STAGE_ACTIONS: Record<string, CanvasAction[]> = {
   floorplan: ['view_structure', 'reanalyze', 'generate_layout', 'open_full', 'download'],
-  layout: ['approve', 'generate_color_plan', 'open_full', 'download'],
+  layout: ['approve', 'unapprove', 'generate_color_plan', 'open_full', 'download'],
   color_plan: [
     'approve',
+    'unapprove',
     'set_baseline',
     'generate_axonometric',
     'generate_space_render',
     'open_full',
     'download',
   ],
-  axonometric: ['approve', 'generate_space_render', 'open_full', 'download'],
-  space_render: ['approve', 'set_baseline', 'generate_style_scheme', 'open_full', 'download'],
-  style_scheme: ['approve', 'set_baseline', 'generate_tone_scheme', 'open_full', 'download'],
-  tone_scheme: ['approve', 'set_baseline', 'local_edit', 'open_full', 'download'],
+  axonometric: [
+    'approve',
+    'unapprove',
+    'generate_space_render',
+    'open_full',
+    'download',
+  ],
+  space_render: [
+    'approve',
+    'unapprove',
+    'set_baseline',
+    'generate_style_scheme',
+    'open_full',
+    'download',
+  ],
+  style_scheme: [
+    'approve',
+    'unapprove',
+    'set_baseline',
+    'generate_tone_scheme',
+    'open_full',
+    'download',
+  ],
+  tone_scheme: [
+    'approve',
+    'unapprove',
+    'set_baseline',
+    'local_edit',
+    'open_full',
+    'download',
+  ],
   local_edit: ['open_full', 'download'],
   other: ['open_full', 'download', 'retry'],
 }
 
 const LABELS: Record<CanvasAction, string> = {
   approve: '批准',
+  unapprove: '取消批准',
   set_baseline: '设为基准',
   generate_layout: '生成布局',
   generate_color_plan: '生成彩平',
@@ -142,9 +171,7 @@ export function canRunAction(
     }
   }
 
-  const approved =
-    ctx.isApprovedVariant ??
-    Boolean(node.approved || node.approvalStatus === 'approved')
+  const approved = ctx.isApprovedVariant ?? isVariantApproved(node)
 
   // 派生类操作要求已批准
   const needsApproval: CanvasAction[] = [
@@ -190,7 +217,14 @@ export function canRunAction(
   // W0-X：已有下游时仍可批准其他 variant 分叉；仅提示信息，不置灰
 
   if (action === 'approve' && approved) {
-    return { ...base, enabled: true, reason: '已是批准版本' }
+    return { ...base, enabled: false, reason: '已是批准版本，可取消批准' }
+  }
+
+  if (action === 'unapprove') {
+    if (!approved) {
+      return { ...base, enabled: false, reason: '尚未批准' }
+    }
+    return { ...base, enabled: true }
   }
 
   return { ...base, enabled: true }
@@ -201,17 +235,20 @@ export function listNodeActions(
   ctx: ActionContext = {},
 ): ActionAvailability[] {
   const stage = normalizeStage(node)
+  const approved = ctx.isApprovedVariant ?? isVariantApproved(node)
   const actions = [
     ...(STAGE_ACTIONS[stage] ?? STAGE_ACTIONS.other),
     'copy_node' as const,
     'duplicate' as const,
     'delete' as const,
   ]
-  // 去重
+  // 去重；已批准只显示「取消批准」，未批准只显示「批准」
   const seen = new Set<CanvasAction>()
   const ordered: CanvasAction[] = []
   for (const action of actions) {
     if (seen.has(action)) continue
+    if (action === 'approve' && approved) continue
+    if (action === 'unapprove' && !approved) continue
     seen.add(action)
     ordered.push(action)
   }

@@ -48,6 +48,18 @@ export type CanvasGraphNode = {
   stackItems?: CanvasGraphNode[]
 }
 
+/**
+ * 是否为「本 variant 已批准」。
+ * 优先用布尔字段 approved；勿单独信资产级 approvalStatus，
+ * 否则同资产其它未批 variant 会误显示已批准。
+ */
+export function isVariantApproved(
+  node: Pick<CanvasGraphNode, 'approved' | 'approvalStatus'>,
+): boolean {
+  if (typeof node.approved === 'boolean') return node.approved
+  return node.approvalStatus === 'approved'
+}
+
 export type CanvasGraphEdge = {
   id: string
   sourceAssetId: string
@@ -69,6 +81,7 @@ export type CanvasGraph = {
 
 export type CanvasAction =
   | 'approve'
+  | 'unapprove'
   | 'set_baseline'
   | 'generate_layout'
   | 'generate_color_plan'

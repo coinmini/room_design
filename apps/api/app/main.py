@@ -1179,6 +1179,125 @@ def approve_scene_asset_variant(
 
 
 @app.post(
+    f"{settings.api_prefix}/assets/{{asset_id}}/unapprove",
+    response_model=SceneAssetDetail,
+)
+def unapprove_scene_asset_variant(
+    asset_id: str,
+    payload: SceneAssetApprovalRequest,
+    session: SessionDep,
+    idempotency_key: IdempotencyKeyHeader = None,
+) -> dict:
+    """取消某个 variant 的批准状态。
+
+    - 从 variantApprovals 移除该 variant
+    - 若当前主批准正是该 variant，则切换到其余任一已批 variant，或清空批准态
+    - 已生成的下游资产不受影响；仅阻止以此 variant 再派生新下游
+    """
+    asset = get_local_scene_asset(session, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="资产不存在")
+    module_key = scene_asset_read(asset)["module_key"]
+    if module_key not in {"ai_workflow", "layout"}:
+        raise HTTPException(status_code=409, detail="该资产模块不支持方案审批")
+
+    variant_id = payload.variant_id.strip()
+    if not variant_id:
+        raise HTTPException(status_code=422, detail="variantId 不能为空")
+
+    existing_metadata = (
+        dict(asset.metadata_json) if isinstance(asset.metadata_json, dict) else {}
+    )
+    existing_variant_approvals = existing_metadata.get("variantApprovals")
+    variant_approvals: dict[str, Any] = (
+        dict(existing_variant_approvals)
+        if isinstance(existing_variant_approvals, dict)
+        else {}
+    )
+    is_primary = existing_metadata.get("approvedVariantId") == variant_id
+    was_approved = (
+        variant_id in variant_approvals
+        or (
+            is_primary
+            and existing_metadata.get("approvalStatus") == "approved"
+        )
+    )
+    if not was_approved:
+        # 幂等：本来就未批准，直接返回
+        return scene_asset_detail(session, asset)
+
+    variant_approvals.pop(variant_id, None)
+
+    metadata = dict(existing_metadata)
+    deliverables = dict(asset.deliverables or {}) if isinstance(asset.deliverables, dict) else {}
+
+    if is_primary or not variant_approvals:
+        if variant_approvals:
+            # 主批准被取消：改挂到剩余任意已批 variant
+            next_variant_id, next_entry = next(iter(variant_approvals.items()))
+            next_meta = next_entry if isinstance(next_entry, dict) else {}
+            next_version = (
+                next_meta.get("versionId")
+                if isinstance(next_meta.get("versionId"), str)
+                else None
+            )
+            next_url = (
+                next_meta.get("outputUrl")
+                if isinstance(next_meta.get("outputUrl"), str)
+                else None
+            )
+            next_at = (
+                next_meta.get("approvedAt")
+                if isinstance(next_meta.get("approvedAt"), str)
+                else None
+            )
+            metadata.update(
+                {
+                    "approvalStatus": "approved",
+                    "approvedVariantId": next_variant_id,
+                    "approvedVersionId": next_version,
+                    "approvedAt": next_at,
+                    "approvalComment": payload.comment.strip()
+                    if payload.comment
+                    else existing_metadata.get("approvalComment"),
+                    "variantApprovals": variant_approvals,
+                }
+            )
+            deliverables.update(
+                {
+                    "approvedOutputUrl": next_url,
+                    "approvedVariantId": next_variant_id,
+                    "approvedVersionId": next_version,
+                    "variantApprovals": variant_approvals,
+                }
+            )
+        else:
+            # 无剩余批准：回到待审
+            metadata["approvalStatus"] = "review_required"
+            metadata.pop("approvedVariantId", None)
+            metadata.pop("approvedVersionId", None)
+            metadata.pop("approvedAt", None)
+            metadata["approvalComment"] = (
+                payload.comment.strip() if payload.comment else "用户取消批准"
+            )
+            metadata["variantApprovals"] = {}
+            deliverables.pop("approvedOutputUrl", None)
+            deliverables.pop("approvedVariantId", None)
+            deliverables.pop("approvedVersionId", None)
+            deliverables["variantApprovals"] = {}
+    else:
+        # 取消的是非主批准 variant
+        metadata["variantApprovals"] = variant_approvals
+        deliverables["variantApprovals"] = variant_approvals
+
+    asset.metadata_json = metadata
+    asset.deliverables = deliverables
+    session.commit()
+    session.refresh(asset)
+    return scene_asset_detail(session, asset)
+
+
+@app.post(
     f"{settings.api_prefix}/assets/{{asset_id}}/renders",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,

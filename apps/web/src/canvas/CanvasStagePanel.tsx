@@ -11,10 +11,22 @@ type Props = {
   onCancel: () => void
   onSubmitUpload: (file: File, planWidthMm?: number, planDepthMm?: number) => void
   onSubmitSpaces: (spaceIds: string[]) => void
+  /** 风格方案：勾选的 variant id */
+  onSubmitStyles?: (variantIds: string[]) => void
+  /** 色调方案：勾选的 variant id */
+  onSubmitTones?: (variantIds: string[]) => void
   onSubmitLocalEdit: (markFile: File, editPrompt: string) => void
 }
 
 const MARK_COLOR = '#FF3B30'
+
+function defaultSelectedIds(panel: StagePanelRequest): string[] {
+  if (panel.kind === 'space_select') return panel.rooms.map((r) => r.id)
+  if (panel.kind === 'style_select' || panel.kind === 'tone_select') {
+    return panel.options.map((o) => o.id)
+  }
+  return []
+}
 
 export default function CanvasStagePanel({
   panel,
@@ -24,18 +36,26 @@ export default function CanvasStagePanel({
   onCancel,
   onSubmitUpload,
   onSubmitSpaces,
+  onSubmitStyles,
+  onSubmitTones,
   onSubmitLocalEdit,
 }: Props) {
   const [file, setFile] = useState<File | null>(null)
-  const [widthMm, setWidthMm] = useState(8150)
-  const [depthMm, setDepthMm] = useState(6060)
-  const [selected, setSelected] = useState<string[]>(
-    panel.kind === 'space_select' ? panel.rooms.map((r) => r.id) : [],
+  /** 空 = 后端自动识别尺寸，不传 plan_width/depth_mm */
+  const [widthMm, setWidthMm] = useState('')
+  const [depthMm, setDepthMm] = useState('')
+  const [selected, setSelected] = useState<string[]>(() =>
+    defaultSelectedIds(panel),
   )
   const [editPrompt, setEditPrompt] = useState('')
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const drawing = useRef(false)
   const imageRef = useRef<HTMLImageElement | null>(null)
+
+  // 面板类型/内容切换时重置勾选（默认全选）
+  useEffect(() => {
+    setSelected(defaultSelectedIds(panel))
+  }, [panel])
 
   useEffect(() => {
     if (panel.kind !== 'local_edit') return
@@ -106,12 +126,50 @@ export default function CanvasStagePanel({
     return new File([blob], 'mark.png', { type: 'image/png' })
   }
 
-  const allRoomIds =
-    panel.kind === 'space_select' ? panel.rooms.map((r) => r.id) : []
+  const selectOptions =
+    panel.kind === 'space_select'
+      ? panel.rooms.map((r) => ({ id: r.id, name: r.name, sub: r.id }))
+      : panel.kind === 'style_select' || panel.kind === 'tone_select'
+        ? panel.options.map((o) => ({ id: o.id, name: o.name, sub: o.id }))
+        : []
+  const allSelectIds = selectOptions.map((o) => o.id)
   const allSelected =
-    panel.kind === 'space_select' &&
-    allRoomIds.length > 0 &&
-    allRoomIds.every((id) => selected.includes(id))
+    allSelectIds.length > 0 &&
+    allSelectIds.every((id) => selected.includes(id))
+  const isMultiSelectPanel =
+    panel.kind === 'space_select' ||
+    panel.kind === 'style_select' ||
+    panel.kind === 'tone_select'
+  /** 05/06/07 选择面板统一紧凑胶囊，不拉成大框 */
+  const isChipSelect = isMultiSelectPanel
+
+  const selectCopy =
+    panel.kind === 'tone_select'
+      ? {
+          kicker: '引用 06 风格 · 生成 07 色调',
+          title: '选择要生成的色调方案',
+          desc: '勾选需要生成的色调。默认 3 种全选，可只生成其中 1～2 种。',
+          unit: '种色调',
+          placeholder: '光感、时段、冷暖倾向…',
+          submit: (n: number) => `生成 ${n} 种色调`,
+        }
+      : panel.kind === 'style_select'
+        ? {
+            kicker: '引用 05 分空间 · 生成 06 风格',
+            title: '选择要生成的风格方案',
+            desc: '勾选需要生成的风格。默认 3 种全选，可只生成其中 1～2 种。',
+            unit: '种风格',
+            placeholder: '材质偏好、软装方向、色调氛围…',
+            submit: (n: number) => `生成 ${n} 种风格`,
+          }
+        : {
+            kicker: '引用上游 · 生成 05 分空间',
+            title: '选择要生成的分空间',
+            desc: '勾选需要出效果图的房间。默认全选，可按需只生成客厅、主卧等特定空间。',
+            unit: '个空间',
+            placeholder: '现代原木、暖光、简洁收纳…',
+            submit: (n: number) => `生成 ${n} 个空间`,
+          }
 
   return (
     <div
@@ -120,7 +178,7 @@ export default function CanvasStagePanel({
     >
       <div
         className={`canvas-card canvas-stage-dialog${
-          panel.kind === 'space_select' ? ' is-space-select' : ''
+          isMultiSelectPanel ? ' is-space-select is-chip-select' : ''
         }`}
         onClick={(e) => e.stopPropagation()}
       >
@@ -128,7 +186,7 @@ export default function CanvasStagePanel({
           <>
             <h3 style={{ margin: '0 0 8px' }}>01 上传户型图</h3>
             <p className="canvas-secondary" style={{ marginTop: 0, fontSize: 13 }}>
-              上传平面图开始识别；完成后可在节点上「生成布局」。
+              上传平面图开始识别；尺寸默认自动识别，完成后可在节点上「生成布局」。
             </p>
             <label className="canvas-btn" style={{ width: '100%', height: 44 }}>
               <input
@@ -148,24 +206,31 @@ export default function CanvasStagePanel({
               }}
             >
               <label className="canvas-secondary" style={{ fontSize: 12 }}>
-                面宽 mm
+                面宽 mm（可选）
                 <input
                   type="number"
+                  min={0}
+                  placeholder="自动"
                   value={widthMm}
-                  onChange={(e) => setWidthMm(Number(e.target.value))}
+                  onChange={(e) => setWidthMm(e.target.value)}
                   style={inputStyle}
                 />
               </label>
               <label className="canvas-secondary" style={{ fontSize: 12 }}>
-                进深 mm
+                进深 mm（可选）
                 <input
                   type="number"
+                  min={0}
+                  placeholder="自动"
                   value={depthMm}
-                  onChange={(e) => setDepthMm(Number(e.target.value))}
+                  onChange={(e) => setDepthMm(e.target.value)}
                   style={inputStyle}
                 />
               </label>
             </div>
+            <p className="canvas-muted" style={{ fontSize: 11, margin: '6px 0 0' }}>
+              留空则由后端按图纸标注 / 门洞家具尺度自动推算
+            </p>
             <label className="canvas-secondary" style={{ fontSize: 12, display: 'block', marginTop: 10 }}>
               设计意向（可选）
               <textarea
@@ -184,7 +249,16 @@ export default function CanvasStagePanel({
                 type="button"
                 className="canvas-btn canvas-btn-primary"
                 disabled={!file || busy}
-                onClick={() => file && onSubmitUpload(file, widthMm, depthMm)}
+                onClick={() => {
+                  if (!file) return
+                  const w = Number(widthMm)
+                  const d = Number(depthMm)
+                  onSubmitUpload(
+                    file,
+                    Number.isFinite(w) && w > 0 ? w : undefined,
+                    Number.isFinite(d) && d > 0 ? d : undefined,
+                  )
+                }}
               >
                 {busy ? '识别中…' : '开始识别'}
               </button>
@@ -192,19 +266,19 @@ export default function CanvasStagePanel({
           </>
         ) : null}
 
-        {panel.kind === 'space_select' ? (
+        {isMultiSelectPanel ? (
           <div className="canvas-space-select">
             <header className="canvas-space-select-header">
               <div>
-                <div className="canvas-space-select-kicker">05 / SPACE RENDER</div>
-                <h3>选择要生成的分空间</h3>
-                <p>
-                  勾选需要出效果图的房间。默认全选，可按需取消。
-                </p>
+                <div className="canvas-space-select-kicker">
+                  {selectCopy.kicker}
+                </div>
+                <h3>{selectCopy.title}</h3>
+                <p>{selectCopy.desc}</p>
               </div>
               <div className="canvas-space-select-count">
                 <strong>{selected.length}</strong>
-                <span>/ {panel.rooms.length}</span>
+                <span>/ {selectOptions.length}</span>
               </div>
             </header>
 
@@ -213,7 +287,7 @@ export default function CanvasStagePanel({
                 type="button"
                 className="canvas-btn"
                 disabled={busy || allSelected}
-                onClick={() => setSelected(allRoomIds)}
+                onClick={() => setSelected(allSelectIds)}
               >
                 全选
               </button>
@@ -226,18 +300,28 @@ export default function CanvasStagePanel({
                 清空
               </button>
               <span className="canvas-space-select-hint">
-                已选 {selected.length} 个空间
+                已选 {selected.length} {selectCopy.unit}
               </span>
             </div>
 
-            <div className="canvas-space-select-grid" role="list">
-              {panel.rooms.map((room) => {
-                const checked = selected.includes(room.id)
+            <div
+              className={`canvas-space-select-grid${
+                isChipSelect ? ' is-chip-compact' : ''
+              }`}
+              role="list"
+            >
+              {selectOptions.map((item) => {
+                const checked = selected.includes(item.id)
                 return (
                   <label
-                    key={room.id}
+                    key={item.id}
                     className={`canvas-space-room${checked ? ' is-checked' : ''}`}
                     role="listitem"
+                    title={
+                      item.sub && item.sub !== item.name
+                        ? `${item.name}（${item.sub}）`
+                        : item.name
+                    }
                   >
                     <input
                       type="checkbox"
@@ -247,8 +331,8 @@ export default function CanvasStagePanel({
                       onChange={() =>
                         setSelected((current) =>
                           checked
-                            ? current.filter((id) => id !== room.id)
-                            : [...current, room.id],
+                            ? current.filter((id) => id !== item.id)
+                            : [...current, item.id],
                         )
                       }
                     />
@@ -256,8 +340,7 @@ export default function CanvasStagePanel({
                       {checked ? '✓' : ''}
                     </span>
                     <span className="canvas-space-room-text">
-                      <span className="canvas-space-room-name">{room.name}</span>
-                      <span className="canvas-space-room-id">{room.id}</span>
+                      <span className="canvas-space-room-name">{item.name}</span>
                     </span>
                   </label>
                 )
@@ -270,7 +353,7 @@ export default function CanvasStagePanel({
                 value={designPrompt}
                 onChange={(e) => onDesignPromptChange(e.target.value)}
                 rows={1}
-                placeholder="现代原木、暖光、简洁收纳…"
+                placeholder={selectCopy.placeholder}
               />
             </label>
 
@@ -282,9 +365,17 @@ export default function CanvasStagePanel({
                 type="button"
                 className="canvas-btn canvas-btn-primary"
                 disabled={!selected.length || busy}
-                onClick={() => onSubmitSpaces(selected)}
+                onClick={() => {
+                  if (panel.kind === 'style_select') {
+                    onSubmitStyles?.(selected)
+                  } else if (panel.kind === 'tone_select') {
+                    onSubmitTones?.(selected)
+                  } else {
+                    onSubmitSpaces(selected)
+                  }
+                }}
               >
-                {busy ? '生成中…' : `生成 ${selected.length} 个空间`}
+                {busy ? '生成中…' : selectCopy.submit(selected.length)}
               </button>
             </div>
           </div>

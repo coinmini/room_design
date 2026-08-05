@@ -5,6 +5,7 @@
 
 import {
   approveWorkflowAsset,
+  unapproveWorkflowAsset,
   apiFetch,
   createAxonometricRenders,
   createColorPlanRenders,
@@ -112,6 +113,33 @@ export async function approveVariant(params: ApproveParams): Promise<{
     approvedVariantId: params.variantId,
     approvedVersionId,
     raw: approval,
+  }
+}
+
+/** 取消指定资产某个 variant 的批准。 */
+export async function unapproveVariant(params: ApproveParams): Promise<{
+  assetId: string
+  variantId: string
+  raw: Record<string, unknown>
+}> {
+  const response = await unapproveWorkflowAsset(params.assetId, {
+    variantId: params.variantId,
+    comment: params.comment,
+  })
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: unknown
+    } | null
+    throw new Error(apiError(payload?.detail, response.status))
+  }
+  const detail = recordValue(await response.json())
+  const approvedAsset = recordValue(detail.asset)
+  return {
+    assetId: String(
+      detail.assetId ?? detail.id ?? approvedAsset.id ?? params.assetId,
+    ),
+    variantId: params.variantId,
+    raw: detail,
   }
 }
 

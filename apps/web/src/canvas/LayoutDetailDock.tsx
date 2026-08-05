@@ -1,7 +1,7 @@
 import { assetUrl } from '../api'
 import { stageDetailMeta, type StageDeriveAction } from './stageDetail'
 import type { CanvasGraphNode } from './types'
-import { normalizeStage } from './types'
+import { isVariantApproved, normalizeStage } from './types'
 import './theme.css'
 
 export type StageDetailPrimaryAction = StageDeriveAction & {
@@ -15,6 +15,8 @@ type Props = {
   busy?: boolean
   onBack: () => void
   onApprove: () => void
+  /** 已批准时取消批准；不传则详情坞不展示取消按钮 */
+  onUnapprove?: () => void
   primaryActions: StageDetailPrimaryAction[]
   onOpenFull: () => void
   onDownload: () => void
@@ -31,6 +33,7 @@ export default function LayoutDetailDock({
   busy,
   onBack,
   onApprove,
+  onUnapprove,
   primaryActions,
   onOpenFull,
   onDownload,
@@ -47,7 +50,7 @@ export default function LayoutDetailDock({
     node.title ||
     '方案'
   ).replaceAll('_', ' ')
-  const approved = Boolean(node.approved || node.approvalStatus === 'approved')
+  const approved = isVariantApproved(node)
 
   return (
     <div className="canvas-structure-dock canvas-layout-detail-dock">
@@ -127,14 +130,28 @@ export default function LayoutDetailDock({
               下载
             </button>
             {meta.showApprove ? (
-              <button
-                type="button"
-                className="canvas-btn canvas-topbar-btn"
-                onClick={onApprove}
-                disabled={!node.assetId || !node.variantId || busy}
-              >
-                {approved ? '再批准' : '批准'}
-              </button>
+              approved ? (
+                <button
+                  type="button"
+                  className="canvas-btn canvas-topbar-btn"
+                  onClick={onUnapprove}
+                  disabled={
+                    !onUnapprove || !node.assetId || !node.variantId || busy
+                  }
+                  title="取消本方案批准状态"
+                >
+                  取消批准
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="canvas-btn canvas-topbar-btn"
+                  onClick={onApprove}
+                  disabled={!node.assetId || !node.variantId || busy}
+                >
+                  批准
+                </button>
+              )
             ) : null}
             {primaryActions.map((action) => (
               <button
