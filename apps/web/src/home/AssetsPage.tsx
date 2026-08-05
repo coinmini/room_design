@@ -12,7 +12,7 @@ const CHIP_ACTIONS = [
 
 /**
  * 我的资产：独立全页，深色星空壳层，无左侧导航。
- * 兼容 /assets?assetId= 与旧链 /workspace?module=assets&assetId=
+ * 「返回首页」与筛选栏同行置左；用户/活动胶囊在同行右侧，避免叠在内容上。
  */
 export default function AssetsPage() {
   const [params] = useSearchParams()
@@ -24,38 +24,40 @@ export default function AssetsPage() {
     <div className="fb-home fb-assets-page">
       <div className="fb-sky-milky" aria-hidden />
 
-      <div className="fb-top-chips">
-        <Link to="/" className="fb-user-chip fb-assets-home-link" title="返回首页">
-          <span className="fb-user-avatar" aria-hidden>
-            ⌂
-          </span>
-          <div className="fb-user-meta">
-            <strong>返回首页</strong>
-            <span>工作台</span>
-          </div>
-        </Link>
-        <div className="fb-user-chip">
-          <span className="fb-user-avatar" aria-hidden>
-            {displayName.slice(0, 1)}
-          </span>
-          <div className="fb-user-meta">
-            <strong>本地用户</strong>
-            <span>免费</span>
-          </div>
-        </div>
-        {CHIP_ACTIONS.map((chip) => (
-          <button
-            key={chip.label}
-            type="button"
-            className={`fb-action-chip fb-action-chip--${chip.tone}`}
-          >
-            {chip.label}
-          </button>
-        ))}
-      </div>
-
       <main className="fb-assets-main">
-        <AssetLibrary initialAssetId={assetId} />
+        <AssetLibrary
+          initialAssetId={assetId}
+          toolbarLeading={
+            <Link to="/" className="fb-assets-back" title="返回首页">
+              <span className="fb-assets-back-icon" aria-hidden>
+                ⌂
+              </span>
+              <span>返回首页</span>
+            </Link>
+          }
+          toolbarTrailing={
+            <div className="fb-assets-toolbar-chips">
+              <div className="fb-user-chip">
+                <span className="fb-user-avatar" aria-hidden>
+                  {displayName.slice(0, 1)}
+                </span>
+                <div className="fb-user-meta">
+                  <strong>本地用户</strong>
+                  <span>免费</span>
+                </div>
+              </div>
+              {CHIP_ACTIONS.map((chip) => (
+                <button
+                  key={chip.label}
+                  type="button"
+                  className={`fb-action-chip fb-action-chip--${chip.tone}`}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+          }
+        />
       </main>
     </div>
   )

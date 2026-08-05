@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 
 import {
   apiFetch,
@@ -913,10 +920,16 @@ function AssetDownload({
 type AssetLibraryProps = {
   /** 从首页 / 深链传入时，挂载后自动打开该资产详情 */
   initialAssetId?: string | null
+  /** 筛选栏最前（如「返回首页」） */
+  toolbarLeading?: ReactNode
+  /** 筛选栏右侧（如用户/活动胶囊），与刷新按钮同排 */
+  toolbarTrailing?: ReactNode
 }
 
 export default function AssetLibrary({
   initialAssetId = null,
+  toolbarLeading = null,
+  toolbarTrailing = null,
 }: AssetLibraryProps = {}) {
   const [filter, setFilter] = useState<AssetFilter>('all')
   const [assets, setAssets] = useState<SceneAsset[]>([])
@@ -1304,6 +1317,10 @@ export default function AssetLibrary({
 
       <div className="asset-library-toolbar">
         <div className="asset-filter" role="group" aria-label="资产模块筛选">
+          {/* 返回首页等与「全部模块」同一行、排在最前 */}
+          {toolbarLeading ? (
+            <div className="asset-toolbar-leading">{toolbarLeading}</div>
+          ) : null}
           {filterOptions.map((option) => (
             <button
               type="button"
@@ -1320,6 +1337,10 @@ export default function AssetLibrary({
             </button>
           ))}
         </div>
+        <div className="asset-toolbar-spacer" aria-hidden />
+        {toolbarTrailing ? (
+          <div className="asset-toolbar-trailing">{toolbarTrailing}</div>
+        ) : null}
         <button
           type="button"
           className="asset-refresh-button"
