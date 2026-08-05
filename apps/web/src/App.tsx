@@ -1102,8 +1102,8 @@ function CanvasModule({ onOpenAssets }: { onOpenAssets: () => void }) {
           <span className="eyebrow">CANVAS</span>
           <h1>无限画布</h1>
           <p>
-            按 workflowStage 分列展示项目谱系；支持缩放平移、小地图与节点批准。
-            存量无 project 资产通过 includeOrphans 回退合并。
+            按 workflowStage 分列展示本项目谱系；支持缩放平移、小地图与节点批准。
+            仅显示当前 project 下的资产，不会合并其它项目或无项目资产。
           </p>
         </div>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

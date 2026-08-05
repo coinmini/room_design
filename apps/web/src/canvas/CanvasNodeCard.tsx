@@ -12,6 +12,10 @@ export type CanvasNodeData = {
   onAction?: (action: string, node: CanvasGraphNode) => void
   showActions?: boolean
   upstreamChanged?: boolean
+  /** 展开多图堆叠 */
+  onExpandStack?: (stackKey: string) => void
+  /** 收起多图堆叠 */
+  onCollapseStack?: (stackKey: string) => void
 }
 
 export function CanvasNodeCard({ data, selected }: NodeProps) {
@@ -19,6 +23,13 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
   const node = payload.graphNode
   const stage = normalizeStage(node)
   const thumb = assetUrl(node.thumbnailUrl || node.url || undefined)
+  const isStack = Boolean(node.isStack)
+  const stackCount = node.stackCount ?? node.stackItems?.length ?? 0
+  const stackPreviews = (node.stackItems ?? [])
+    .slice(0, 3)
+    .map((item) => assetUrl(item.thumbnailUrl || item.url || undefined))
+    .filter(Boolean) as string[]
+
   const actions = listNodeActions(node, payload.actionCtx ?? {})
   const primary = actions.filter(
     (a) =>
@@ -50,10 +61,16 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
     overflow: 'hidden',
     color: 'var(--canvas-text)',
     fontSize: 12,
+    position: 'relative',
   }
 
   return (
-    <div className="canvas-node-card" style={cardStyle}>
+    <div
+      className={`canvas-node-card${isStack ? ' is-stack' : ''}${
+        node.stackExpanded ? ' is-stack-member' : ''
+      }`}
+      style={cardStyle}
+    >
       <Handle type="target" position={Position.Left} style={{ opacity: 0.35 }} />
       <header
         style={{
@@ -72,6 +89,10 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
             style={{ fontSize: 10, letterSpacing: '0.04em' }}
           >
             {stageLabel(stage)}
+            {isStack ? ' · 堆叠' : ''}
+            {node.stackExpanded && stackCount > 1
+              ? ` · ${ (node.stackIndex ?? 0) + 1 }/${stackCount}`
+              : ''}
           </div>
           <div
             style={{
@@ -86,7 +107,35 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
             {(node.label || node.variantId || '').replaceAll('_', ' ')}
           </div>
         </div>
-        {payload.actionCtx?.stage01Confirmed ? (
+        {isStack ? (
+          <span
+            className="canvas-pill"
+            style={{
+              background: 'var(--canvas-primary-muted)',
+              borderColor: 'transparent',
+              color: 'var(--canvas-primary)',
+              height: 22,
+              padding: '0 8px',
+              fontWeight: 700,
+            }}
+            title={`${stackCount} 张图片 · 点击展开`}
+          >
+            {stackCount}
+          </span>
+        ) : node.stackExpanded && node.stackKey ? (
+          <button
+            type="button"
+            className="canvas-pill canvas-stack-collapse-chip nodrag nopan"
+            title="收起为堆叠"
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              payload.onCollapseStack?.(node.stackKey!)
+            }}
+          >
+            收起
+          </button>
+        ) : payload.actionCtx?.stage01Confirmed ? (
           <span
             className="canvas-pill"
             style={{
@@ -138,6 +187,7 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
       </header>
 
       <div
+        className="canvas-node-thumb"
         style={{
           position: 'relative',
           height: 148,
@@ -146,7 +196,42 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
           placeItems: 'center',
         }}
       >
-        {node.isSkeleton ? (
+        {isStack ? (
+          <div className="canvas-stack-layers">
+            {/* 背后层叠卡片 */}
+            {[2, 1].map((depth) => (
+              <div
+                key={depth}
+                className="canvas-stack-layer"
+                style={{
+                  transform: `translate(${depth * 5}px, ${depth * 5}px) scale(${
+                    1 - depth * 0.04
+                  })`,
+                  zIndex: 3 - depth,
+                  opacity: 0.55 - depth * 0.1,
+                }}
+              >
+                {stackPreviews[depth] ? (
+                  <img src={stackPreviews[depth]} alt="" draggable={false} />
+                ) : (
+                  <div className="canvas-stack-placeholder" />
+                )}
+              </div>
+            ))}
+            <div className="canvas-stack-layer is-front" style={{ zIndex: 4 }}>
+              {stackPreviews[0] || thumb ? (
+                <img
+                  src={stackPreviews[0] || thumb}
+                  alt={node.label || 'stack'}
+                  draggable={false}
+                />
+              ) : (
+                <span className="canvas-muted">无预览</span>
+              )}
+              <div className="canvas-stack-hint">点击展开全部 {stackCount} 张</div>
+            </div>
+          </div>
+        ) : node.isSkeleton ? (
           <div
             style={{
               width: '86%',
@@ -207,7 +292,21 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
         </button>
       ) : null}
 
-      {payload.showActions ? (
+      {node.stackExpanded && node.stackKey ? (
+        <button
+          type="button"
+          className="canvas-btn canvas-stack-collapse-bar nodrag nopan"
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            payload.onCollapseStack?.(node.stackKey!)
+          }}
+        >
+          ↑ 收起堆叠（{stackCount} 张）
+        </button>
+      ) : null}
+
+      {payload.showActions && !isStack ? (
         <div
           className="canvas-node-actions"
           style={{

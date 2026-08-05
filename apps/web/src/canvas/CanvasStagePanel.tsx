@@ -106,28 +106,22 @@ export default function CanvasStagePanel({
     return new File([blob], 'mark.png', { type: 'image/png' })
   }
 
+  const allRoomIds =
+    panel.kind === 'space_select' ? panel.rooms.map((r) => r.id) : []
+  const allSelected =
+    panel.kind === 'space_select' &&
+    allRoomIds.length > 0 &&
+    allRoomIds.every((id) => selected.includes(id))
+
   return (
     <div
-      className="canvas-theme"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 80,
-        background: 'rgba(0,0,0,.55)',
-        display: 'grid',
-        placeItems: 'center',
-        padding: 24,
-      }}
+      className="canvas-theme canvas-stage-overlay"
       onClick={onCancel}
     >
       <div
-        className="canvas-card"
-        style={{
-          width: 'min(720px, 100%)',
-          maxHeight: '90vh',
-          overflow: 'auto',
-          padding: 20,
-        }}
+        className={`canvas-card canvas-stage-dialog${
+          panel.kind === 'space_select' ? ' is-space-select' : ''
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
         {panel.kind === 'upload_floorplan' ? (
@@ -199,32 +193,57 @@ export default function CanvasStagePanel({
         ) : null}
 
         {panel.kind === 'space_select' ? (
-          <>
-            <h3 style={{ margin: '0 0 8px' }}>05 选择分空间</h3>
-            <p className="canvas-secondary" style={{ marginTop: 0, fontSize: 13 }}>
-              勾选要出效果图的房间（默认全选）。
-            </p>
-            <div style={{ display: 'grid', gap: 8 }}>
+          <div className="canvas-space-select">
+            <header className="canvas-space-select-header">
+              <div>
+                <div className="canvas-space-select-kicker">05 / SPACE RENDER</div>
+                <h3>选择要生成的分空间</h3>
+                <p>
+                  勾选需要出效果图的房间。默认全选，可按需取消。
+                </p>
+              </div>
+              <div className="canvas-space-select-count">
+                <strong>{selected.length}</strong>
+                <span>/ {panel.rooms.length}</span>
+              </div>
+            </header>
+
+            <div className="canvas-space-select-toolbar">
+              <button
+                type="button"
+                className="canvas-btn"
+                disabled={busy || allSelected}
+                onClick={() => setSelected(allRoomIds)}
+              >
+                全选
+              </button>
+              <button
+                type="button"
+                className="canvas-btn"
+                disabled={busy || selected.length === 0}
+                onClick={() => setSelected([])}
+              >
+                清空
+              </button>
+              <span className="canvas-space-select-hint">
+                已选 {selected.length} 个空间
+              </span>
+            </div>
+
+            <div className="canvas-space-select-grid" role="list">
               {panel.rooms.map((room) => {
                 const checked = selected.includes(room.id)
                 return (
                   <label
                     key={room.id}
-                    className="canvas-card"
-                    style={{
-                      padding: '10px 12px',
-                      display: 'flex',
-                      gap: 10,
-                      alignItems: 'center',
-                      cursor: 'pointer',
-                      borderColor: checked
-                        ? 'var(--canvas-primary-border)'
-                        : 'var(--canvas-border)',
-                    }}
+                    className={`canvas-space-room${checked ? ' is-checked' : ''}`}
+                    role="listitem"
                   >
                     <input
                       type="checkbox"
+                      className="canvas-space-room-check"
                       checked={checked}
+                      disabled={busy}
                       onChange={() =>
                         setSelected((current) =>
                           checked
@@ -233,26 +252,29 @@ export default function CanvasStagePanel({
                         )
                       }
                     />
-                    <span>
-                      {room.name}
-                      <span className="canvas-muted" style={{ marginLeft: 8 }}>
-                        {room.id}
-                      </span>
+                    <span className="canvas-space-room-box" aria-hidden>
+                      {checked ? '✓' : ''}
+                    </span>
+                    <span className="canvas-space-room-text">
+                      <span className="canvas-space-room-name">{room.name}</span>
+                      <span className="canvas-space-room-id">{room.id}</span>
                     </span>
                   </label>
                 )
               })}
             </div>
-            <label className="canvas-secondary" style={{ fontSize: 12, display: 'block', marginTop: 12 }}>
-              设计意向（可选）
+
+            <label className="canvas-space-select-prompt">
+              <span>设计意向（可选）</span>
               <textarea
                 value={designPrompt}
                 onChange={(e) => onDesignPromptChange(e.target.value)}
-                rows={2}
-                style={{ ...inputStyle, resize: 'vertical' }}
+                rows={1}
+                placeholder="现代原木、暖光、简洁收纳…"
               />
             </label>
-            <div style={footerStyle}>
+
+            <div className="canvas-space-select-footer">
               <button type="button" className="canvas-btn" onClick={onCancel} disabled={busy}>
                 取消
               </button>
@@ -265,7 +287,7 @@ export default function CanvasStagePanel({
                 {busy ? '生成中…' : `生成 ${selected.length} 个空间`}
               </button>
             </div>
-          </>
+          </div>
         ) : null}
 
         {panel.kind === 'local_edit' ? (

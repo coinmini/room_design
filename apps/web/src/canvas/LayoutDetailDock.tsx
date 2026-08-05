@@ -1,19 +1,27 @@
 import { assetUrl } from '../api'
+import { stageDetailMeta, type StageDeriveAction } from './stageDetail'
 import type { CanvasGraphNode } from './types'
+import { normalizeStage } from './types'
 import './theme.css'
+
+export type StageDetailPrimaryAction = StageDeriveAction & {
+  key?: string
+  disabled?: boolean
+  onClick: () => void
+}
 
 type Props = {
   node: CanvasGraphNode
   busy?: boolean
   onBack: () => void
   onApprove: () => void
-  onGenerateColorPlan: () => void
+  primaryActions: StageDetailPrimaryAction[]
   onOpenFull: () => void
   onDownload: () => void
 }
 
 /**
- * 02 平面布局详情坞：自动展示当前节点布局图，支持批准 / 生成彩平。
+ * 02–08 图片阶段详情坞：展示当前节点图，支持批准与下游派生。
  * 不是 01 结构编辑器。
  */
 export default function LayoutDetailDock({
@@ -21,16 +29,20 @@ export default function LayoutDetailDock({
   busy,
   onBack,
   onApprove,
-  onGenerateColorPlan,
+  primaryActions,
   onOpenFull,
   onDownload,
 }: Props) {
+  const stage = normalizeStage(node)
+  const meta = stageDetailMeta(stage)
+
   const imageUrl = assetUrl(node.url || node.thumbnailUrl || undefined)
-  const title =
-    (node.label || node.variantId || node.title || '布局方案').replaceAll(
-      '_',
-      ' ',
-    )
+  const title = (
+    node.label ||
+    node.variantId ||
+    node.title ||
+    '方案'
+  ).replaceAll('_', ' ')
   const approved = Boolean(node.approved || node.approvalStatus === 'approved')
 
   return (
@@ -41,10 +53,10 @@ export default function LayoutDetailDock({
           className="canvas-pill"
           style={{ width: '100%', justifyContent: 'center' }}
         >
-          阶段 02 · 平面布局
+          {meta.pill}
         </div>
         <p className="canvas-secondary" style={{ fontSize: 12, lineHeight: 1.5 }}>
-          已载入当前节点布局图。可批准此方案，或直接生成彩平（03）。
+          {meta.description}
         </p>
         {imageUrl ? (
           <img className="canvas-structure-thumb" src={imageUrl} alt="" />
@@ -60,12 +72,16 @@ export default function LayoutDetailDock({
               <code>{node.assetId.slice(0, 14)}…</code>
             </div>
           ) : null}
-          <div>
-            <span className="canvas-muted">状态</span>
-            <strong style={{ color: approved ? 'var(--canvas-success)' : undefined }}>
-              {approved ? '✓ 已批准' : '待批准'}
-            </strong>
-          </div>
+          {meta.showApprove ? (
+            <div>
+              <span className="canvas-muted">状态</span>
+              <strong
+                style={{ color: approved ? 'var(--canvas-success)' : undefined }}
+              >
+                {approved ? '✓ 已批准' : '待批准'}
+              </strong>
+            </div>
+          ) : null}
         </div>
         <button
           type="button"
@@ -84,8 +100,11 @@ export default function LayoutDetailDock({
       <div className="canvas-layout-detail-main">
         <header className="canvas-layout-detail-header">
           <div>
-            <div className="canvas-muted" style={{ fontSize: 11, letterSpacing: '0.06em' }}>
-              02 / LAYOUT DETAIL
+            <div
+              className="canvas-muted"
+              style={{ fontSize: 11, letterSpacing: '0.06em' }}
+            >
+              {meta.code}
             </div>
             <h2 style={{ margin: '4px 0 0', fontSize: 18 }}>{title}</h2>
           </div>
@@ -106,37 +125,50 @@ export default function LayoutDetailDock({
             >
               下载
             </button>
-            <button
-              type="button"
-              className="canvas-btn"
-              onClick={onApprove}
-              disabled={!node.assetId || !node.variantId || busy}
-            >
-              {approved ? '再次确认批准' : '批准此方案'}
-            </button>
-            <button
-              type="button"
-              className="canvas-btn canvas-btn-primary"
-              onClick={onGenerateColorPlan}
-              disabled={!node.assetId || busy}
-            >
-              {busy ? '处理中…' : '生成彩平（03）'}
-            </button>
+            {meta.showApprove ? (
+              <button
+                type="button"
+                className="canvas-btn"
+                onClick={onApprove}
+                disabled={!node.assetId || !node.variantId || busy}
+              >
+                {approved ? '再次确认批准' : '批准此方案'}
+              </button>
+            ) : null}
+            {primaryActions.map((action) => (
+              <button
+                key={action.key ?? action.action}
+                type="button"
+                className={
+                  action.primary
+                    ? 'canvas-btn canvas-btn-primary'
+                    : 'canvas-btn'
+                }
+                onClick={action.onClick}
+                disabled={action.disabled || busy}
+              >
+                {busy ? '处理中…' : action.label}
+              </button>
+            ))}
           </div>
         </header>
 
         <div className="canvas-layout-detail-stage">
           {imageUrl ? (
-            <img src={imageUrl} alt={title} className="canvas-layout-detail-image" />
+            <img
+              src={imageUrl}
+              alt={title}
+              className="canvas-layout-detail-image"
+            />
           ) : (
             <div className="canvas-layout-detail-empty">
-              当前布局节点没有可显示的图片 URL
+              当前节点没有可显示的图片 URL
             </div>
           )}
         </div>
 
         <footer className="canvas-layout-detail-footer canvas-secondary">
-          此图已从画布节点自动载入，无需重新上传。批准后可用于生成彩平 / 轴侧 / 分空间。
+          {meta.footer}
         </footer>
       </div>
     </div>

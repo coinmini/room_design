@@ -1136,25 +1136,37 @@ def run_ai_local_edit(payload: dict[str, Any]) -> dict[str, Any]:
     if not edit_prompt:
         raise ProcessorError("INPUT_REJECTED", "局部修改要求不能为空")
     lock = _space_geometry_lock(semantic_layout, space_id)
+    # 局部修改必须「一眼看得出变化」：过往 gpt-image 常几乎原样返回，
+    # 再被 hard-restore 后看起来像「没效果」。
     prompt = (
-        "Perform one tightly controlled local edit of the approved interior image. "
+        "You are doing a LOCAL object edit of an approved interior photograph. "
         + lock
-        + "Image 2 is the same interior photo overlaid with bright red hand-drawn markings. "
-        "The red markings circle or paint the target object: everything they enclose or cover "
-        "is the region the user wants changed. Fully regenerate the marked object or region so "
-        "the result is visibly different from image 1, exactly following this request: "
-        f"{edit_prompt}. Keep the marked object's position, scale, and perspective coherent with "
-        "the room, and keep everything outside the red markings identical to image 1. The "
-        "finished image must not contain any visible red markings. The server extracts the "
-        "marked regions (including enclosed interiors) and hard-restores every non-marked pixel "
-        "after generation."
+        + "Image 1 is the authority photo (camera, geometry, lighting, unedited furniture). "
+        "Image 2 is the SAME photo with bright pure-red (#FF3B30) hand-drawn marks. "
+        "The red strokes circle or paint ONE target: everything INSIDE / covered by the red "
+        "markings is the ONLY region you may change. "
+        "User request (apply only inside the red marks): "
+        f"{edit_prompt}. "
+        "CRITICAL SUCCESS CRITERIA: "
+        "1) The edited object MUST be OBVIOUSLY different from image 1 (e.g. clearly new "
+        "color/material/finish). A subtle tint shift is a FAILURE — make a bold, visible edit. "
+        "2) If the request is a color change, repaint the whole marked object with a distinctly "
+        "different hue or wood/metal/fabric finish that reads clearly at a glance. "
+        "3) Do NOT leave the marked object looking like a copy of image 1. "
+        "4) Keep the object's silhouette, position, scale, and perspective coherent with the room. "
+        "5) Everything outside the red marks must match image 1. "
+        "6) The finished image must contain NO red annotation strokes. "
+        "The server will hard-restore every non-marked pixel after generation."
     )
     try:
         mask, mark_coverage = _extract_mark_mask(source=source, mark=mark)
+        # 同时把二值 mask 作为参考，强化「只改白区」
         generated = _generate(
             source=source,
-            references=[mark],
-            prompt=prompt,
+            references=[mark, mask],
+            prompt=prompt
+            + " Image 3 is a binary mask of the editable region (white = must edit). "
+            "Apply the requested change across the entire white region, not only the red ring.",
             size=_target_size(source),
         )
         composite_path, coverage = _restore_unmasked_pixels(

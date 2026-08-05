@@ -34,6 +34,18 @@ export type CanvasGraphNode = {
   isTemporary?: boolean
   jobStatus?: string | null
   isSkeleton?: boolean
+  /** 分空间等多图堆叠：折叠态代表节点 */
+  isStack?: boolean
+  /** 堆叠分组 key（asset / job） */
+  stackKey?: string
+  /** 堆叠内张数 */
+  stackCount?: number
+  /** 展开态：同组序号 0..n-1 */
+  stackIndex?: number
+  /** 展开态标记 */
+  stackExpanded?: boolean
+  /** 折叠态：组内全部成员（用于预览层叠） */
+  stackItems?: CanvasGraphNode[]
 }
 
 export type CanvasGraphEdge = {
@@ -105,6 +117,51 @@ export function normalizeStage(node: CanvasGraphNode): string {
     return 'layout'
   }
   if (
+    node.assetType === 'ai_color_plan' ||
+    node.assetType === 'color_plan' ||
+    node.moduleKey === 'color_plan' ||
+    node.title?.includes('彩平')
+  ) {
+    return 'color_plan'
+  }
+  if (
+    node.assetType === 'ai_axonometric' ||
+    node.moduleKey === 'axonometric' ||
+    node.title?.includes('轴侧') ||
+    node.title?.includes('轴测')
+  ) {
+    return 'axonometric'
+  }
+  if (
+    node.assetType === 'ai_space_render' ||
+    node.moduleKey === 'space_render' ||
+    node.title?.includes('分空间') ||
+    node.title?.includes('空间效果')
+  ) {
+    return 'space_render'
+  }
+  if (
+    node.assetType === 'ai_style_scheme' ||
+    node.moduleKey === 'style_scheme' ||
+    node.title?.includes('风格方案')
+  ) {
+    return 'style_scheme'
+  }
+  if (
+    node.assetType === 'ai_tone_scheme' ||
+    node.moduleKey === 'tone_scheme' ||
+    node.title?.includes('色调方案')
+  ) {
+    return 'tone_scheme'
+  }
+  if (
+    node.assetType === 'ai_local_edit' ||
+    node.moduleKey === 'local_edit' ||
+    node.title?.includes('局部修改')
+  ) {
+    return 'local_edit'
+  }
+  if (
     node.assetType === 'floorplan_analysis' ||
     node.moduleKey === 'floorplan'
   ) {
@@ -118,6 +175,9 @@ export function normalizeStage(node: CanvasGraphNode): string {
   if (node.isTemporary) return 'other'
   return 'other'
 }
+
+// 兼容旧 import：实现见 stageDetail.ts
+export { isImageDetailStage } from './stageDetail'
 
 export function stageLabel(stage: string | null | undefined): string {
   const found = STAGE_COLUMNS.find((item) => item.stage === stage)
