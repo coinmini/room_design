@@ -407,3 +407,70 @@
   background: #eef2ff;
   border-bottom: 1px solid #e2e8f0;
 }
+
+/* 02 布局详情坞 */
+.canvas-theme .canvas-layout-detail-main {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  background: var(--canvas-bg-elevated);
+  border-left: 1px solid var(--canvas-border);
+}
+
+.canvas-theme .canvas-layout-detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--canvas-border);
+}
+
+.canvas-theme .canvas-layout-detail-stage {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background:
+    radial-gradient(circle at 50% 40%, rgba(59, 130, 246, 0.06), transparent 55%),
+    var(--canvas-bg);
+}
+
+.canvas-theme .canvas-layout-detail-image {
+  max-width: min(960px, 100%);
+  max-height: calc(100vh - 220px);
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid var(--canvas-border);
+  box-shadow: var(--canvas-shadow);
+  background: #fff;
+}
+
+.canvas-theme .canvas-layout-detail-empty {
+  color: var(--canvas-text-muted);
+  font-size: 14px;
+}
+
+.canvas-theme .canvas-layout-detail-footer {
+  padding: 12px 16px;
+  font-size: 12px;
+  border-top: 1px solid var(--canvas-border);
+}
+
+.canvas-theme .canvas-layout-detail-meta {
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.canvas-theme .canvas-layout-detail-meta > div {
+  display: grid;
+  gap: 2px;
+}
+
+.canvas-theme .canvas-layout-detail-meta code {
+  font-size: 11px;
+  color: var(--canvas-text-secondary);
+}

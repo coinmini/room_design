@@ -27,6 +27,7 @@ import {
 } from '../workflow/canvasRunner'
 import { canvasNodeTypes, type CanvasNodeData } from './CanvasNodeCard'
 import CanvasStagePanel from './CanvasStagePanel'
+import LayoutDetailDock from './LayoutDetailDock'
 import {
   listNodeActions,
   isEditableTarget,
@@ -169,7 +170,8 @@ function ProjectCanvasInner({
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null)
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const [busyAction, setBusyAction] = useState<string | null>(null)
+  const busyRef = useRef(false)
+  const busyActionRef = useRef<string | null>(null)
   const [designPrompt, setDesignPrompt] = useState('')
   const [panel, setPanel] = useState<StagePanelRequest | null>(null)
   const [panelNode, setPanelNode] = useState<CanvasGraphNode | null>(null)
@@ -185,6 +187,8 @@ function ProjectCanvasInner({
     jobId: string
     node: CanvasGraphNode
   } | null>(null)
+  /** 02 布局详情坞（不是 01 结构编辑器） */
+  const [layoutDetail, setLayoutDetail] = useState<CanvasGraphNode | null>(null)
   const actionRef = useRef<(action: string, node: CanvasGraphNode | null) => void>(
     () => undefined,
   )
@@ -192,6 +196,8 @@ function ProjectCanvasInner({
   stage01ByJobRef.current = stage01ByJob
   const structureEditorRef = useRef(structureEditor)
   structureEditorRef.current = structureEditor
+  const layoutDetailRef = useRef(layoutDetail)
+  layoutDetailRef.current = layoutDetail
   /** 始终读最新骨架，避免 loadGraph 闭包把占位框冲掉 */
   const skeletonSlotsRef = useRef<SkeletonSlot[]>([])
   skeletonSlotsRef.current = skeletonSlots
@@ -202,6 +208,8 @@ function ProjectCanvasInner({
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const inStructureFocus = Boolean(structureEditor)
+  const inLayoutDetail = Boolean(layoutDetail)
+  const inAnyFocus = inStructureFocus || inLayoutDetail
 
   const exitStructureFocus = useCallback(
     (opts?: { focusNodeId?: string; notice?: string }) => {
@@ -400,21 +408,72 @@ function ProjectCanvasInner({
     )
   }, [selectedId, downstreamByAsset, stage01ByJob, setNodes])
 
-  const openStructureEditor = useCallback((node: CanvasGraphNode) => {
-    if (!node.jobId) {
-      setNotice('该节点缺少分析任务 ID，无法打开结构编辑器')
-      return
-    }
-    if (normalizeStage(node) !== 'floorplan' && node.moduleKey !== 'floorplan') {
-      // 仍允许带 job 的 floorplan 分析节点
-      if (!node.jobId.startsWith('job_') && !node.assetType?.includes('floorplan')) {
-        setNotice('仅户型识别节点可打开结构编辑器')
+  const isStage01Node = useCallback((node: CanvasGraphNode) => {
+    const stage = normalizeStage(node)
+    return (
+      stage === 'floorplan' ||
+      node.moduleKey === 'floorplan' ||
+      node.assetType === 'floorplan_analysis'
+    )
+  }, [])
+
+  const isStage02LayoutNode = useCallback((node: CanvasGraphNode) => {
+    const stage = normalizeStage(node)
+    return stage === 'layout' || node.moduleKey === 'layout'
+  }, [])
+
+  /** 01 专用：结构编辑器（FloorplanModule） */
+  const openStructureEditor = useCallback(
+    (node: CanvasGraphNode) => {
+      if (!isStage01Node(node)) {
+        setNotice('结构编辑器仅用于 01 户型识别节点；02 请双击打开布局详情')
         return
       }
+      if (!node.jobId) {
+        setNotice('该节点缺少分析任务 ID，无法打开结构编辑器')
+        return
+      }
+      setContextMenu(null)
+      setLayoutDetail(null)
+      setStructureEditor({ jobId: node.jobId, node })
+    },
+    [isStage01Node],
+  )
+
+  /** 02 专用：布局详情坞，自动载入当前布局图 */
+  const openLayoutDetail = useCallback((node: CanvasGraphNode) => {
+    if (!node.url && !node.thumbnailUrl) {
+      setNotice('该布局节点没有可显示的图片')
+      return
     }
     setContextMenu(null)
-    setStructureEditor({ jobId: node.jobId, node })
+    setStructureEditor(null)
+    setLayoutDetail(node)
+    setSelectedId(node.id)
   }, [])
+
+  const exitLayoutDetail = useCallback(
+    (opts?: { notice?: string; focusNodeId?: string }) => {
+      const focusNodeId = opts?.focusNodeId ?? layoutDetailRef.current?.id
+      setLayoutDetail(null)
+      if (opts?.notice) setNotice(opts.notice)
+      requestAnimationFrame(() => {
+        if (focusNodeId) {
+          const n = getNode(focusNodeId)
+          if (n) {
+            setCenter(n.position.x + 110, n.position.y + 120, {
+              zoom: 1,
+              duration: 280,
+            })
+            setSelectedId(focusNodeId)
+            return
+          }
+        }
+        fitView({ padding: 0.18, duration: 280 })
+      })
+    },
+    [fitView, getNode, setCenter],
+  )
 
   const clearSkeletonGroup = useCallback((groupId: string) => {
     setSkeletonSlots((current) => {
@@ -472,9 +531,9 @@ function ProjectCanvasInner({
       setContextMenu(null)
       setNotice('')
 
-      // 防连点：同一生成动作进行中直接提示（不拆掉已有占位框）
+      // 防连点：用 ref 判断，避免 await 后闭包 busy 仍为 true
       if (
-        busy &&
+        busyRef.current &&
         [
           'generate_layout',
           'generate_color_plan',
@@ -487,13 +546,14 @@ function ProjectCanvasInner({
         ].includes(action)
       ) {
         setNotice(
-          busyAction
-            ? `「${actionLabel(busyAction)}」进行中，请勿重复点击`
+          busyActionRef.current
+            ? `「${actionLabel(busyActionRef.current)}」进行中，请勿重复点击`
             : '任务进行中，请勿重复点击',
         )
         return
       }
 
+      busyRef.current = true
       setBusy(true)
       let skeletonGroupId: string | null = null
       try {
@@ -543,7 +603,7 @@ function ProjectCanvasInner({
           'reanalyze',
         ].includes(action)
         if (needsSkeleton) {
-          setBusyAction(action)
+          busyActionRef.current = action
           skeletonGroupId = spawnSkeletons(action, node)
           const n = expectedSkeletonSlots(action, node).length
           setNotice(
@@ -645,8 +705,9 @@ function ProjectCanvasInner({
           }
         }
       } finally {
+        busyRef.current = false
+        busyActionRef.current = null
         setBusy(false)
-        setBusyAction(null)
       }
     },
     [
@@ -655,8 +716,6 @@ function ProjectCanvasInner({
       loadGraph,
       setNodes,
       openStructureEditor,
-      busy,
-      busyAction,
       spawnSkeletons,
       bindSkeletonsToJob,
       clearSkeletonGroup,
@@ -678,16 +737,20 @@ function ProjectCanvasInner({
     (_event, node) => {
       const graphNode = (node.data as CanvasNodeData).graphNode
       setSelectedId(node.id)
-      const stage = normalizeStage(graphNode)
-      if (
-        stage === 'floorplan' ||
-        graphNode.moduleKey === 'floorplan' ||
-        graphNode.assetType?.includes('floorplan')
-      ) {
+      if (isStage01Node(graphNode)) {
         openStructureEditor(graphNode)
+        return
+      }
+      if (isStage02LayoutNode(graphNode)) {
+        openLayoutDetail(graphNode)
+        return
+      }
+      // 其它阶段：打开原图大图
+      if (graphNode.url) {
+        window.open(assetUrl(graphNode.url), '_blank', 'noopener,noreferrer')
       }
     },
-    [openStructureEditor],
+    [isStage01Node, isStage02LayoutNode, openStructureEditor, openLayoutDetail],
   )
 
   const onNodeContextMenu: NodeMouseHandler = useCallback((event, node) => {
@@ -723,12 +786,16 @@ function ProjectCanvasInner({
           })
           return
         }
+        if (layoutDetailRef.current) {
+          exitLayoutDetail()
+          return
+        }
         setContextMenu(null)
         setPanel(null)
         setSelectedId(null)
         return
       }
-      if (structureEditorRef.current) return
+      if (structureEditorRef.current || layoutDetailRef.current) return
       if (!selectedId || !graph) return
       const node = graph.nodes.find((item) => item.id === selectedId)
       if (!node) return
@@ -749,7 +816,7 @@ function ProjectCanvasInner({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, graph, runAction, exitStructureFocus])
+  }, [selectedId, graph, runAction, exitStructureFocus, exitLayoutDetail])
 
   const contextActions = useMemo(() => {
     if (!contextMenu) return []
@@ -780,10 +847,15 @@ function ProjectCanvasInner({
   const focusConfirmed = structureEditor
     ? Boolean(stage01ByJob[structureEditor.jobId])
     : false
+  // 详情坞内展示的布局节点：优先用图谱里刷新后的版本（含批准态）
+  const layoutDetailLive =
+    (layoutDetail &&
+      graph?.nodes.find((n) => n.id === layoutDetail.id)) ||
+    layoutDetail
 
   return (
     <div
-      className={`canvas-theme canvas-shell${inStructureFocus ? ' is-structure-focus' : ''}`}
+      className={`canvas-theme canvas-shell${inAnyFocus ? ' is-structure-focus' : ''}`}
       style={{
         position: 'relative',
         width: '100%',
@@ -794,7 +866,7 @@ function ProjectCanvasInner({
         border: '1px solid var(--canvas-border)',
       }}
     >
-      {/* 顶栏：图谱 / 结构 focus 共用，保持项目语境 */}
+      {/* 顶栏：图谱 / 01 结构 / 02 布局详情 共用 */}
       <div className="canvas-topbar">
         <div className="canvas-toolbar">
           {inStructureFocus ? (
@@ -826,6 +898,31 @@ function ProjectCanvasInner({
                 <span className="canvas-pill canvas-muted-pill">编辑中</span>
               )}
             </>
+          ) : inLayoutDetail && layoutDetailLive ? (
+            <>
+              <button
+                type="button"
+                className="canvas-btn"
+                onClick={() => exitLayoutDetail()}
+              >
+                ← 返回图谱
+              </button>
+              <span className="canvas-pill">02 布局详情</span>
+              <span className="canvas-pill">
+                {(
+                  layoutDetailLive.label ||
+                  layoutDetailLive.variantId ||
+                  '布局方案'
+                ).replaceAll('_', ' ')}
+              </span>
+              {layoutDetailLive.approved ? (
+                <span className="canvas-pill" style={{ color: 'var(--canvas-success)' }}>
+                  ✓ 已批准
+                </span>
+              ) : (
+                <span className="canvas-pill canvas-muted-pill">待批准</span>
+              )}
+            </>
           ) : (
             <>
               <span className="canvas-pill">项目 · {projectId.slice(0, 10)}</span>
@@ -838,7 +935,7 @@ function ProjectCanvasInner({
             </>
           )}
         </div>
-        {!inStructureFocus ? (
+        {!inAnyFocus ? (
           <div className="canvas-toolbar">
             <input
               className="canvas-prompt-inline"
@@ -871,13 +968,17 @@ function ProjectCanvasInner({
             <button
               type="button"
               className="canvas-btn canvas-btn-primary"
-              onClick={() =>
-                exitStructureFocus({
-                  notice: focusConfirmed
-                    ? '已返回图谱'
-                    : '已返回图谱（结构尚未确认）',
-                })
-              }
+              onClick={() => {
+                if (inStructureFocus) {
+                  exitStructureFocus({
+                    notice: focusConfirmed
+                      ? '已返回图谱'
+                      : '已返回图谱（结构尚未确认）',
+                  })
+                } else {
+                  exitLayoutDetail()
+                }
+              }}
             >
               完成并返回
             </button>
@@ -888,8 +989,8 @@ function ProjectCanvasInner({
       <div className="canvas-body">
         {/* 图谱常驻挂载，focus 时仅隐藏，保留视口 */}
         <div
-          className={`canvas-graph-pane${inStructureFocus ? ' is-parked' : ''}`}
-          aria-hidden={inStructureFocus}
+          className={`canvas-graph-pane${inAnyFocus ? ' is-parked' : ''}`}
+          aria-hidden={inAnyFocus}
         >
           <ReactFlow
             nodes={nodes}
@@ -1087,14 +1188,43 @@ function ProjectCanvasInner({
             </div>
           </div>
         ) : null}
+
+        {/* 02 布局详情坞：自动载入当前布局图 */}
+        {layoutDetailLive ? (
+          <LayoutDetailDock
+            node={layoutDetailLive}
+            busy={busy}
+            onBack={() => exitLayoutDetail()}
+            onApprove={() => {
+              void runAction('approve', layoutDetailLive)
+            }}
+            onGenerateColorPlan={() => {
+              void (async () => {
+                const target = layoutDetailLive
+                // 先尽量批准当前布局，再生成彩平（busy 用 ref，可连续 await）
+                if (!target.approved) {
+                  await runAction('approve', target)
+                }
+                exitLayoutDetail({ focusNodeId: target.id })
+                await runAction('generate_color_plan', target)
+              })()
+            }}
+            onOpenFull={() => {
+              void runAction('open_full', layoutDetailLive)
+            }}
+            onDownload={() => {
+              void runAction('download', layoutDetailLive)
+            }}
+          />
+        ) : null}
       </div>
 
-      {error && !inStructureFocus ? (
+      {error && !inAnyFocus ? (
         <div className="canvas-toast canvas-toast-error">{error}</div>
       ) : null}
       {notice ? <div className="canvas-toast">{notice}</div> : null}
 
-      {!inStructureFocus && contextMenu ? (
+      {!inAnyFocus && contextMenu ? (
         <div
           className="canvas-card canvas-context-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}

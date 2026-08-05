@@ -33,6 +33,7 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
         'generate_color_plan',
         'generate_space_render',
         'generate_axonometric',
+        'open_full',
       ].includes(a.action),
   )
 
