@@ -96,13 +96,25 @@ export const STAGE_COLUMNS: Array<{ stage: string; label: string }> = [
 ]
 
 export function normalizeStage(node: CanvasGraphNode): string {
+  // assetType 优先纠偏存量错误 moduleKey（LAYOUT_AI 曾继承 floorplan）
+  if (
+    node.assetType === 'layout_plan' ||
+    node.moduleKey === 'layout' ||
+    node.title?.includes('平面布局')
+  ) {
+    return 'layout'
+  }
+  if (
+    node.assetType === 'floorplan_analysis' ||
+    node.moduleKey === 'floorplan'
+  ) {
+    return 'floorplan'
+  }
   if (node.workflowStage) {
     if (node.workflowStage === 'style') return 'style_scheme'
     if (node.workflowStage === 'tone') return 'tone_scheme'
     return String(node.workflowStage)
   }
-  if (node.moduleKey === 'layout') return 'layout'
-  if (node.moduleKey === 'floorplan') return 'floorplan'
   if (node.isTemporary) return 'other'
   return 'other'
 }

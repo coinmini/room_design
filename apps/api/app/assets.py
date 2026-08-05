@@ -102,6 +102,10 @@ def _module_key(job: Job, parent_asset: SceneAsset | None = None) -> str:
     if job.type in AI_WORKFLOW_JOB_TYPES:
         explicit = _valid_module_key(_mapping(job.payload).get("asset_module_key"))
         return explicit or "ai_workflow"
+    # 02 布局任务必须落 layout 模块，不能继承 01 户型 parent 的 floorplan
+    # （否则画布把 LAYOUT_AI 当成 01 打开结构编辑器）
+    if job.type in {"LAYOUT", "LAYOUT_AI"}:
+        return "layout"
     if parent_asset is not None:
         inherited = _valid_module_key(_mapping(parent_asset.metadata_json).get("moduleKey"))
         if inherited:
@@ -404,7 +408,11 @@ def _asset_metadata(
         "renderInfo": result.get("renderInfo") or {},
         "modelDelivery": result.get("modelDelivery") or {},
         "generationMode": _generation_mode(job, result),
-        "workflowStage": result.get("workflowStage") or payload.get("workflow_stage"),
+        "workflowStage": (
+            result.get("workflowStage")
+            or payload.get("workflow_stage")
+            or ("layout" if job.type in {"LAYOUT", "LAYOUT_AI"} else None)
+        ),
         "variantGroupId": result.get("variantGroupId")
         or payload.get("variant_group_id"),
         "variantIds": list(dict.fromkeys(variant_ids)),

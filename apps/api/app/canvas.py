@@ -324,6 +324,20 @@ def build_project_canvas_graph(
         if not variants:
             continue
         parent_variant_id = metadata.get("parentVariantId")
+        # 存量数据纠偏：layout_plan 资产强制 layout，避免继承 parent 的 floorplan
+        module_key = metadata.get("moduleKey")
+        workflow_stage = metadata.get("workflowStage")
+        if asset.asset_type == "layout_plan" or str(metadata.get("jobType") or "") in {
+            "LAYOUT",
+            "LAYOUT_AI",
+        }:
+            module_key = "layout"
+            workflow_stage = workflow_stage or "layout"
+        elif asset.asset_type == "floorplan_analysis" or str(
+            metadata.get("jobType") or ""
+        ) == "FLOORPLAN_ANALYZE":
+            module_key = "floorplan"
+
         for variant in variants:
             nodes.append(
                 {
@@ -333,8 +347,8 @@ def build_project_canvas_graph(
                     "title": asset.title,
                     "assetType": asset.asset_type,
                     "generationMode": asset.generation_mode,
-                    "moduleKey": metadata.get("moduleKey"),
-                    "workflowStage": metadata.get("workflowStage"),
+                    "moduleKey": module_key,
+                    "workflowStage": workflow_stage,
                     "approvalStatus": metadata.get("approvalStatus"),
                     "parentAssetId": asset.parent_asset_id,
                     "parentVariantId": parent_variant_id,
