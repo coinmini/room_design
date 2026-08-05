@@ -10,6 +10,10 @@ export {
   canvasToScreen,
   zoomPercent,
 } from './layoutMath'
+export { buildCanvasFlow } from './buildCanvasFlow'
+export { isStage01Node, isStageImageDetailNode } from './nodeStage'
+export { actionLabel } from './actionLabels'
+export { expectedSkeletonSlots } from './skeletonMath'
 export type {
   CanvasGraph,
   CanvasGraphNode,

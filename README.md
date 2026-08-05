@@ -34,7 +34,19 @@
 ### 已废弃 / 兼容
 
 - `/workspace/*`：默认重定向到首页；仅当环境变量 `VITE_SHOW_LEGACY_TOOLS=true` 时打开旧侧栏
-- 旧「AI 设计工作流」8 阶段向导默认**不展示**；需 `VITE_SHOW_LEGACY_TOOLS=true` 才出现在「历史实验能力」
+- 旧「AI 设计工作流」8 阶段向导代码在 `apps/web/src/legacy/`，默认**不展示**；需 `VITE_SHOW_LEGACY_TOOLS=true` 才出现在「历史实验能力」
+
+### 画布模块（前端）
+
+主组件 `ProjectCanvas` 已拆为纯函数 / hooks，便于单测与演进：
+
+| 模块 | 职责 |
+|------|------|
+| `buildCanvasFlow` | 图谱 + 骨架 → React Flow 节点/边 |
+| `useCanvasSkeletons` | 骨架 spawn / 进度 / 重试 / 恢复合并 |
+| `useResumeActiveJobs` | 离开再进：恢复进行中任务并 poll |
+| `useCanvasRunAction` | 节点动作（派生生成、详情、重试丢弃） |
+| `spawnDerive` / `canRunAction` / `skeletonMath` | 派生门控、动作可用性、占位槽位 |
 
 ## 本地启动
 

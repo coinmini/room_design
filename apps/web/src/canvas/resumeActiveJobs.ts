@@ -15,7 +15,7 @@ import {
   workflowStageFromAction,
 } from './activeJobs'
 
-function skeletonCountForAction(action: string, job: Job): number {
+export function skeletonCountForAction(action: string, job: Job): number {
   if (action === 'generate_layout') {
     return Math.max(1, Number(job.payload?.count) || 2)
   }

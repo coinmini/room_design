@@ -22,19 +22,11 @@ import {
 import '@xyflow/react/dist/style.css'
 import './theme.css'
 
-import { apiFetch, assetUrl, pollJob } from '../api'
-import {
-  removeActiveCanvasJob,
-  upsertActiveCanvasJob,
-} from './activeJobs'
+import { apiFetch, assetUrl } from '../api'
 import FloorplanModule, {
   type FloorplanStage01Approval,
 } from '../FloorplanModule'
-import {
-  executeCanvasAction,
-  type Stage01ApprovalPayload,
-  type StagePanelRequest,
-} from '../workflow/canvasRunner'
+import { type StagePanelRequest } from '../workflow/canvasRunner'
 import { canvasEdgeTypes } from './BorderEdge'
 import { canvasNodeTypes, type CanvasNodeData } from './CanvasNodeCard'
 import CanvasStagePanel from './CanvasStagePanel'
@@ -52,11 +44,11 @@ import {
   spawnOptionsForNode,
 } from './spawnDerive'
 import SpawnMenu, { type SpawnMenuState } from './SpawnMenu'
-import {
-  expectedSkeletonSlots,
-  type SkeletonSlot,
-} from './skeletonMath'
 import { useCanvasSkeletons } from './useCanvasSkeletons'
+import { useResumeActiveJobs } from './useResumeActiveJobs'
+import { useCanvasRunAction } from './useCanvasRunAction'
+import { buildCanvasFlow } from './buildCanvasFlow'
+import { isStage01Node, isStageImageDetailNode } from './nodeStage'
 import { clampMenuPosition } from './menuMath'
 import LayoutDetailDock from './LayoutDetailDock'
 import LocalEditDock, { type LocalEditSession } from './LocalEditDock'
@@ -67,21 +59,11 @@ import {
   isEditableTarget,
   type ActionContext,
 } from './canRunAction'
-import {
-  layoutGraphByStage,
-  resolveFlowEdges,
-  zoomPercent,
-} from './layoutMath'
+import { zoomPercent } from './layoutMath'
 import {
   canOpenStageDetail,
-  isImageDetailStage,
   primaryDeriveActionsForStage,
 } from './stageDetail'
-import {
-  applyImageStacks,
-  remapEdgesForStacks,
-  stackEndpointMap,
-} from './stackMath'
 import type { CanvasGraph, CanvasGraphNode } from './types'
 import { isVariantApproved, normalizeStage, stageLabel } from './types'
 
@@ -256,86 +238,21 @@ function ProjectCanvasInner({
   const applyGraph = useCallback(
     (body: CanvasGraph, selected: string | null) => {
       // 永远合并 ref 里的最新骨架，防止异步 loadGraph 用空闭包冲掉占位框
-      const skeletons = skeletonSlotsRef.current
+      const built = buildCanvasFlow({
+        body,
+        skeletons: skeletonSlotsRef.current,
+        expandedStacks: expandedStacksRef.current,
+        stage01ConfirmedJobs: stage01ByJobRef.current,
+      })
       setGraph(body)
       graphRef.current = body
-      const parentIds = new Set<string>()
-      for (const edge of body.edges) {
-        if (edge.sourceAssetId) parentIds.add(edge.sourceAssetId)
-      }
-      setDownstreamByAsset(parentIds)
-
-      const skeletonNodes: CanvasGraphNode[] = skeletons.map((item) => ({
-        id: `skeleton:${item.id}`,
-        jobId: item.jobId,
-        variantId: item.id,
-        label: item.label,
-        title: item.label,
-        url: item.url || undefined,
-        thumbnailUrl: item.url || undefined,
-        isSkeleton: true,
-        jobStatus: item.jobStatus || undefined,
-        progressSucceeded: item.succeededCount ?? undefined,
-        progressTotal: item.totalCount ?? undefined,
-        errorMessage: item.errorMessage || undefined,
-        workflowStage: item.workflowStage,
-        parentAssetId: item.parentAssetId,
-        moduleKey:
-          item.workflowStage === 'layout'
-            ? 'layout'
-            : item.workflowStage === 'floorplan'
-              ? 'floorplan'
-              : 'ai_workflow',
-      }))
-
-      const withSkeletons: CanvasGraphNode[] = [...body.nodes, ...skeletonNodes]
-      // 同批 ≥2 张（布局/彩平/轴侧/分空间/风格/色调）：默认堆叠，展开后拆开
-      const displayNodes = applyImageStacks(
-        withSkeletons,
-        expandedStacksRef.current,
-      )
-      const laid = layoutGraphByStage(displayNodes)
-      const flowEdges = remapEdgesForStacks(
-        resolveFlowEdges(body.nodes, body.edges),
-        stackEndpointMap(withSkeletons, displayNodes),
-      )
-      const confirmedJobs = stage01ByJobRef.current
-
-      const parentIdSet = new Set(body.nodes.map((n) => n.id))
-      const displayIdSet = new Set(displayNodes.map((n) => n.id))
-      const endpointMap = stackEndpointMap(withSkeletons, displayNodes)
-      const skeletonEdges = skeletons
-        .filter((s) => s.parentNodeId && parentIdSet.has(s.parentNodeId))
-        .map((s) => {
-          const source =
-            endpointMap.get(s.parentNodeId!) ?? s.parentNodeId!
-          const target = `skeleton:${s.id}`
-          return {
-            id: `sk-edge:${s.id}`,
-            source,
-            target: displayIdSet.has(target)
-              ? target
-              : endpointMap.get(target) ?? target,
-          }
-        })
-        .filter((e) => displayIdSet.has(e.source) && displayIdSet.has(e.target))
+      setDownstreamByAsset(built.parentIds)
 
       setNodes(
-        laid.map((item) => {
-          const stage = normalizeStage(item)
-          const actionCtx: ActionContext = {
-            hasDownstream: item.assetId
-              ? parentIds.has(item.assetId)
-              : false,
-            isApprovedVariant: Boolean(item.approved),
-            stage01Confirmed:
-              stage === 'floorplan' && item.jobId
-                ? Boolean(confirmedJobs[item.jobId])
-                : undefined,
-          }
+        built.displayNodes.map((item) => {
           const data: CanvasNodeData = {
             graphNode: item,
-            actionCtx,
+            actionCtx: item.actionCtx,
             showActions:
               (selected === item.id && !item.isStack) ||
               (Boolean(item.isSkeleton) &&
@@ -355,28 +272,30 @@ function ProjectCanvasInner({
           }
         }),
       )
-      setEdges([
-        ...flowEdges.map((edge) => ({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          // 自定义边：端点贴源右缘 / 目标左缘，避免把手偏移导致飘线
-          type: 'border' as const,
-          style: { stroke: 'rgba(255,255,255,0.28)', strokeWidth: 1.6 },
-        })),
-        ...skeletonEdges.map((edge) => ({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          type: 'border' as const,
-          animated: true,
-          style: {
-            stroke: 'rgba(59,130,246,0.55)',
-            strokeWidth: 1.6,
-            strokeDasharray: '6 4',
-          },
-        })),
-      ])
+      setEdges(
+        built.edges.map((edge) =>
+          edge.skeleton
+            ? {
+                id: edge.id,
+                source: edge.source,
+                target: edge.target,
+                type: 'border' as const,
+                animated: true,
+                style: {
+                  stroke: 'rgba(59,130,246,0.55)',
+                  strokeWidth: 1.6,
+                  strokeDasharray: '6 4',
+                },
+              }
+            : {
+                id: edge.id,
+                source: edge.source,
+                target: edge.target,
+                type: 'border' as const,
+                style: { stroke: 'rgba(255,255,255,0.28)', strokeWidth: 1.6 },
+              },
+        ),
+      )
     },
     [setNodes, setEdges, collapseStack],
   )
@@ -479,32 +398,6 @@ function ProjectCanvasInner({
     )
   }, [selectedId, downstreamByAsset, stage01ByJob, setNodes])
 
-  const isStage01Node = useCallback((node: CanvasGraphNode) => {
-    const stage = normalizeStage(node)
-    // 绝不能把 layout_plan / LAYOUT_AI 当成 01
-    if (
-      node.moduleKey === 'layout' ||
-      node.assetType === 'layout_plan' ||
-      stage === 'layout'
-    ) {
-      return false
-    }
-    // 02–08 图片阶段不得进 01
-    if (isImageDetailStage(stage)) {
-      return false
-    }
-    return (
-      stage === 'floorplan' ||
-      node.moduleKey === 'floorplan' ||
-      node.assetType === 'floorplan_analysis'
-    )
-  }, [])
-
-  /** 可进图片详情坞的节点：02–08 方案图 */
-  const isStageImageDetailNode = useCallback((node: CanvasGraphNode) => {
-    return isImageDetailStage(normalizeStage(node))
-  }, [])
-
   /** 01–08：图片详情坞；01 可再点图进入结构编辑器 */
   const openLayoutDetail = useCallback((node: CanvasGraphNode) => {
     if (!node.url && !node.thumbnailUrl) {
@@ -569,7 +462,7 @@ function ProjectCanvasInner({
       setNotice('') // 避免预览 toast 残留成右上角空框
       setStructureEditor({ jobId: node.jobId, node })
     },
-    [isStage01Node, isStageImageDetailNode, openLayoutDetail],
+    [openLayoutDetail],
   )
 
   const exitLayoutDetail = useCallback(
@@ -670,698 +563,55 @@ function ProjectCanvasInner({
     }
   }, [])
 
-  /** 离开再进入：恢复进行中任务的占位框并继续轮询 */
-  const resumeActiveJobs = useCallback(
-    async (signal?: AbortSignal) => {
-      const { collectActiveJobsToResume } = await import('./resumeActiveJobs')
-      const toResume = await collectActiveJobsToResume(projectId, signal)
-      if (signal?.aborted || !toResume.length) return
+  useResumeActiveJobs({
+    projectId,
+    graphRef,
+    selectedId,
+    applyGraph,
+    loadGraph,
+    bindSkeletonsToJob,
+    clearSkeletonGroup,
+    mergeRestoredSkeletons,
+    setNotice,
+    setBusy,
+    busyRef,
+    busyActionRef,
+  })
 
-      // 恢复骨架
-      const restored: SkeletonSlot[] = []
-      for (const item of toResume) {
-        for (const slot of item.slots) {
-          restored.push({
-            id: slot.id,
-            groupId: item.groupId,
-            label: slot.label,
-            workflowStage: slot.workflowStage,
-            parentAssetId: item.parentAssetId,
-            parentNodeId: item.parentNodeId,
-            jobId: item.jobId,
-          })
-        }
-        upsertActiveCanvasJob(projectId, item)
-      }
-      mergeRestoredSkeletons(restored)
-      if (graphRef.current) {
-        applyGraph(graphRef.current, selectedId)
-      }
-      setNotice(`恢复 ${toResume.length} 个进行中的生成任务…`)
-      busyActionRef.current = toResume[0]?.action ?? null
-      busyRef.current = true
-      setBusy(true)
-
-      // 并行轮询；过程中刷新 partial 预览
-      await Promise.all(
-        toResume.map(async (item) => {
-          try {
-            const completed = await pollJob(
-              item.jobId,
-              (job) => {
-                bindSkeletonsToJob(item.groupId, job)
-              },
-              undefined,
-              signal,
-            )
-            removeActiveCanvasJob(projectId, {
-              jobId: item.jobId,
-              groupId: item.groupId,
-            })
-            clearSkeletonGroup(item.groupId)
-            if (completed.status === 'SUCCEEDED') {
-              await loadGraph({ fit: false })
-              setNotice(
-                item.action === 'generate_layout'
-                  ? '布局生成完成'
-                  : '生成任务已完成',
-              )
-            } else {
-              // 失败/取消：再拉一次图谱，把 partial 临时节点留下
-              await loadGraph({ fit: false })
-              setNotice(
-                `任务结束：${completed.status}${
-                  completed.errorMessage ? ` · ${completed.errorMessage}` : ''
-                }`,
-              )
-            }
-          } catch (err) {
-            if (signal?.aborted) return
-            setNotice(
-              err instanceof Error
-                ? err.message
-                : '恢复轮询失败，稍后刷新重试',
-            )
-          }
-        }),
-      )
-
-      if (!signal?.aborted) {
-        busyRef.current = false
-        busyActionRef.current = null
-        setBusy(false)
-      }
-    },
-    [
-      projectId,
-      applyGraph,
-      selectedId,
-      clearSkeletonGroup,
-      loadGraph,
-      bindSkeletonsToJob,
-      mergeRestoredSkeletons,
-    ],
-  )
-
-  // 进入画布：恢复进行中的生成（离开首页再回来不丢进度）
-  useEffect(() => {
-    const ac = new AbortController()
-    const timer = window.setTimeout(() => {
-      void resumeActiveJobs(ac.signal)
-    }, 400)
-    return () => {
-      ac.abort()
-      window.clearTimeout(timer)
-    }
-  }, [projectId, resumeActiveJobs])
-
-  const runAction = useCallback(
-    async (
-      action: string,
-      node: CanvasGraphNode | null,
-      extras?: Parameters<typeof executeCanvasAction>[0]['extras'],
-    ) => {
-      setContextMenu(null)
-      setNotice('')
-
-      // 防连点：用 ref 判断，避免 await 后闭包 busy 仍为 true
-      if (
-        busyRef.current &&
-        [
-          'generate_layout',
-          'generate_color_plan',
-          'generate_axonometric',
-          'generate_space_render',
-          'generate_style_scheme',
-          'generate_tone_scheme',
-          'local_edit',
-          'upload_floorplan_submit',
-        ].includes(action)
-      ) {
-        setNotice(
-          busyActionRef.current
-            ? `「${actionLabel(busyActionRef.current)}」进行中，请勿重复点击`
-            : '任务进行中，请勿重复点击',
-        )
-        return
-      }
-
-      busyRef.current = true
-      setBusy(true)
-      let skeletonGroupId: string | null = null
-      try {
-        // 面板已提交完整参数 → 立刻关掉浮层，避免生成过程中仍盖在画布上
-        if (
-          (action === 'generate_space_render' && extras?.selectedSpaceIds) ||
-          (action === 'generate_style_scheme' &&
-            extras?.selectedStyleVariants) ||
-          (action === 'generate_tone_scheme' && extras?.selectedToneVariants) ||
-          (action === 'generate_axonometric' &&
-            extras?.selectedAxonometricVariants) ||
-          (action === 'local_edit' && extras?.markFile) ||
-          (action === 'upload_floorplan_submit' && extras?.file)
-        ) {
-          setPanel(null)
-          setPanelNode(null)
-        }
-
-        if (action === 'open_full' && node) {
-          // 01–08：打开详情坞（自动载入当前图），不要新窗口
-          if (isStageImageDetailNode(node) || isStage01Node(node)) {
-            openLayoutDetail(node)
-            return
-          }
-          if (node.url) {
-            window.open(assetUrl(node.url), '_blank', 'noopener,noreferrer')
-          }
-          return
-        }
-        if (action === 'download' && node?.url) {
-          const a = document.createElement('a')
-          a.href = assetUrl(node.url)
-          a.download = `${node.variantId || 'image'}.png`
-          a.target = '_blank'
-          a.click()
-          return
-        }
-
-        // 失败/取消骨架：丢弃占位
-        if (
-          action === 'delete' &&
-          node?.isSkeleton &&
-          (node.jobStatus === 'FAILED' || node.jobStatus === 'CANCELED')
-        ) {
-          const slot = skeletonSlotsRef.current.find(
-            (s) => s.id === node.variantId || `skeleton:${s.id}` === node.id,
-          )
-          if (slot) {
-            clearSkeletonGroup(slot.groupId)
-            if (slot.jobId) {
-              removeActiveCanvasJob(projectId, {
-                jobId: slot.jobId,
-                groupId: slot.groupId,
-              })
-            }
-            if (graphRef.current) applyGraph(graphRef.current, selectedId)
-            setNotice('已丢弃失败/取消的生成占位')
-          }
-          busyRef.current = false
-          setBusy(false)
-          return
-        }
-
-        // 失败骨架：重试原 job 并继续刷新进度
-        if (
-          action === 'retry' &&
-          node?.isSkeleton &&
-          node.jobStatus === 'FAILED' &&
-          node.jobId
-        ) {
-          const slot = skeletonSlotsRef.current.find(
-            (s) => s.id === node.variantId || `skeleton:${s.id}` === node.id,
-          )
-          const groupId = slot?.groupId ?? null
-          skeletonGroupId = groupId
-          setNotice('正在重试生成…')
-          // 重置该组骨架为生成中
-          if (groupId) {
-            resetSkeletonsForRetry(groupId)
-            if (graphRef.current) applyGraph(graphRef.current, selectedId)
-          }
-          try {
-            const result = await executeCanvasAction({
-              projectId,
-              node,
-              action: 'retry',
-              onJob: (job) => {
-                if (groupId) bindSkeletonsToJob(groupId, job)
-              },
-            })
-            if (result.ok) {
-              await loadGraph({ fit: false })
-              if (groupId) clearSkeletonGroup(groupId)
-              setNotice(result.message || '重试完成')
-            }
-          } catch (value) {
-            setNotice(
-              value instanceof Error ? value.message : '重试失败',
-            )
-          } finally {
-            busyRef.current = false
-            setBusy(false)
-          }
-          return
-        }
-
-        if (
-          (action === 'view_structure' || action === 'edit_structure') &&
-          node
-        ) {
-          if (isStageImageDetailNode(node)) {
-            openLayoutDetail(node)
-          } else {
-            void openStructureEditor(node)
-          }
-          return
-        }
-
-        const dialogConfirmed = Boolean(
-          extras?.spawnDialogConfirmed ||
-            extras?.layoutDialogConfirmed ||
-            extras?.colorPlanDialogConfirmed,
-        )
-
-        // 05 分空间：必须先选房间（不走通用「生成意向」对话框）
-        if (
-          action === 'generate_space_render' &&
-          node &&
-          !extras?.selectedSpaceIds?.length
-        ) {
-          busyRef.current = false
-          setBusy(false)
-          if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
-            setNotice('请先批准当前方案后再生成分空间')
-            return
-          }
-          const source = resolveSpawnSourceNode(node) ?? node
-          setSelectedId(node.id)
-          setGenerateDialog(null)
-          setSpawnMenu(null)
-          try {
-            const panelResult = await executeCanvasAction({
-              projectId,
-              node: source,
-              action: 'generate_space_render',
-              extras: { designPrompt, ...extras },
-            })
-            if (!panelResult.ok && panelResult.needPanel) {
-              setPanel(panelResult.needPanel)
-              setPanelNode(source)
-              setNotice('勾选要生成的房间，可多选')
-              return
-            }
-          } catch (value) {
-            setNotice(
-              value instanceof Error ? value.message : '无法加载房间列表',
-            )
-          }
-          return
-        }
-
-        // 06 风格：必须先勾选要生成的风格方案
-        if (
-          action === 'generate_style_scheme' &&
-          node &&
-          !extras?.selectedStyleVariants?.length
-        ) {
-          busyRef.current = false
-          setBusy(false)
-          if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
-            setNotice('请先批准当前方案后再生成风格')
-            return
-          }
-          const source = resolveSpawnSourceNode(node) ?? node
-          setSelectedId(node.id)
-          setGenerateDialog(null)
-          setSpawnMenu(null)
-          try {
-            const panelResult = await executeCanvasAction({
-              projectId,
-              node: source,
-              action: 'generate_style_scheme',
-              extras: { designPrompt, ...extras },
-            })
-            if (!panelResult.ok && panelResult.needPanel) {
-              setPanel(panelResult.needPanel)
-              setPanelNode(source)
-              setNotice('勾选要生成的风格方案，可多选')
-              return
-            }
-          } catch (value) {
-            setNotice(
-              value instanceof Error ? value.message : '无法打开风格选择',
-            )
-          }
-          return
-        }
-
-        // 07 色调：必须先勾选要生成的色调方案
-        if (
-          action === 'generate_tone_scheme' &&
-          node &&
-          !extras?.selectedToneVariants?.length
-        ) {
-          busyRef.current = false
-          setBusy(false)
-          if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
-            setNotice('请先批准当前方案后再生成色调')
-            return
-          }
-          const source = resolveSpawnSourceNode(node) ?? node
-          setSelectedId(node.id)
-          setGenerateDialog(null)
-          setSpawnMenu(null)
-          try {
-            const panelResult = await executeCanvasAction({
-              projectId,
-              node: source,
-              action: 'generate_tone_scheme',
-              extras: { designPrompt, ...extras },
-            })
-            if (!panelResult.ok && panelResult.needPanel) {
-              setPanel(panelResult.needPanel)
-              setPanelNode(source)
-              setNotice('勾选要生成的色调方案，可多选')
-              return
-            }
-          } catch (value) {
-            setNotice(
-              value instanceof Error ? value.message : '无法打开色调选择',
-            )
-          }
-          return
-        }
-
-        // 04 轴侧：必须先勾选要生成的角度
-        if (
-          action === 'generate_axonometric' &&
-          node &&
-          !extras?.selectedAxonometricVariants?.length
-        ) {
-          busyRef.current = false
-          setBusy(false)
-          if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
-            setNotice('请先批准当前方案后再生成轴侧')
-            return
-          }
-          const source = resolveSpawnSourceNode(node) ?? node
-          setSelectedId(node.id)
-          setGenerateDialog(null)
-          setSpawnMenu(null)
-          try {
-            const panelResult = await executeCanvasAction({
-              projectId,
-              node: source,
-              action: 'generate_axonometric',
-              extras: { designPrompt, ...extras },
-            })
-            if (!panelResult.ok && panelResult.needPanel) {
-              setPanel(panelResult.needPanel)
-              setPanelNode(source)
-              setNotice('勾选要生成的轴侧方案，可多选')
-              return
-            }
-          } catch (value) {
-            setNotice(
-              value instanceof Error ? value.message : '无法打开轴侧选择',
-            )
-          }
-          return
-        }
-
-        // 拖把线/生成按钮：先弹生成意向对话框（布局/彩平）
-        // 轴侧 / 分空间 / 风格 / 色调 已单独走选择面板
-        if (
-          isSpawnDialogAction(action) &&
-          action !== 'generate_space_render' &&
-          action !== 'generate_style_scheme' &&
-          action !== 'generate_tone_scheme' &&
-          action !== 'generate_axonometric' &&
-          node &&
-          !dialogConfirmed
-        ) {
-          busyRef.current = false
-          setBusy(false)
-          if (action === 'generate_layout') {
-            if (!node.jobId || !stage01ByJobRef.current[node.jobId]) {
-              setNotice('请先在结构编辑器中确认结构后再生成布局')
-              void openStructureEditor(node)
-              return
-            }
-          } else if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
-            setNotice('请先批准当前方案后再派生下游')
-            return
-          }
-          const mode = dialogModeForAction(action)
-          if (!mode) {
-            setNotice('当前动作不支持生成对话框')
-            return
-          }
-          const source = resolveSpawnSourceNode(node) ?? node
-          setGenerateDialog({ node: source, mode })
-          const spawn = primarySpawnForNode(source)
-          setNotice(spawn?.notice ?? '填写意向后点击箭头生成')
-          return
-        }
-
-        if (action === 'generate_layout' && node?.jobId) {
-          const approval = stage01ByJobRef.current[node.jobId]
-          if (!approval) {
-            setNotice('请先在结构编辑器中确认结构后再生成布局')
-            void openStructureEditor(node)
-            return
-          }
-          extras = {
-            ...extras,
-            stage01Approval: toStage01Payload(approval),
-          }
-        }
-
-        // 08：无标注文件时进入专注坞（对齐 01），不弹小窗、不立刻出骨架
-        if (action === 'local_edit' && node && !extras?.markFile) {
-          busyRef.current = false
-          setBusy(false)
-          await openLocalEditDock(node)
-          return
-        }
-
-        const needsSkeleton =
-          [
-            'generate_layout',
-            'generate_color_plan',
-            'generate_axonometric',
-            'generate_space_render',
-            'generate_style_scheme',
-            'generate_tone_scheme',
-            'local_edit',
-            'upload_floorplan_submit',
-            'reanalyze',
-          ].includes(action) &&
-          // 分空间 / 风格 仅在已勾选后出骨架；local_edit 仅提交标注后
-          !(
-            action === 'generate_space_render' &&
-            !extras?.selectedSpaceIds?.length
-          ) &&
-          !(
-            action === 'generate_style_scheme' &&
-            !extras?.selectedStyleVariants?.length
-          ) &&
-          !(
-            action === 'generate_tone_scheme' &&
-            !extras?.selectedToneVariants?.length
-          ) &&
-          !(
-            action === 'generate_axonometric' &&
-            !extras?.selectedAxonometricVariants?.length
-          ) &&
-          !(action === 'local_edit' && !extras?.markFile)
-        if (needsSkeleton) {
-          busyActionRef.current = action
-          skeletonGroupId = spawnSkeletons(action, node, {
-            selectedSpaceIds: extras?.selectedSpaceIds,
-            selectedStyleVariants: extras?.selectedStyleVariants,
-            selectedToneVariants: extras?.selectedToneVariants,
-            selectedAxonometricVariants: extras?.selectedAxonometricVariants,
-          })
-          const n = expectedSkeletonSlots(action, node, {
-            selectedSpaceIds: extras?.selectedSpaceIds,
-            selectedStyleVariants: extras?.selectedStyleVariants,
-            selectedToneVariants: extras?.selectedToneVariants,
-            selectedAxonometricVariants: extras?.selectedAxonometricVariants,
-          }).length
-          setNotice(
-            action === 'generate_layout'
-              ? `正在生成 ${n} 个布局方案…右侧/下一列已显示占位框`
-              : action === 'generate_space_render'
-                ? `正在生成 ${n} 个分空间…`
-                : action === 'generate_style_scheme'
-                  ? `正在生成 ${n} 种风格方案…`
-                  : action === 'generate_tone_scheme'
-                    ? `正在生成 ${n} 种色调方案…`
-                    : action === 'generate_axonometric'
-                      ? `正在生成 ${n} 种轴侧…`
-                      : `正在${actionLabel(action)}…`,
-          )
-          // 等 React 提交骨架 state + 一帧绘制
-          await new Promise<void>((resolve) => {
-            requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
-          })
-        }
-
-        const result = await executeCanvasAction({
-          projectId,
-          node,
-          action,
-          extras: {
-            designPrompt,
-            ...extras,
-          },
-          onJob: (job) => {
-            // 进行中 / 失败：刷新骨架进度与 partial 预览
-            // SUCCEEDED 时不要清骨架（等 loadGraph 后再清，避免闪断）
-            if (!skeletonGroupId) return
-            if (
-              ['QUEUED', 'RUNNING', 'FAILED', 'CANCELED'].includes(job.status)
-            ) {
-              bindSkeletonsToJob(skeletonGroupId, job)
-              const result = (job.result || {}) as Record<string, unknown>
-              const total =
-                skeletonSlotsRef.current.filter(
-                  (s) => s.groupId === skeletonGroupId,
-                ).length || 1
-              const done =
-                typeof result.succeededCount === 'number'
-                  ? result.succeededCount
-                  : Array.isArray(result.outputs)
-                    ? (result.outputs as unknown[]).filter((o) => {
-                        const rec = o as Record<string, unknown>
-                        return (
-                          rec &&
-                          (rec.status === 'succeeded' ||
-                            typeof rec.url === 'string')
-                        )
-                      }).length
-                    : 0
-              if (job.status === 'RUNNING' || job.status === 'QUEUED') {
-                setNotice(
-                  done > 0
-                    ? `生成中 ${done}/${total}…已出图可先预览`
-                    : `生成中 0/${total}…`,
-                )
-              } else if (job.status === 'FAILED') {
-                setNotice(
-                  job.errorMessage
-                    ? `生成失败：${job.errorMessage}`
-                    : `生成失败（${done}/${total} 已出图可保留）`,
-                )
-              } else if (job.status === 'CANCELED') {
-                setNotice(`已取消（${done}/${total} 已出图）`)
-              }
-            }
-          },
-          onNeedPanel: (next) => {
-            if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
-            skeletonGroupId = null
-            // local_edit 改走专注坞，不再用弹层
-            if (next.kind === 'local_edit' && node) {
-              void openLocalEditDock(node)
-              return
-            }
-            setPanel(next)
-            setPanelNode(node)
-          },
-        })
-
-        if (!result.ok) {
-          if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
-          if (result.needPanel?.kind === 'local_edit' && node) {
-            await openLocalEditDock(node)
-            return
-          }
-          setPanel(result.needPanel)
-          setPanelNode(node)
-          return
-        }
-
-        setNotice(result.message)
-        setPanel(null)
-        setPanelNode(null)
-        // 先拉真实图谱，再拆占位，避免空白闪断
-        await loadGraph({ fit: false })
-        if (skeletonGroupId) {
-          clearSkeletonGroup(skeletonGroupId)
-          if (result.job?.id) {
-            removeActiveCanvasJob(projectId, {
-              jobId: result.job.id,
-              groupId: skeletonGroupId,
-            })
-          }
-        }
-        // 再 apply 一次确保骨架已从 ref 去掉
-        if (graphRef.current) applyGraph(graphRef.current, selectedId)
-
-        if (
-          (action === 'upload_floorplan_submit' || action === 'reanalyze') &&
-          result.job?.id &&
-          result.job.type === 'FLOORPLAN_ANALYZE' &&
-          result.job.status === 'SUCCEEDED'
-        ) {
-          setStructureEditor({
-            jobId: result.job.id,
-            node: {
-              id: `pending:${result.job.id}`,
-              jobId: result.job.id,
-              variantId: 'analysis',
-              moduleKey: 'floorplan',
-              workflowStage: 'floorplan',
-            },
-          })
-          setNotice('识别完成：单击节点预览，再点大图进入结构编辑并确认')
-        }
-      } catch (value) {
-        if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
-        const message = value instanceof Error ? value.message : '操作失败'
-        setNotice(message)
-        if (
-          message.includes('结构编辑器') ||
-          message.includes('确认结构')
-        ) {
-          if (node) openStructureEditor(node)
-        }
-        if (message.includes('下游') || message.includes('版本')) {
-          if (node) {
-            setNodes((current) =>
-              current.map((item) =>
-                item.id === node.id
-                  ? {
-                      ...item,
-                      data: {
-                        ...(item.data as CanvasNodeData),
-                        upstreamChanged: true,
-                      },
-                    }
-                  : item,
-              ),
-            )
-          }
-        }
-      } finally {
-        busyRef.current = false
-        busyActionRef.current = null
-        setBusy(false)
-      }
-    },
-    [
-      projectId,
-      designPrompt,
-      loadGraph,
-      setNodes,
-      openStructureEditor,
-      openLayoutDetail,
-      openLocalEditDock,
-      isStageImageDetailNode,
-      spawnSkeletons,
-      bindSkeletonsToJob,
-      clearSkeletonGroup,
-      resetSkeletonsForRetry,
-      applyGraph,
-      selectedId,
-    ],
-  )
+  const runAction = useCanvasRunAction({
+    projectId,
+    designPrompt,
+    selectedId,
+    graphRef,
+    skeletonSlotsRef,
+    stage01ByJobRef,
+    busyRef,
+    busyActionRef,
+    setBusy,
+    setNotice,
+    setContextMenu,
+    setPanel,
+    setPanelNode,
+    setSelectedId,
+    setGenerateDialog,
+    setSpawnMenu: () => setSpawnMenu(null),
+    setStructureEditor,
+    setNodes,
+    applyGraph,
+    loadGraph,
+    openLayoutDetail,
+    openStructureEditor,
+    openLocalEditDock,
+    spawnSkeletons,
+    bindSkeletonsToJob,
+    clearSkeletonGroup,
+    resetSkeletonsForRetry,
+  })
 
   actionRef.current = (action, node) => {
     void runAction(action, node)
   }
+
 
   // 单击堆叠 → 全屏图库；单击 01–08 方案图 → 详情坞（01 可再点图进结构编辑）
   /**
@@ -1530,7 +780,7 @@ function ProjectCanvasInner({
         openLayoutDetail(graphNode)
       }
     },
-    [isStage01Node, isStageImageDetailNode, openLayoutDetail, openStackGallery],
+    [openLayoutDetail, openStackGallery],
   )
 
   const onNodeDoubleClick: NodeMouseHandler = useCallback(
@@ -1550,12 +800,7 @@ function ProjectCanvasInner({
         window.open(assetUrl(graphNode.url), '_blank', 'noopener,noreferrer')
       }
     },
-    [
-      isStage01Node,
-      isStageImageDetailNode,
-      openLayoutDetail,
-      openStackGallery,
-    ],
+    [openLayoutDetail, openStackGallery],
   )
 
   const contextMenuRef = useRef<HTMLDivElement | null>(null)
@@ -2319,35 +1564,6 @@ function ProjectCanvasInner({
   )
 }
 
-function toStage01Payload(
-  approval: FloorplanStage01Approval,
-): Stage01ApprovalPayload {
-  return {
-    approvedLayoutImage: approval.approvedLayoutImage,
-    semanticLayout: approval.semanticLayout as unknown as Record<string, unknown>,
-    planWidthMm: approval.planWidthMm,
-    planDepthMm: approval.planDepthMm,
-    analysisJobId: approval.analysisJobId,
-    approvedLayoutVersionId: approval.approvedLayoutVersionId,
-    sourceSha256: approval.sourceSha256,
-    detectedBounds: approval.detectedBounds,
-  }
-}
-
-function actionLabel(action: string): string {
-  const map: Record<string, string> = {
-    upload_floorplan_submit: '01 户型识别',
-    reanalyze: '01 重新识别',
-    generate_layout: '02 布局',
-    generate_color_plan: '03 彩平',
-    generate_axonometric: '04 轴侧',
-    generate_space_render: '05 分空间',
-    generate_style_scheme: '06 风格',
-    generate_tone_scheme: '07 色调',
-    local_edit: '08 局部修改',
-  }
-  return map[action] || action
-}
 
 export default function ProjectCanvas(props: {
   projectId: string

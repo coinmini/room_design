@@ -25,7 +25,6 @@ export default function BorderEdge({
 
   const sw = sourceNode.measured?.width ?? sourceNode.width ?? 220
   const sh = sourceNode.measured?.height ?? sourceNode.height ?? 200
-  const tw = targetNode.measured?.width ?? targetNode.width ?? 220
   const th = targetNode.measured?.height ?? targetNode.height ?? 200
 
   const sx = sourceNode.internals.positionAbsolute.x
