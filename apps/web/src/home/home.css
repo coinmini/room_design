@@ -1,3 +1,17 @@
+/* 画布全屏页：无外壳双顶栏，由 ProjectCanvas 单行导航 */
+.project-canvas-page {
+  height: 100vh;
+  min-height: 100vh;
+  background: var(--canvas-bg);
+  color: var(--canvas-text);
+  overflow: hidden;
+}
+
+.project-canvas-page > * {
+  height: 100%;
+  min-height: 0;
+}
+
 .home-page {
   min-height: 100vh;
   display: grid;

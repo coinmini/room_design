@@ -5,6 +5,7 @@ import {
   stackEndpointMap,
   stackKeyFor,
 } from './stackMath'
+import { galleryGridColumns } from './StackGallery'
 import type { CanvasGraphNode } from './types'
 
 const node = (
@@ -111,6 +112,12 @@ describe('stackMath', () => {
     expect(display[0].isStack).toBe(true)
     expect(display[0].stackCount).toBe(4)
     expect(display[0].label).toMatch(/生成中/)
+  })
+
+  it('uses fixed 2×2 / max-4 page layout so each image is larger', () => {
+    expect(galleryGridColumns(2)).toBe(2)
+    expect(galleryGridColumns(4)).toBe(2)
+    expect(galleryGridColumns(11)).toBe(2)
   })
 
   it('remaps edges to stack id when collapsed', () => {

@@ -98,28 +98,25 @@ export default function LayoutDetailDock({
       </aside>
 
       <div className="canvas-layout-detail-main">
-        <header className="canvas-layout-detail-header">
-          <div>
-            <div
-              className="canvas-muted"
-              style={{ fontSize: 11, letterSpacing: '0.06em' }}
-            >
-              {meta.code}
-            </div>
-            <h2 style={{ margin: '4px 0 0', fontSize: 18 }}>{title}</h2>
+        <header className="canvas-layout-detail-header canvas-oneline-header">
+          <div className="canvas-oneline-header-left">
+            <span className="canvas-oneline-kicker">{meta.code}</span>
+            <h2 className="canvas-oneline-title" title={title}>
+              {title}
+            </h2>
           </div>
-          <div className="canvas-toolbar">
+          <div className="canvas-oneline-header-actions">
             <button
               type="button"
-              className="canvas-btn"
+              className="canvas-btn canvas-topbar-btn"
               onClick={onOpenFull}
               disabled={!imageUrl || busy}
             >
-              打开原图
+              原图
             </button>
             <button
               type="button"
-              className="canvas-btn"
+              className="canvas-btn canvas-topbar-btn"
               onClick={onDownload}
               disabled={!imageUrl || busy}
             >
@@ -128,11 +125,11 @@ export default function LayoutDetailDock({
             {meta.showApprove ? (
               <button
                 type="button"
-                className="canvas-btn"
+                className="canvas-btn canvas-topbar-btn"
                 onClick={onApprove}
                 disabled={!node.assetId || !node.variantId || busy}
               >
-                {approved ? '再次确认批准' : '批准此方案'}
+                {approved ? '再批准' : '批准'}
               </button>
             ) : null}
             {primaryActions.map((action) => (
@@ -141,8 +138,8 @@ export default function LayoutDetailDock({
                 type="button"
                 className={
                   action.primary
-                    ? 'canvas-btn canvas-btn-primary'
-                    : 'canvas-btn'
+                    ? 'canvas-btn canvas-btn-primary canvas-topbar-btn'
+                    : 'canvas-btn canvas-topbar-btn'
                 }
                 onClick={action.onClick}
                 disabled={action.disabled || busy}

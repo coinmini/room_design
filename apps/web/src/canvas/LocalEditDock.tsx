@@ -265,20 +265,17 @@ export default function LocalEditDock({
       </aside>
 
       <div className="canvas-local-edit-main">
-        <header className="canvas-layout-detail-header">
-          <div>
-            <div
-              className="canvas-muted"
-              style={{ fontSize: 11, letterSpacing: '0.06em' }}
-            >
-              08 / LOCAL EDIT
-            </div>
-            <h2 style={{ margin: '4px 0 0', fontSize: 18 }}>{title}</h2>
+        <header className="canvas-layout-detail-header canvas-oneline-header">
+          <div className="canvas-oneline-header-left">
+            <span className="canvas-oneline-kicker">08 / LOCAL EDIT</span>
+            <h2 className="canvas-oneline-title" title={title}>
+              {title}
+            </h2>
           </div>
-          <div className="canvas-toolbar">
+          <div className="canvas-oneline-header-actions">
             <button
               type="button"
-              className="canvas-btn"
+              className="canvas-btn canvas-topbar-btn"
               onClick={clearMarks}
               disabled={busy || loadState !== 'ready'}
             >
@@ -286,7 +283,7 @@ export default function LocalEditDock({
             </button>
             <button
               type="button"
-              className="canvas-btn canvas-btn-primary"
+              className="canvas-btn canvas-btn-primary canvas-topbar-btn"
               disabled={
                 busy ||
                 loadState !== 'ready' ||

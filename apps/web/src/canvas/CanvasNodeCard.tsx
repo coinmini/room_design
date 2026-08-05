@@ -118,7 +118,7 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
               padding: '0 8px',
               fontWeight: 700,
             }}
-            title={`${stackCount} 张图片 · 点击展开`}
+            title={`${stackCount} 张图片 · 点击全屏一览`}
           >
             {stackCount}
           </span>
@@ -228,7 +228,9 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
               ) : (
                 <span className="canvas-muted">无预览</span>
               )}
-              <div className="canvas-stack-hint">点击展开全部 {stackCount} 张</div>
+              <div className="canvas-stack-hint">
+                点击全屏一览 {stackCount} 张
+              </div>
             </div>
           </div>
         ) : node.isSkeleton ? (
