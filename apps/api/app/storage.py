@@ -119,11 +119,21 @@ async def save_upload(
             status_code=415,
             detail=f"不支持的文件格式：{suffix or 'unknown'}",
         )
-    data = await upload.read()
+    # 分块读取并在超限时中止，避免 5GB 上传先写满磁盘再整块进内存
+    max_bytes = 20 * 1024 * 1024
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="文件不能超过 20 MB")
+        chunks.append(chunk)
+    data = b"".join(chunks)
     if not data:
         raise HTTPException(status_code=400, detail="上传文件为空")
-    if len(data) > 20 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="文件不能超过 20 MB")
     validate_image_payload(data)
     path = settings.artifact_dir / (
         f"{safe_stem(upload.filename or 'upload')}-{uuid4().hex[:10]}{suffix}"

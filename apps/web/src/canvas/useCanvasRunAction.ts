@@ -54,8 +54,9 @@ export function useCanvasRunAction(opts: {
   graphRef: MutableRefObject<CanvasGraph | null>
   skeletonSlotsRef: MutableRefObject<SkeletonSlot[]>
   stage01ByJobRef: MutableRefObject<Record<string, FloorplanStage01Approval>>
-  busyRef: MutableRefObject<boolean>
   busyActionRef: MutableRefObject<string | null>
+  /** busy 引用计数（与 resume 共享），归零才清 UI */
+  busyCountRef: MutableRefObject<number>
   setBusy: (v: boolean) => void
   setNotice: (msg: string) => void
   setContextMenu: (v: null) => void
@@ -96,7 +97,7 @@ export function useCanvasRunAction(opts: {
     graphRef,
     skeletonSlotsRef,
     stage01ByJobRef,
-    busyRef,
+    busyCountRef,
     busyActionRef,
     setBusy,
     setNotice,
@@ -128,19 +129,18 @@ export function useCanvasRunAction(opts: {
       setContextMenu(null)
       setNotice('')
 
-      if (
-        busyRef.current &&
-        [
-          'generate_layout',
-          'generate_color_plan',
-          'generate_axonometric',
-          'generate_space_render',
-          'generate_style_scheme',
-          'generate_tone_scheme',
-          'local_edit',
-          'upload_floorplan_submit',
-        ].includes(action)
-      ) {
+      const isGenerateAction = [
+        'generate_layout',
+        'generate_color_plan',
+        'generate_axonometric',
+        'generate_space_render',
+        'generate_style_scheme',
+        'generate_tone_scheme',
+        'local_edit',
+        'upload_floorplan_submit',
+      ].includes(action)
+
+      if (busyCountRef.current > 0 && isGenerateAction) {
         setNotice(
           busyActionRef.current
             ? `「${actionLabel(busyActionRef.current)}」进行中，请勿重复点击`
@@ -149,8 +149,20 @@ export function useCanvasRunAction(opts: {
         return
       }
 
-      busyRef.current = true
-      setBusy(true)
+      const beginBusy = () => {
+        busyCountRef.current += 1
+        busyActionRef.current = action
+        setBusy(true)
+      }
+      const endBusy = () => {
+        busyCountRef.current = Math.max(0, busyCountRef.current - 1)
+        if (busyCountRef.current === 0) {
+          busyActionRef.current = null
+          setBusy(false)
+        }
+      }
+
+      beginBusy()
       let skeletonGroupId: string | null = null
       try {
         if (
@@ -205,8 +217,7 @@ export function useCanvasRunAction(opts: {
             if (graphRef.current) applyGraph(graphRef.current, selectedId)
             setNotice('已丢弃失败/取消的生成占位')
           }
-          busyRef.current = false
-          setBusy(false)
+          endBusy()
           return
         }
 
@@ -243,8 +254,7 @@ export function useCanvasRunAction(opts: {
           } catch (value) {
             setNotice(value instanceof Error ? value.message : '重试失败')
           } finally {
-            busyRef.current = false
-            setBusy(false)
+            endBusy()
           }
           return
         }
@@ -272,8 +282,7 @@ export function useCanvasRunAction(opts: {
           node &&
           !extras?.selectedSpaceIds?.length
         ) {
-          busyRef.current = false
-          setBusy(false)
+          endBusy()
           if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
             setNotice('请先批准当前方案后再生成分空间')
             return
@@ -308,8 +317,7 @@ export function useCanvasRunAction(opts: {
           node &&
           !extras?.selectedStyleVariants?.length
         ) {
-          busyRef.current = false
-          setBusy(false)
+          endBusy()
           if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
             setNotice('请先批准当前方案后再生成风格')
             return
@@ -344,8 +352,7 @@ export function useCanvasRunAction(opts: {
           node &&
           !extras?.selectedToneVariants?.length
         ) {
-          busyRef.current = false
-          setBusy(false)
+          endBusy()
           if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
             setNotice('请先批准当前方案后再生成色调')
             return
@@ -380,8 +387,7 @@ export function useCanvasRunAction(opts: {
           node &&
           !extras?.selectedAxonometricVariants?.length
         ) {
-          busyRef.current = false
-          setBusy(false)
+          endBusy()
           if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
             setNotice('请先批准当前方案后再生成轴侧')
             return
@@ -420,8 +426,7 @@ export function useCanvasRunAction(opts: {
           node &&
           !dialogConfirmed
         ) {
-          busyRef.current = false
-          setBusy(false)
+          endBusy()
           if (action === 'generate_layout') {
             if (!node.jobId || !stage01ByJobRef.current[node.jobId]) {
               setNotice('请先在结构编辑器中确认结构后再生成布局')
@@ -461,8 +466,7 @@ export function useCanvasRunAction(opts: {
         }
 
         if (action === 'local_edit' && node && !extras?.markFile) {
-          busyRef.current = false
-          setBusy(false)
+          endBusy()
           await openLocalEditDock(node)
           return
         }
@@ -634,7 +638,26 @@ export function useCanvasRunAction(opts: {
           setNotice('识别完成：单击节点预览，再点大图进入结构编辑并确认')
         }
       } catch (value) {
-        if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
+        // 已绑定 FAILED/CANCELED 的骨架留给重试/丢弃；仅提交前失败才清组
+        if (skeletonGroupId) {
+          const group = skeletonSlotsRef.current.filter(
+            (s) => s.groupId === skeletonGroupId,
+          )
+          const keep =
+            group.some(
+              (s) =>
+                s.jobStatus === 'FAILED' || s.jobStatus === 'CANCELED',
+            ) || Boolean(group.find((s) => s.jobId))
+          if (keep) {
+            try {
+              await loadGraph({ fit: false })
+            } catch {
+              /* ignore */
+            }
+          } else {
+            clearSkeletonGroup(skeletonGroupId)
+          }
+        }
         const message = value instanceof Error ? value.message : '操作失败'
         setNotice(message)
         if (
@@ -661,9 +684,7 @@ export function useCanvasRunAction(opts: {
           }
         }
       } finally {
-        busyRef.current = false
-        busyActionRef.current = null
-        setBusy(false)
+        endBusy()
       }
     },
     [
@@ -673,7 +694,7 @@ export function useCanvasRunAction(opts: {
       graphRef,
       skeletonSlotsRef,
       stage01ByJobRef,
-      busyRef,
+      busyCountRef,
       busyActionRef,
       setBusy,
       setNotice,

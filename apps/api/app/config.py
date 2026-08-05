@@ -44,7 +44,11 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
+        origins = [
+            item.strip() for item in self.cors_origins.split(",") if item.strip()
+        ]
+        # 拒绝 *：配合 allow_credentials 会静默回显任意 Origin
+        return [o for o in origins if o != "*"]
 
     @property
     def floorplan_vision_api_key(self) -> str:

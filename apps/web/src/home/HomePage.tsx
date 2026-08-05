@@ -13,6 +13,7 @@ import {
   pollJob,
   type Job,
 } from '../api'
+import { apiError } from '../workflow/media'
 import AboutSheet from './AboutSheet'
 import FbDock from './FbDock'
 import NotifySheet, { countUnreadNotices } from './NotifySheet'
@@ -483,9 +484,9 @@ export default function HomePage() {
       })
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as {
-          detail?: string
+          detail?: unknown
         } | null
-        throw new Error(payload?.detail ?? `创建失败：${response.status}`)
+        throw new Error(apiError(payload?.detail, response.status))
       }
       const project = (await response.json()) as Project
       localStorage.setItem('room_design_canvas_project_id', project.id)
@@ -803,6 +804,7 @@ export default function HomePage() {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               rows={3}
+              maxLength={2000}
               placeholder="描述设计意向；附加本地图片后点 ↑ 用 kuyao 真实生图…"
               disabled={busy}
             />

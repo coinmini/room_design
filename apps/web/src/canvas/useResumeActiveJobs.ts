@@ -1,9 +1,16 @@
 /**
  * 进入画布时恢复进行中生成：骨架占位 + 继续 poll。
+ * busy 用引用计数，避免与前台动作互相清掉「执行中」。
+ * effect 只依赖 projectId，避免点选节点反复中止轮询。
  */
 
-import { useCallback, useEffect, type MutableRefObject } from 'react'
-import { pollJob } from '../api'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  type MutableRefObject,
+} from 'react'
+import { pollJob, type Job } from '../api'
 import {
   removeActiveCanvasJob,
   upsertActiveCanvasJob,
@@ -11,7 +18,6 @@ import {
 import { collectActiveJobsToResume } from './resumeActiveJobs'
 import type { SkeletonSlot } from './skeletonMath'
 import type { CanvasGraph } from './types'
-import type { Job } from '../api'
 
 export function useResumeActiveJobs(opts: {
   projectId: string
@@ -23,9 +29,10 @@ export function useResumeActiveJobs(opts: {
   clearSkeletonGroup: (groupId: string) => void
   mergeRestoredSkeletons: (restored: SkeletonSlot[]) => void
   setNotice: (msg: string) => void
-  setBusy: (v: boolean) => void
-  busyRef: MutableRefObject<boolean>
+  /** busy 引用计数：+1 begin / -1 end，归零才清 UI */
+  busyCountRef: MutableRefObject<number>
   busyActionRef: MutableRefObject<string | null>
+  setBusy: (v: boolean) => void
 }) {
   const {
     projectId,
@@ -37,10 +44,44 @@ export function useResumeActiveJobs(opts: {
     clearSkeletonGroup,
     mergeRestoredSkeletons,
     setNotice,
-    setBusy,
-    busyRef,
+    busyCountRef,
     busyActionRef,
+    setBusy,
   } = opts
+
+  const selectedIdRef = useRef(selectedId)
+  selectedIdRef.current = selectedId
+  const applyGraphRef = useRef(applyGraph)
+  applyGraphRef.current = applyGraph
+  const loadGraphRef = useRef(loadGraph)
+  loadGraphRef.current = loadGraph
+  const bindRef = useRef(bindSkeletonsToJob)
+  bindRef.current = bindSkeletonsToJob
+  const clearRef = useRef(clearSkeletonGroup)
+  clearRef.current = clearSkeletonGroup
+  const mergeRef = useRef(mergeRestoredSkeletons)
+  mergeRef.current = mergeRestoredSkeletons
+  const setNoticeRef = useRef(setNotice)
+  setNoticeRef.current = setNotice
+  const setBusyRef = useRef(setBusy)
+  setBusyRef.current = setBusy
+
+  const beginBusy = useCallback(
+    (action?: string) => {
+      busyCountRef.current += 1
+      if (action) busyActionRef.current = action
+      setBusyRef.current(true)
+    },
+    [busyCountRef, busyActionRef],
+  )
+
+  const endBusy = useCallback(() => {
+    busyCountRef.current = Math.max(0, busyCountRef.current - 1)
+    if (busyCountRef.current === 0) {
+      busyActionRef.current = null
+      setBusyRef.current(false)
+    }
+  }, [busyCountRef, busyActionRef])
 
   const resumeActiveJobs = useCallback(
     async (signal?: AbortSignal) => {
@@ -62,14 +103,12 @@ export function useResumeActiveJobs(opts: {
         }
         upsertActiveCanvasJob(projectId, item)
       }
-      mergeRestoredSkeletons(restored)
+      mergeRef.current(restored)
       if (graphRef.current) {
-        applyGraph(graphRef.current, selectedId)
+        applyGraphRef.current(graphRef.current, selectedIdRef.current)
       }
-      setNotice(`恢复 ${toResume.length} 个进行中的生成任务…`)
-      busyActionRef.current = toResume[0]?.action ?? null
-      busyRef.current = true
-      setBusy(true)
+      setNoticeRef.current(`恢复 ${toResume.length} 个进行中的生成任务…`)
+      beginBusy(toResume[0]?.action ?? 'resume')
 
       await Promise.all(
         toResume.map(async (item) => {
@@ -77,7 +116,7 @@ export function useResumeActiveJobs(opts: {
             const completed = await pollJob(
               item.jobId,
               (job) => {
-                bindSkeletonsToJob(item.groupId, job)
+                bindRef.current(item.groupId, job)
               },
               undefined,
               signal,
@@ -86,17 +125,19 @@ export function useResumeActiveJobs(opts: {
               jobId: item.jobId,
               groupId: item.groupId,
             })
-            clearSkeletonGroup(item.groupId)
             if (completed.status === 'SUCCEEDED') {
-              await loadGraph({ fit: false })
-              setNotice(
+              clearRef.current(item.groupId)
+              await loadGraphRef.current({ fit: false })
+              setNoticeRef.current(
                 item.action === 'generate_layout'
                   ? '布局生成完成'
                   : '生成任务已完成',
               )
             } else {
-              await loadGraph({ fit: false })
-              setNotice(
+              // FAILED/CANCELED：保留骨架供重试/丢弃，并拉 partial 临时节点
+              bindRef.current(item.groupId, completed)
+              await loadGraphRef.current({ fit: false })
+              setNoticeRef.current(
                 `任务结束：${completed.status}${
                   completed.errorMessage ? ` · ${completed.errorMessage}` : ''
                 }`,
@@ -104,35 +145,34 @@ export function useResumeActiveJobs(opts: {
             }
           } catch (err) {
             if (signal?.aborted) return
-            setNotice(
+            // 轮询失败：标失败态并清 active 记录，避免永久「生成中」堆叠
+            removeActiveCanvasJob(projectId, {
+              jobId: item.jobId,
+              groupId: item.groupId,
+            })
+            bindRef.current(item.groupId, {
+              id: item.jobId,
+              type: 'UNKNOWN',
+              status: 'FAILED',
+              errorMessage:
+                err instanceof Error ? err.message : '恢复轮询失败',
+              payload: {},
+              result: null,
+            } as Job)
+            setNoticeRef.current(
               err instanceof Error
                 ? err.message
-                : '恢复轮询失败，稍后刷新重试',
+                : '恢复轮询失败，可丢弃占位后重试',
             )
           }
         }),
       )
 
       if (!signal?.aborted) {
-        busyRef.current = false
-        busyActionRef.current = null
-        setBusy(false)
+        endBusy()
       }
     },
-    [
-      projectId,
-      applyGraph,
-      selectedId,
-      clearSkeletonGroup,
-      loadGraph,
-      bindSkeletonsToJob,
-      mergeRestoredSkeletons,
-      graphRef,
-      setNotice,
-      setBusy,
-      busyRef,
-      busyActionRef,
-    ],
+    [projectId, graphRef, beginBusy, endBusy],
   )
 
   useEffect(() => {
@@ -144,6 +184,7 @@ export function useResumeActiveJobs(opts: {
       ac.abort()
       window.clearTimeout(timer)
     }
+    // 仅 projectId 变化时恢复；resumeActiveJobs 已用 ref 读最新 apply/load
   }, [projectId, resumeActiveJobs])
 
   return { resumeActiveJobs }

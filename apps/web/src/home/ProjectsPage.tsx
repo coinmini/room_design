@@ -7,6 +7,7 @@ import FbDock from './FbDock'
 import NotifySheet, { countUnreadNotices } from './NotifySheet'
 import UserSheet from './UserSheet'
 import './home.css'
+import { apiError } from '../workflow/media'
 
 type MenuAnchor = {
   projectId: string
@@ -194,9 +195,9 @@ export default function ProjectsPage() {
       })
       if (!response.ok) {
         const payload = (await response.json().catch(() => null)) as {
-          detail?: string
+          detail?: unknown
         } | null
-        throw new Error(payload?.detail ?? `创建失败：${response.status}`)
+        throw new Error(apiError(payload?.detail, response.status))
       }
       const project = (await response.json()) as Project
       openProject(project)

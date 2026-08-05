@@ -292,7 +292,8 @@ def run_job(job_id: str) -> None:
                 return
             job.status = "FAILED"
             job.error_code = "GENERATION_FAILED"
-            job.error_message = str(exc)
+            # 不对用户暴露绝对路径 / SQL / 栈信息；细节只在 logger.exception
+            job.error_message = "生成失败，请重试或更换参考图后再试"
             job.finished_at = datetime.now(UTC)
             session.commit()
     finally:

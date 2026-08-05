@@ -553,13 +553,17 @@ def ensure_scene_asset(session: Session, job: Job) -> SceneAsset | None:
                     "approvedVersionId",
                     "approvedAt",
                     "approvalComment",
+                    # 分叉变体批准图：重启/backfill 不得抹掉，否则下游 409 且无法恢复
+                    "variantApprovals",
                 ):
-                    metadata[key] = existing_metadata.get(key)
+                    if key in existing_metadata:
+                        metadata[key] = existing_metadata.get(key)
                 existing_deliverables = _mapping(existing.deliverables)
                 for key in (
                     "approvedOutputUrl",
                     "approvedVariantId",
                     "approvedVersionId",
+                    "variantApprovals",
                 ):
                     if existing_deliverables.get(key) is not None:
                         deliverables[key] = existing_deliverables[key]

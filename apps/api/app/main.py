@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from copy import deepcopy
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,6 +17,7 @@ from fastapi import (
     Header,
     HTTPException,
     Query,
+    Request,
     UploadFile,
     status,
 )
@@ -24,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
+from starlette.responses import JSONResponse
 
 from app.assets import (
     ASSET_JOB_TYPES,
@@ -45,6 +48,7 @@ from app.jobs import (
     reclaim_stale_jobs,
     shutdown_job_executor,
 )
+from app.logging_config import configure_logging
 from app.models import Canvas, CanvasNode, Job, Project, SceneAsset, new_id, utc_now
 from app.processors.ai_workflow import (
     AXONOMETRIC_VARIANTS,
@@ -85,8 +89,12 @@ from app.schemas import (
 from app.storage import save_upload
 
 
+logger = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    configure_logging()
     init_db()
     # C1：回收上一个进程遗留的 QUEUED/RUNNING，避免客户端轮询永久死亡的任务
     reclaim_stale_jobs()
@@ -95,10 +103,9 @@ async def lifespan(_: FastAPI):
     try:
         count = backfill_scene_assets(backfill_session)
         if count:
-            print(f"backfilled {count} scene assets")
+            logger.info("backfilled %s scene assets", count)
     except Exception:
-        import traceback
-        traceback.print_exc()
+        logger.exception("startup backfill_scene_assets failed")
     finally:
         backfill_session.close()
     yield
@@ -115,10 +122,32 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    allow_credentials=True,
+    # 本 API 不用 cookie / Authorization；credentials+* 会静默变成回显 Origin
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _reject_cross_site_mutations(request: Request, call_next):
+    """阻止浏览器跨站 multipart/simple POST 烧本地计费额度（本地 CSRF）。"""
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        sec_fetch_site = (request.headers.get("sec-fetch-site") or "").lower()
+        if sec_fetch_site == "cross-site":
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "拒绝跨站状态变更请求"},
+            )
+        origin = request.headers.get("origin")
+        if origin:
+            allowed = set(settings.cors_origin_list)
+            if origin not in allowed:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Origin 不在允许列表中"},
+                )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -135,11 +164,13 @@ app.mount(
     StaticFiles(directory=settings.artifact_dir),
     name="artifacts",
 )
-app.mount(
-    "/examples",
-    StaticFiles(directory=WORKSPACE_ROOT / "example"),
-    name="examples",
-)
+_examples_dir = WORKSPACE_ROOT / "example"
+if _examples_dir.is_dir():
+    app.mount(
+        "/examples",
+        StaticFiles(directory=_examples_dir),
+        name="examples",
+    )
 
 SessionDep = Annotated[Session, Depends(get_session)]
 # C5：建任务幂等键——前端每次用户提交生成一个 UUID（Idempotency-Key 头），
@@ -869,6 +900,188 @@ def _validate_parent_approved_layout(
         "parent_approved_version_id": approved_version_id or "",
         "parent_variant_id": approved_variant_id,
         "source_sha256": upload_sha,
+    }
+
+
+def _validate_parent_approved_output_image(
+    session: Session,
+    asset_id: str,
+    *,
+    uploaded_path: Path,
+    allowed_stages: set[str],
+    label: str,
+    approved_version_id: str | None = None,
+) -> dict[str, str]:
+    """校验上传图字节与上游已批输出一致（彩平 / 布局通用）。"""
+    asset = get_local_scene_asset(session, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail=f"上游{label}资产不存在")
+    metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    stage = metadata.get("workflowStage")
+    module_key = metadata.get("moduleKey") or scene_asset_read(asset).get("module_key")
+    stage_ok = (
+        (isinstance(stage, str) and stage in allowed_stages)
+        or (module_key in allowed_stages)
+        or (module_key == "ai_workflow" and isinstance(stage, str) and stage in allowed_stages)
+    )
+    if not stage_ok and "layout" in allowed_stages and module_key in {"layout", "floorplan"}:
+        stage_ok = True
+    if not stage_ok:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{label}的上游资产阶段不符合要求",
+        )
+
+    approval_map = _layout_approval_versions(metadata)
+    if not approval_map:
+        # 也支持仅有主批准字段
+        primary = metadata.get("approvedVariantId")
+        version = metadata.get("approvedVersionId")
+        if isinstance(primary, str) and isinstance(version, str):
+            approval_map = {primary: version}
+    if not approval_map and module_key != "floorplan":
+        raise HTTPException(status_code=409, detail=f"上游{label}资产尚未审批通过")
+
+    approved_variant_id: str | None = None
+    approved_version: str | None = None
+    if approved_version_id and approval_map:
+        for variant_key, version_key in approval_map.items():
+            if (
+                approved_version_id == version_key
+                or approved_version_id == variant_key
+            ):
+                approved_variant_id = variant_key
+                approved_version = version_key
+                break
+        if approved_variant_id is None and module_key != "floorplan":
+            raise HTTPException(
+                status_code=409,
+                detail=f"提交的{label}版本不是上游资产的已批准版本",
+            )
+    elif approval_map:
+        primary = metadata.get("approvedVariantId")
+        if isinstance(primary, str) and primary in approval_map:
+            approved_variant_id = primary
+            approved_version = approval_map[primary]
+        else:
+            approved_variant_id, approved_version = next(iter(approval_map.items()))
+
+    job = session.get(Job, asset.job_id) if asset.job_id else None
+    output_url: str | None = None
+    if approved_variant_id:
+        output_url = _layout_variant_output_url(asset, job, approved_variant_id)
+    if not output_url and job is not None and isinstance(job.result, dict):
+        preview = job.result.get("previewUrl") or job.result.get("url")
+        if isinstance(preview, str):
+            output_url = preview
+    upload_sha = _sha256_file(uploaded_path)
+    if output_url:
+        try:
+            approved_path = _artifact_path_from_public_url(
+                output_url, label=f"上游批准{label}图"
+            )
+        except HTTPException:
+            approved_path = None
+        if approved_path is not None:
+            if _sha256_file(approved_path) != upload_sha:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"上传的{label}图与上游资产当前批准输出不一致",
+                )
+    return {
+        "parent_approved_version_id": approved_version or approved_version_id or "",
+        "parent_variant_id": approved_variant_id or "",
+        "source_sha256": upload_sha,
+    }
+
+
+def _find_ancestor_asset(
+    session: Session,
+    asset_id: str,
+    *,
+    stages: set[str],
+    modules: set[str] | None = None,
+) -> SceneAsset | None:
+    """沿 parent_asset_id 向上找指定 workflowStage / moduleKey 的祖先。"""
+    modules = modules or set()
+    seen: set[str] = set()
+    current_id: str | None = asset_id
+    while current_id and current_id not in seen:
+        seen.add(current_id)
+        asset = get_local_scene_asset(session, current_id)
+        if asset is None:
+            return None
+        metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+        stage = metadata.get("workflowStage")
+        module_key = metadata.get("moduleKey") or scene_asset_read(asset).get(
+            "module_key"
+        )
+        if (isinstance(stage, str) and stage in stages) or (
+            isinstance(module_key, str) and module_key in modules
+        ):
+            return asset
+        parent = asset.parent_asset_id
+        current_id = parent if isinstance(parent, str) else None
+    return None
+
+
+def _validate_layout_and_color_plan_for_stage45(
+    session: Session,
+    asset_parent_id: str,
+    *,
+    approved_layout_version_id: str | None,
+    uploaded_layout_path: Path,
+    uploaded_color_plan_path: Path,
+) -> dict[str, str]:
+    """04/05：parent 可为彩平/轴侧等；布局与彩平图分别校对应祖先的已批输出字节。"""
+    parent = get_local_scene_asset(session, asset_parent_id)
+    if parent is None:
+        raise HTTPException(status_code=404, detail="上游资产不存在")
+
+    color_asset = _find_ancestor_asset(
+        session,
+        asset_parent_id,
+        stages={"color_plan"},
+        modules=set(),
+    )
+    layout_asset = _find_ancestor_asset(
+        session,
+        asset_parent_id,
+        stages={"layout"},
+        modules={"layout", "floorplan"},
+    )
+
+    color_lineage: dict[str, str]
+    if color_asset is not None:
+        color_lineage = _validate_parent_approved_output_image(
+            session,
+            color_asset.id,
+            uploaded_path=uploaded_color_plan_path,
+            allowed_stages={"color_plan", "ai_workflow"},
+            label="彩平",
+        )
+    else:
+        # 兼容：无彩平祖先时只要求文件可读
+        color_lineage = {
+            "parent_approved_version_id": "",
+            "parent_variant_id": "",
+            "source_sha256": _sha256_file(uploaded_color_plan_path),
+        }
+
+    layout_asset_id = layout_asset.id if layout_asset is not None else asset_parent_id
+    layout_lineage = _validate_parent_approved_layout(
+        session,
+        layout_asset_id,
+        approved_layout_version_id=approved_layout_version_id,
+        uploaded_layout_path=uploaded_layout_path,
+    )
+    return {
+        "parent_approved_version_id": layout_lineage.get(
+            "parent_approved_version_id", ""
+        ),
+        "parent_variant_id": layout_lineage.get("parent_variant_id", ""),
+        "source_sha256": layout_lineage.get("source_sha256", ""),
+        "color_plan_sha256": color_lineage.get("source_sha256", ""),
     }
 
 
@@ -1760,15 +1973,32 @@ async def create_ai_axonometric_job(
         maximum=3,
         label="轴侧图类型",
     )
+    if layout_approved is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="只有显式确认已批准的平面布局才能生成轴侧图",
+        )
     source = await save_upload(approved_layout_image)
     color_plan = await save_upload(approved_color_plan_image)
+    # 布局图 + 彩平图字节均需与已批输出一致（parent 多为彩平资产）
+    lineage = _validate_layout_and_color_plan_for_stage45(
+        session,
+        asset_parent_id,
+        approved_layout_version_id=approved_layout_version_id,
+        uploaded_layout_path=Path(source),
+        uploaded_color_plan_path=Path(color_plan),
+    )
+    resolved_version = (
+        lineage.get("parent_approved_version_id")
+        or approved_layout_version_id
+    )
     reference_paths = await _save_style_references(style_references)
     payload = _validated_workflow_payload(
         AIAxonometricJobPayload,
         {
             "project_id": project_id,
             "approved_layout_path": str(source),
-            "approved_layout_version_id": approved_layout_version_id,
+            "approved_layout_version_id": resolved_version,
             "layout_approved": layout_approved,
             "semantic_layout": semantic_value,
             "variant_group_id": new_id("variants"),
@@ -1832,15 +2062,31 @@ async def create_ai_space_render_job(
         if selected_space_ids and selected_space_ids.strip()
         else []
     )
+    if layout_approved is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="只有显式确认已批准的平面布局才能生成分空间效果图",
+        )
     source = await save_upload(approved_layout_image)
     color_plan = await save_upload(approved_color_plan_image)
+    lineage = _validate_layout_and_color_plan_for_stage45(
+        session,
+        asset_parent_id,
+        approved_layout_version_id=approved_layout_version_id,
+        uploaded_layout_path=Path(source),
+        uploaded_color_plan_path=Path(color_plan),
+    )
+    resolved_version = (
+        lineage.get("parent_approved_version_id")
+        or approved_layout_version_id
+    )
     reference_paths = await _save_style_references(style_references)
     payload = _validated_workflow_payload(
         AISpaceRenderJobPayload,
         {
             "project_id": project_id,
             "approved_layout_path": str(source),
-            "approved_layout_version_id": approved_layout_version_id,
+            "approved_layout_version_id": resolved_version,
             "layout_approved": layout_approved,
             "semantic_layout": semantic_value,
             "variant_group_id": new_id("variants"),

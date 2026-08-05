@@ -1,18 +1,19 @@
-.DS_Store
-.local/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
-apps/**/node_modules/
-apps/**/dist/
-apps/api/.env
-apps/enhancer/.env
-/apps/package.json
-/apps/package-lock.json
-/Codex Image *
-/references/
-/output/imagegen/*
 !/output/imagegen/gpt-image.png
 !/output/imagegen/interior-3d-one-bedroom.png
 *.egg-info/
+*.py[cod]
+.DS_Store
+.coverage
+.local/
+.pytest_cache/
+.ruff_cache/
+/Codex Image *
+/apps/package-lock.json
+/apps/package.json
+/output/imagegen/*
+/references/
+__pycache__/
+apps/**/dist/
+apps/**/node_modules/
+apps/api/.env
+apps/enhancer/.env

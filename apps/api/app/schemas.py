@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
-from typing import Any, Literal
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer, model_validator
 
 
 def to_camel(value: str) -> str:
     return re.sub(r"_([a-z])", lambda match: match.group(1).upper(), value)
+
+
+def _isoformat_utc(value: datetime) -> str:
+    """SQLite 读回 naive datetime 时补 UTC，避免前端按本地时区解析导致计时器归零。"""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat().replace("+00:00", "Z")
+
+
+UtcDateTime = Annotated[
+    datetime,
+    PlainSerializer(_isoformat_utc, when_used="json"),
+]
 
 
 class APIModel(BaseModel):
@@ -48,8 +61,8 @@ class ProjectUpdate(APIModel):
 
 class ProjectRead(ProjectCreate):
     id: str
-    created_at: datetime
-    updated_at: datetime | None = None
+    created_at: UtcDateTime
+    updated_at: UtcDateTime | None = None
 
 
 class JobRead(APIModel):
@@ -62,10 +75,10 @@ class JobRead(APIModel):
     result: dict[str, Any] | None = None
     error_code: str | None = None
     error_message: str | None = None
-    created_at: datetime
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    updated_at: datetime
+    created_at: UtcDateTime
+    started_at: UtcDateTime | None = None
+    finished_at: UtcDateTime | None = None
+    updated_at: UtcDateTime
 
 
 class SceneAssetRead(APIModel):
@@ -89,8 +102,8 @@ class SceneAssetRead(APIModel):
     thumbnail_url: str | None = None
     deliverables: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
 
 
 class SceneAssetDetail(SceneAssetRead):
@@ -373,7 +386,7 @@ class CanvasRead(APIModel):
     project_id: str
     name: str
     viewport_json: dict[str, Any] = Field(default_factory=dict)
-    updated_at: datetime
+    updated_at: UtcDateTime
 
 
 class CanvasDetail(CanvasRead):
@@ -405,8 +418,8 @@ class CanvasNodeRead(APIModel):
     h: float
     z: int
     source_node_id: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDateTime
+    updated_at: UtcDateTime
 
 
 class CanvasNodePatch(APIModel):

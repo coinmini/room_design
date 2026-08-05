@@ -96,7 +96,8 @@ function ProjectCanvasInner({
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null)
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
-  const busyRef = useRef(false)
+  /** 前台动作 + 恢复轮询共享；归零才清 busy UI（防互相清掉导致重复提交） */
+  const busyCountRef = useRef(0)
   const busyActionRef = useRef<string | null>(null)
   const [designPrompt, setDesignPrompt] = useState('')
   const [panel, setPanel] = useState<StagePanelRequest | null>(null)
@@ -248,8 +249,12 @@ function ProjectCanvasInner({
       graphRef.current = body
       setDownstreamByAsset(built.parentIds)
 
-      setNodes(
-        built.displayNodes.map((item) => {
+      // 保留用户拖拽后的位置；仅对新节点用自动布局坐标
+      setNodes((prev) => {
+        const prevPos = new Map(
+          prev.map((n) => [n.id, n.position] as const),
+        )
+        return built.displayNodes.map((item) => {
           const data: CanvasNodeData = {
             graphNode: item,
             actionCtx: item.actionCtx,
@@ -262,16 +267,17 @@ function ProjectCanvasInner({
               actionRef.current(action, node),
             onCollapseStack: collapseStack,
           }
+          const kept = prevPos.get(item.id)
           return {
             id: item.id,
             type: 'canvasCard',
-            position: { x: item.x, y: item.y },
+            position: kept ?? { x: item.x, y: item.y },
             data,
             style: { width: item.w },
             draggable: !item.isSkeleton,
           }
-        }),
-      )
+        })
+      })
       setEdges(
         built.edges.map((edge) =>
           edge.skeleton
@@ -540,15 +546,20 @@ function ProjectCanvasInner({
         `/v1/assets/${encodeURIComponent(node.assetId)}`,
         { cache: 'no-store' },
       )
-      let spaceId = 'room_living'
-      if (resp.ok) {
-        const asset = (await resp.json()) as {
-          metadata?: Record<string, unknown>
-        }
-        const meta = asset.metadata ?? {}
-        const sid = meta.spaceId
-        if (typeof sid === 'string' && sid.trim()) spaceId = sid.trim()
+      if (!resp.ok) {
+        setNotice(`无法读取资产元数据（${resp.status}），暂不进入局部修改`)
+        return
       }
+      const asset = (await resp.json()) as {
+        metadata?: Record<string, unknown>
+      }
+      const meta = asset.metadata ?? {}
+      const sid = meta.spaceId
+      if (typeof sid !== 'string' || !sid.trim()) {
+        setNotice('该节点缺少 spaceId，无法进入局部修改（请从已批准的分空间派生）')
+        return
+      }
+      const spaceId = sid.trim()
       setLocalEdit({
         node: { ...node },
         sourceUrl: node.url,
@@ -574,7 +585,7 @@ function ProjectCanvasInner({
     mergeRestoredSkeletons,
     setNotice,
     setBusy,
-    busyRef,
+    busyCountRef,
     busyActionRef,
   })
 
@@ -585,7 +596,7 @@ function ProjectCanvasInner({
     graphRef,
     skeletonSlotsRef,
     stage01ByJobRef,
-    busyRef,
+    busyCountRef,
     busyActionRef,
     setBusy,
     setNotice,
@@ -1127,6 +1138,7 @@ function ProjectCanvasInner({
             snapToGrid={snapToGrid}
             snapGrid={[16, 16]}
             connectionRadius={96}
+            onlyRenderVisibleElements
             proOptions={{ hideAttribution: true }}
             style={{ width: '100%', height: '100%' }}
           >
@@ -1290,6 +1302,9 @@ function ProjectCanvasInner({
             primaryActions={(() => {
               const target = layoutDetailLive
               const stage = normalizeStage(target)
+              /** approve 后从图谱取最新节点，避免陈旧 approved=false 挡住派生 */
+              const freshNode = (id: string) =>
+                graphRef.current?.nodes.find((n) => n.id === id) ?? target
               const runDerived = (action: string) => {
                 void (async () => {
                   // 01：编辑结构 / 生成布局
@@ -1311,21 +1326,23 @@ function ProjectCanvasInner({
                     ) {
                       await runAction('approve', target)
                     }
+                    const next = freshNode(target.id)
                     if (action === 'local_edit') {
                       setLayoutDetail(null)
-                      await runAction(action, target)
+                      await runAction(action, next)
                       return
                     }
                     exitLayoutDetail({ focusNodeId: target.id })
-                    await runAction(action, target)
+                    await runAction(action, next)
                     return
                   }
                   // 先尽量批准，再派生（busy 用 ref，可连续 await）
                   if (!target.approved) {
                     await runAction('approve', target)
                   }
+                  const next = freshNode(target.id)
                   exitLayoutDetail({ focusNodeId: target.id })
-                  await runAction(action, target)
+                  await runAction(action, next)
                 })()
               }
               return primaryDeriveActionsForStage(stage).map((item) => ({

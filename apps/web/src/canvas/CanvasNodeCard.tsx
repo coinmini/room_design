@@ -261,7 +261,15 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
                 }}
               >
                 {stackPreviews[depth] ? (
-                  <img src={stackPreviews[depth]} alt="" draggable={false} />
+                  <img
+                    src={stackPreviews[depth]}
+                    alt=""
+                    draggable={false}
+                    loading="lazy"
+                    decoding="async"
+                    width={220}
+                    height={148}
+                  />
                 ) : (
                   <div className="canvas-stack-placeholder" />
                 )}
@@ -273,6 +281,10 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
                   src={stackPreviews[0] || thumb}
                   alt={node.label || 'stack'}
                   draggable={false}
+                  loading="lazy"
+                  decoding="async"
+                  width={220}
+                  height={148}
                 />
               ) : (
                 <span className="canvas-muted">无预览</span>
@@ -288,6 +300,10 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
               src={thumb}
               alt={node.label || 'partial'}
               draggable={false}
+              loading="lazy"
+              decoding="async"
+              width={220}
+              height={148}
               style={{
                 width: '100%',
                 height: '100%',
@@ -369,6 +385,10 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
             src={thumb}
             alt={node.label || node.variantId}
             draggable={false}
+            loading="lazy"
+            decoding="async"
+            width={220}
+            height={148}
             style={{
               width: '100%',
               height: '100%',
