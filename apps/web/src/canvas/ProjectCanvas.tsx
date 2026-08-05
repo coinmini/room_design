@@ -410,6 +410,14 @@ function ProjectCanvasInner({
 
   const isStage01Node = useCallback((node: CanvasGraphNode) => {
     const stage = normalizeStage(node)
+    // 绝不能把 layout_plan / LAYOUT_AI 当成 01
+    if (
+      node.moduleKey === 'layout' ||
+      node.assetType === 'layout_plan' ||
+      stage === 'layout'
+    ) {
+      return false
+    }
     return (
       stage === 'floorplan' ||
       node.moduleKey === 'floorplan' ||
@@ -419,26 +427,14 @@ function ProjectCanvasInner({
 
   const isStage02LayoutNode = useCallback((node: CanvasGraphNode) => {
     const stage = normalizeStage(node)
-    return stage === 'layout' || node.moduleKey === 'layout'
+    return (
+      stage === 'layout' ||
+      node.moduleKey === 'layout' ||
+      node.assetType === 'layout_plan' ||
+      // 标题兜底：AI 平面布局 · …
+      Boolean(node.title?.includes('平面布局'))
+    )
   }, [])
-
-  /** 01 专用：结构编辑器（FloorplanModule） */
-  const openStructureEditor = useCallback(
-    (node: CanvasGraphNode) => {
-      if (!isStage01Node(node)) {
-        setNotice('结构编辑器仅用于 01 户型识别节点；02 请双击打开布局详情')
-        return
-      }
-      if (!node.jobId) {
-        setNotice('该节点缺少分析任务 ID，无法打开结构编辑器')
-        return
-      }
-      setContextMenu(null)
-      setLayoutDetail(null)
-      setStructureEditor({ jobId: node.jobId, node })
-    },
-    [isStage01Node],
-  )
 
   /** 02 专用：布局详情坞，自动载入当前布局图 */
   const openLayoutDetail = useCallback((node: CanvasGraphNode) => {
@@ -447,10 +443,54 @@ function ProjectCanvasInner({
       return
     }
     setContextMenu(null)
+    // 关键：关掉 01 结构编辑器，避免叠在布局详情上
     setStructureEditor(null)
-    setLayoutDetail(node)
+    setLayoutDetail({ ...node })
     setSelectedId(node.id)
+    setNotice('已打开 02 布局详情（当前方案图已载入）')
   }, [])
+
+  /** 01 专用：结构编辑器（FloorplanModule）——禁止 LAYOUT_AI 进入 */
+  const openStructureEditor = useCallback(
+    async (node: CanvasGraphNode) => {
+      // 02 布局节点误点结构编辑 → 改开布局详情
+      if (isStage02LayoutNode(node)) {
+        openLayoutDetail(node)
+        return
+      }
+      if (!isStage01Node(node)) {
+        setNotice('结构编辑器仅用于 01 户型识别节点；02 布局请双击打开布局详情')
+        return
+      }
+      if (!node.jobId) {
+        setNotice('该节点缺少分析任务 ID，无法打开结构编辑器')
+        return
+      }
+      // 服务端再验 job 类型，防止 jobId 指到 LAYOUT_AI
+      try {
+        const resp = await apiFetch(`/v1/jobs/${encodeURIComponent(node.jobId)}`, {
+          cache: 'no-store',
+        })
+        if (resp.ok) {
+          const job = (await resp.json()) as { type?: string }
+          if (job.type && job.type !== 'FLOORPLAN_ANALYZE') {
+            if (job.type === 'LAYOUT_AI' || job.type === 'LAYOUT') {
+              openLayoutDetail(node)
+              return
+            }
+            setNotice(`无法打开结构编辑器：任务类型为 ${job.type}`)
+            return
+          }
+        }
+      } catch {
+        // 网络失败时仍按节点元数据尝试 01
+      }
+      setContextMenu(null)
+      setLayoutDetail(null)
+      setStructureEditor({ jobId: node.jobId, node })
+    },
+    [isStage01Node, isStage02LayoutNode, openLayoutDetail],
+  )
 
   const exitLayoutDetail = useCallback(
     (opts?: { notice?: string; focusNodeId?: string }) => {
@@ -557,8 +597,15 @@ function ProjectCanvasInner({
       setBusy(true)
       let skeletonGroupId: string | null = null
       try {
-        if (action === 'open_full' && node?.url) {
-          window.open(assetUrl(node.url), '_blank', 'noopener,noreferrer')
+        if (action === 'open_full' && node) {
+          // 02 布局：打开详情坞（自动载入当前图），不要新窗口/结构编辑器
+          if (isStage02LayoutNode(node)) {
+            openLayoutDetail(node)
+            return
+          }
+          if (node.url) {
+            window.open(assetUrl(node.url), '_blank', 'noopener,noreferrer')
+          }
           return
         }
         if (action === 'download' && node?.url) {
@@ -574,7 +621,11 @@ function ProjectCanvasInner({
           (action === 'view_structure' || action === 'edit_structure') &&
           node
         ) {
-          openStructureEditor(node)
+          if (isStage02LayoutNode(node)) {
+            openLayoutDetail(node)
+          } else {
+            void openStructureEditor(node)
+          }
           return
         }
 
@@ -582,7 +633,7 @@ function ProjectCanvasInner({
           const approval = stage01ByJobRef.current[node.jobId]
           if (!approval) {
             setNotice('请先双击节点，在结构编辑器中确认结构后再生成布局')
-            openStructureEditor(node)
+            void openStructureEditor(node)
             return
           }
           extras = {
@@ -716,6 +767,8 @@ function ProjectCanvasInner({
       loadGraph,
       setNodes,
       openStructureEditor,
+      openLayoutDetail,
+      isStage02LayoutNode,
       spawnSkeletons,
       bindSkeletonsToJob,
       clearSkeletonGroup,
@@ -728,24 +781,32 @@ function ProjectCanvasInner({
     void runAction(action, node)
   }
 
-  const onNodeClick: NodeMouseHandler = useCallback((_event, node) => {
-    setSelectedId(node.id)
-    setContextMenu(null)
-  }, [])
+  // 单击 02 布局 → 布局详情坞；其它仅选中
+  const onNodeClick: NodeMouseHandler = useCallback(
+    (_event, node) => {
+      const graphNode = (node.data as CanvasNodeData).graphNode
+      setSelectedId(node.id)
+      setContextMenu(null)
+      if (isStage02LayoutNode(graphNode)) {
+        openLayoutDetail(graphNode)
+      }
+    },
+    [isStage02LayoutNode, openLayoutDetail],
+  )
 
   const onNodeDoubleClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       const graphNode = (node.data as CanvasNodeData).graphNode
       setSelectedId(node.id)
-      if (isStage01Node(graphNode)) {
-        openStructureEditor(graphNode)
-        return
-      }
+      // 02 优先：绝不进 01 结构编辑器
       if (isStage02LayoutNode(graphNode)) {
         openLayoutDetail(graphNode)
         return
       }
-      // 其它阶段：打开原图大图
+      if (isStage01Node(graphNode)) {
+        void openStructureEditor(graphNode)
+        return
+      }
       if (graphNode.url) {
         window.open(assetUrl(graphNode.url), '_blank', 'noopener,noreferrer')
       }
