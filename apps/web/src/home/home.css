@@ -32,6 +32,128 @@
     sans-serif;
 }
 
+/* —— 公网演示登录 —— */
+.fb-login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(212, 249, 84, 0.12), transparent),
+    #0a0a10;
+  color: var(--fb-text);
+  font-family: var(--fb-font);
+}
+.fb-login-card {
+  width: min(420px, 100%);
+  padding: 28px 26px 22px;
+  border-radius: 20px;
+  background: rgba(26, 26, 31, 0.92);
+  border: 1px solid var(--fb-border);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+.fb-login-brand h1 {
+  margin: 8px 0 10px;
+  font-size: 24px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.fb-login-brand p {
+  margin: 0 0 22px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fb-text-2);
+}
+.fb-login-kicker {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--fb-lime);
+  font-weight: 600;
+}
+.fb-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.fb-login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fb-text-2);
+}
+.fb-login-form input {
+  height: 42px;
+  border-radius: 12px;
+  border: 1px solid var(--fb-border);
+  background: #121218;
+  color: var(--fb-text);
+  padding: 0 12px;
+  font-size: 14px;
+  outline: none;
+}
+.fb-login-form input:focus {
+  border-color: rgba(212, 249, 84, 0.45);
+  box-shadow: 0 0 0 3px rgba(212, 249, 84, 0.12);
+}
+.fb-login-submit {
+  margin-top: 6px;
+  height: 44px;
+  border: none;
+  border-radius: 12px;
+  background: var(--fb-lime);
+  color: var(--fb-lime-ink);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+}
+.fb-login-submit:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.fb-login-error {
+  font-size: 13px;
+  color: #ff8a8a;
+  background: rgba(255, 80, 80, 0.1);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.fb-login-hint {
+  margin: 16px 0 0;
+  font-size: 11px;
+  color: var(--fb-text-3);
+  text-align: center;
+}
+.fb-auth-bar {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 12000;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(20, 20, 26, 0.88);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(8px);
+}
+.fb-auth-bar button {
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.fb-auth-bar button:hover {
+  background: rgba(212, 249, 84, 0.2);
+  color: #fff;
+}
+
 /* 画布全屏页 */
 .project-canvas-page {
   height: 100vh;

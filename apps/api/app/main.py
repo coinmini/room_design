@@ -49,6 +49,15 @@ from app.jobs import (
     shutdown_job_executor,
 )
 from app.logging_config import configure_logging
+from app.auth import (
+    auth_enabled,
+    authenticate_password,
+    check_login_rate_limit,
+    extract_bearer_token,
+    is_public_path,
+    issue_token,
+    verify_token,
+)
 from app.models import Canvas, CanvasNode, Job, Project, SceneAsset, new_id, utc_now
 from app.processors.ai_workflow import (
     AXONOMETRIC_VARIANTS,
@@ -66,6 +75,9 @@ from app.schemas import (
     AIToneSchemeJobPayload,
     APIModel,
     AssetModuleRead,
+    AuthLoginRequest,
+    AuthLoginResponse,
+    AuthStatusResponse,
     CanvasCreate,
     CanvasDetail,
     CanvasNodeBatchPatch,
@@ -122,11 +134,38 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
-    # 本 API 不用 cookie / Authorization；credentials+* 会静默变成回显 Origin
+    # 本 API 用 Bearer 头，不用 cookie；credentials+* 会静默变成回显 Origin
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _require_demo_auth(request: Request, call_next):
+    """公网演示：配置 AUTH_USERNAME/PASSWORD 后，保护除登录与静态外的接口。"""
+    if not auth_enabled():
+        return await call_next(request)
+    path = request.url.path
+    if is_public_path(path, request.method):
+        return await call_next(request)
+    token = extract_bearer_token(request)
+    if not token:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "需要登录：请先获取测试账号访问令牌"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = verify_token(token)
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    request.state.auth_user = payload.get("sub")
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -1179,6 +1218,55 @@ async def _save_style_references(
     return [str(await save_upload(upload)) for upload in uploads]
 
 
+@app.get(f"{settings.api_prefix}/auth/status", response_model=AuthStatusResponse)
+def auth_status(request: Request) -> AuthStatusResponse:
+    """前端启动时探测是否需要登录；不泄露密码。"""
+    if not auth_enabled():
+        return AuthStatusResponse(enabled=False, username=None)
+    token = extract_bearer_token(request)
+    if token:
+        try:
+            payload = verify_token(token)
+            return AuthStatusResponse(
+                enabled=True,
+                username=str(payload.get("sub") or ""),
+            )
+        except HTTPException:
+            pass
+    return AuthStatusResponse(enabled=True, username=None)
+
+
+@app.post(f"{settings.api_prefix}/auth/login", response_model=AuthLoginResponse)
+def auth_login(payload: AuthLoginRequest, request: Request) -> AuthLoginResponse:
+    if not auth_enabled():
+        raise HTTPException(
+            status_code=400,
+            detail="当前服务未启用登录（未配置 AUTH_USERNAME / AUTH_PASSWORD）",
+        )
+    client_ip = request.client.host if request.client else "unknown"
+    check_login_rate_limit(client_ip)
+    if not authenticate_password(payload.username, payload.password):
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    issued = issue_token(payload.username.strip())
+    return AuthLoginResponse(
+        token=issued["token"],
+        username=issued["username"],
+        expires_at=int(issued["expiresAt"]),
+        token_type=str(issued["tokenType"]),
+    )
+
+
+@app.get(f"{settings.api_prefix}/auth/me")
+def auth_me(request: Request) -> dict[str, Any]:
+    if not auth_enabled():
+        return {"enabled": False, "username": None}
+    token = extract_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="未登录")
+    payload = verify_token(token)
+    return {"enabled": True, "username": payload.get("sub")}
+
+
 @app.get("/health")
 def health() -> dict:
     enhancement = enhancement_capability()
@@ -1192,6 +1280,7 @@ def health() -> dict:
         "status": "ok",
         "service": settings.app_name,
         "version": "0.6.0",
+        "authEnabled": auth_enabled(),
         "productionGeneration": "ai_workflow",
         "blenderWorkflowEnabled": False,
         "legacyBlenderAvailable": settings.blender_enabled,

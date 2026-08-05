@@ -64,6 +64,24 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 配置 API / Kuyao 密钥等见 `apps/api/README.md` 与 `apps/api/app/config.py`。
 
+### 公网演示登录（防刷生图 API）
+
+本地开发默认**不启用**鉴权。部署到公网 IP:端口前，在 `apps/api/.env` 配置：
+
+```bash
+AUTH_USERNAME=demo
+AUTH_PASSWORD=请换成强密码
+AUTH_SECRET=请换成随机长串
+AUTH_TOKEN_TTL_HOURS=72
+# 前端访问来源必须写进 CORS（含公网地址）
+CORS_ORIGINS=http://你的IP:5173,http://127.0.0.1:5173
+```
+
+- 配置后打开网页会先进入登录页；账号密码正确才可调用 `/v1/*` 业务接口
+- `/health`、`/v1/auth/login`、`/artifacts/*` 仍可匿名（产物 URL 含随机后缀）
+- 前端将 token 放在 `sessionStorage`，关闭标签需重新登录
+- 把测试账号只发给受测人员，定期改密码
+
 ## 回归脚本（可选）
 
 ```bash

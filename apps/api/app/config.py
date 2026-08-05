@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     provider_concurrency: int = 4
     kuyao_style_reference_image: str = ""
     cors_origins: str = "http://127.0.0.1:5173,http://localhost:5173"
+    # 公网演示鉴权：同时配置用户名+密码后启用；本地空着则不拦
+    auth_username: str = ""
+    auth_password: str = ""
+    auth_secret: str = ""
+    auth_token_ttl_hours: float = 72.0
 
     model_config = SettingsConfigDict(
         env_file=API_ROOT / ".env",

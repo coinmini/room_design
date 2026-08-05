@@ -32,6 +32,23 @@ class APIModel(BaseModel):
     )
 
 
+class AuthLoginRequest(APIModel):
+    username: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class AuthLoginResponse(APIModel):
+    token: str
+    username: str
+    expires_at: int
+    token_type: str = "Bearer"
+
+
+class AuthStatusResponse(APIModel):
+    enabled: bool
+    username: str | None = None
+
+
 class ProjectCreate(APIModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=500)

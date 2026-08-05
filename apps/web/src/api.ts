@@ -148,16 +148,24 @@ function xhrRequest(
 export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const url = /^https?:\/\//.test(path) ? path : `${API_BASE}${path}`
   const method = (init?.method ?? 'GET').toUpperCase()
-  let finalInit = init
+  const headers = new Headers(init?.headers)
+  // 公网演示登录 token（sessionStorage）
+  try {
+    const token = sessionStorage.getItem('room_design_auth_token')
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`)
+    }
+  } catch {
+    /* private mode */
+  }
   if (method === 'POST') {
     // C5：幂等键——每次用户提交生成一个 UUID；xhrRequest 的自动网络重试
     // 复用同一个 init（同一个键），丢失的响应不会再静默启动第二个批次。
-    const headers = new Headers(init?.headers)
     if (!headers.has('Idempotency-Key')) {
       headers.set('Idempotency-Key', crypto.randomUUID())
     }
-    finalInit = { ...init, headers }
   }
+  const finalInit = { ...init, headers }
   // Browser wallet/provider extensions can replace window.fetch and return
   // undefined even after the local request succeeds. Keep all local API and
   // artifact traffic on XHR so callers always receive a real Response.
