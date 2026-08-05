@@ -12,6 +12,12 @@ from shapely.geometry import box
 
 from app.config import settings
 from app.processors.common import ProcessorError
+from app.processors.fanout import (
+    PROVIDER_SEMAPHORE,
+    CancelCheck,
+    ProgressCallback,
+    fanout_generate,
+)
 from app.processors.kuyao_image_edit import edit_floorplan_image
 from app.storage import artifact_path, artifact_url
 
@@ -665,7 +671,23 @@ def _ai_layout_prompt(payload: dict[str, Any], *, variant: int) -> str:
     )
 
 
-def run_ai_layout(payload: dict[str, Any]) -> dict[str, Any]:
+AI_LAYOUT_NOTICE = (
+    "AI 生成的专业平面布局仍属于方案设计，当前未自动保证输入结构与输出结构完全一致；"
+    "输出图片不可直接量测，结构、尺寸、消防与人体工学必须人工复核。"
+)
+AI_LAYOUT_STRUCTURE_AUDIT: dict[str, Any] = {
+    "performed": False,
+    "geometryGuaranteed": False,
+    "notice": "当前版本尚未执行基础墙线或边缘保留审计。",
+}
+
+
+def run_ai_layout(
+    payload: dict[str, Any],
+    *,
+    on_progress: ProgressCallback | None = None,
+    should_cancel: CancelCheck | None = None,
+) -> dict[str, Any]:
     if not settings.kuyao_image_edit_configured:
         raise ProcessorError(
             "AI_LAYOUT_UNAVAILABLE",
@@ -699,60 +721,85 @@ def run_ai_layout(payload: dict[str, Any]) -> dict[str, Any]:
         int(payload["width_mm"]),
         int(payload["depth_mm"]),
     )
-    layouts = []
-    for variant in range(int(payload.get("count", 1))):
-        generated = edit_floorplan_image(
-            model_source_path,
-            api_key=settings.floorplan_vision_api_key,
-            base_url=settings.kuyao_base_url,
-            prompt=_ai_layout_prompt(payload, variant=variant),
-            model=settings.kuyao_image_model,
-            size=size,
-            quality=settings.kuyao_image_quality,
-            timeout_seconds=settings.kuyao_image_timeout_seconds,
-        )
-        notice = (
-            "AI 生成的专业平面布局仍属于方案设计，当前未自动保证输入结构与输出结构完全一致；"
-            "输出图片不可直接量测，结构、尺寸、消防与人体工学必须人工复核。"
-        )
-        structure_audit = {
-            "performed": False,
-            "geometryGuaranteed": False,
-            "notice": "当前版本尚未执行基础墙线或边缘保留审计。",
+    count = max(1, int(payload.get("count", 1)))
+
+    def generate_one(key: str) -> dict[str, Any]:
+        variant = int(key)
+        # 与 ai_workflow 共用同一个进程级信号量，避免阶段 02 的扇出突破 provider 限流
+        with PROVIDER_SEMAPHORE:
+            generated = edit_floorplan_image(
+                model_source_path,
+                api_key=settings.floorplan_vision_api_key,
+                base_url=settings.kuyao_base_url,
+                prompt=_ai_layout_prompt(payload, variant=variant),
+                model=settings.kuyao_image_model,
+                size=size,
+                quality=settings.kuyao_image_quality,
+                timeout_seconds=settings.kuyao_image_timeout_seconds,
+            )
+        return {
+            "layoutId": f"layout_ai_{variant + 1}",
+            "layoutVersion": 1,
+            "strategy": "circulation_first" if variant == 0 else "space_utilization",
+            "previewUrl": generated["url"],
+            "generationMode": "ai_image",
+            "provider": generated["provider"],
+            "model": generated["model"],
+            "notice": AI_LAYOUT_NOTICE,
+            "isConceptOnly": True,
+            "constructionReady": False,
+            "requiresUserConfirmation": True,
+            "promptVersion": AI_LAYOUT_PROMPT_VERSION,
+            "generationGoal": "professional_black_white_floor_plan",
+            "referencePolicy": "stage01_only",
+            "referenceImageCount": 0,
+            "inputRoles": {
+                "image1": "stage01_annotated_project_authority",
+                "referenceImages": "none",
+                "semanticLayout": "confirmed_function_zone_and_structure_authority",
+            },
+            "structureAudit": dict(AI_LAYOUT_STRUCTURE_AUDIT),
         }
-        layouts.append(
-            {
-                "layoutId": f"layout_ai_{variant + 1}",
-                "layoutVersion": 1,
-                "strategy": "circulation_first" if variant == 0 else "space_utilization",
-                "previewUrl": generated["url"],
-                "generationMode": "ai_image",
-                "provider": generated["provider"],
-                "model": generated["model"],
-                "notice": notice,
-                "isConceptOnly": True,
-                "constructionReady": False,
-                "requiresUserConfirmation": True,
-                "promptVersion": AI_LAYOUT_PROMPT_VERSION,
-                "generationGoal": "professional_black_white_floor_plan",
-                "referencePolicy": "stage01_only",
-                "referenceImageCount": 0,
-                "inputRoles": {
-                    "image1": "stage01_annotated_project_authority",
-                    "referenceImages": "none",
-                    "semanticLayout": "confirmed_function_zone_and_structure_authority",
-                },
-                "structureAudit": structure_audit,
-            }
+
+    def build_result(layouts: list[dict[str, Any]]) -> dict[str, Any]:
+        return _ai_layout_result(
+            layouts,
+            source_mode=source_mode,
+            semantic_summary=semantic_summary,
+            model_source_path=model_source_path,
+            source_sha256=source_sha256,
+            payload=payload,
         )
 
+    # A1/B1：2 张布局改为并发生成，并在每张完成后增量发布，
+    # 界面不再从头到尾停在「无预览」。
+    return fanout_generate(
+        [str(index) for index in range(count)],
+        generate_one,
+        build_result,
+        on_progress,
+        should_cancel,
+    )
+
+
+def _ai_layout_result(
+    layouts: list[dict[str, Any]],
+    *,
+    source_mode: str,
+    semantic_summary: Any,
+    model_source_path: Path,
+    source_sha256: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """组装阶段 02 结果。增量发布期间 layouts 可能只有部分变体。"""
+    first = layouts[0] if layouts else {}
     return {
         "layouts": layouts,
         "count": len(layouts),
         "generationMode": "ai_image",
-        "provider": layouts[0]["provider"],
-        "model": layouts[0]["model"],
-        "notice": layouts[0]["notice"],
+        "provider": first.get("provider") or settings.floorplan_final_image_provider,
+        "model": first.get("model") or settings.kuyao_image_model,
+        "notice": AI_LAYOUT_NOTICE,
         "sourceMode": source_mode,
         "isConceptOnly": True,
         "constructionReady": False,
@@ -768,7 +815,7 @@ def run_ai_layout(payload: dict[str, Any]) -> dict[str, Any]:
             "semanticLayout": "confirmed_function_zone_and_structure_authority",
         },
         "semanticInput": semantic_summary,
-        "structureAudit": layouts[0]["structureAudit"],
+        "structureAudit": dict(AI_LAYOUT_STRUCTURE_AUDIT),
         "stage01ControlImageUrl": artifact_url(model_source_path),
         "stage01Lineage": {
             "analysisJobId": payload.get("stage01_analysis_job_id"),

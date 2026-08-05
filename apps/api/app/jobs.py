@@ -55,6 +55,7 @@ PROCESSORS: dict[str, Processor] = {
 
 # 多变体批次处理器（A1）：支持运行中增量回写部分结果
 PROGRESS_PROCESSORS = {
+    run_ai_layout,
     run_ai_color_plan,
     run_ai_axonometric,
     run_ai_space_render,
