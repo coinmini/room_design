@@ -159,9 +159,24 @@ export default function UserSheet({
   const flash = (msg: string) => setToast(msg)
 
   const copyUuid = async () => {
+    // navigator.clipboard 同样只在 secure context 存在；用 IP + 明文 HTTP
+    // 访问时它是 undefined，需要退回 execCommand。
     try {
-      await navigator.clipboard.writeText(uuid)
-      flash('UUID 已复制')
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(uuid)
+        flash('UUID 已复制')
+        return
+      }
+      const area = document.createElement('textarea')
+      area.value = uuid
+      area.setAttribute('readonly', '')
+      area.style.position = 'fixed'
+      area.style.opacity = '0'
+      document.body.appendChild(area)
+      area.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(area)
+      flash(ok ? 'UUID 已复制' : '复制失败，请手动选择')
     } catch {
       flash('复制失败')
     }

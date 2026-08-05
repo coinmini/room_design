@@ -1,6 +1,33 @@
 export const API_BASE =
   import.meta.env.VITE_API_URL?.replace(/\/$/, '') ?? 'http://127.0.0.1:8000'
 
+/**
+ * 生成 UUID v4。
+ *
+ * `crypto.randomUUID` 只在 secure context（HTTPS / localhost）里存在，
+ * 用 IP + 明文 HTTP 部署时它是 undefined，直接调用会抛
+ * "crypto.randomUUID is not a function"。`crypto.getRandomValues`
+ * 没有这个限制，所以优先降级到它，最后才退到 Math.random。
+ */
+export function randomUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  const bytes = new Uint8Array(16)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes)
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256)
+    }
+  }
+  // 按 RFC 4122 置版本号 4 与 variant 位
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
 export type JobStatus =
   | 'QUEUED'
   | 'RUNNING'
@@ -162,7 +189,7 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
     // C5：幂等键——每次用户提交生成一个 UUID；xhrRequest 的自动网络重试
     // 复用同一个 init（同一个键），丢失的响应不会再静默启动第二个批次。
     if (!headers.has('Idempotency-Key')) {
-      headers.set('Idempotency-Key', crypto.randomUUID())
+      headers.set('Idempotency-Key', randomUuid())
     }
   }
   const finalInit = { ...init, headers }
