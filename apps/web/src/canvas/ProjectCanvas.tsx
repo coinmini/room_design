@@ -645,8 +645,9 @@ function ProjectCanvasInner({
             onPaneClick={onPaneClick}
             onPaneContextMenu={onPaneContextMenu}
             onMove={(_, viewport) => setZoom(viewport.zoom)}
-            minZoom={0.15}
-            maxZoom={2}
+            minZoom={0.05}
+            maxZoom={16}
+            zoomOnDoubleClick={false}
             proOptions={{ hideAttribution: true }}
             style={{ width: '100%', height: '100%' }}
           >
@@ -681,17 +682,28 @@ function ProjectCanvasInner({
               >
                 资产管理
               </button>
-              <button type="button" className="canvas-btn" onClick={() => zoomOut()}>
+              <button
+                type="button"
+                className="canvas-btn"
+                title="缩小"
+                onClick={() => zoomOut({ duration: 120 })}
+              >
                 −
               </button>
               <button
                 type="button"
                 className="canvas-btn"
+                title="适应画布（单击）· 滚轮可放大到 1600%"
                 onClick={() => fitView({ padding: 0.18 })}
               >
                 {zoomPercent(zoom)}%
               </button>
-              <button type="button" className="canvas-btn" onClick={() => zoomIn()}>
+              <button
+                type="button"
+                className="canvas-btn"
+                title="放大（最高 1600%）"
+                onClick={() => zoomIn({ duration: 120 })}
+              >
                 +
               </button>
               {selectedNode ? (
