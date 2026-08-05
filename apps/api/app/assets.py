@@ -204,11 +204,22 @@ def _asset_deliverables(job: Job, result: dict[str, Any]) -> dict[str, Any]:
             for layout in layouts
             if isinstance(layout, dict) and isinstance(layout.get("previewUrl"), str)
         ]
+        # W0-e：结构化配对——layoutId 与 previewUrl 直接同源组装，
+        # 不再靠 previewUrls[i] ↔ metadata.variantIds[i] 数组下标隐式对齐
+        layout_variants = [
+            {
+                "layoutId": layout.get("layoutId") or f"layout-{index}",
+                "previewUrl": layout.get("previewUrl"),
+            }
+            for index, layout in enumerate(layouts)
+            if isinstance(layout, dict) and isinstance(layout.get("previewUrl"), str)
+        ]
         return {
             "sourceImageUrl": source_image_url,
             "stage01ControlImageUrl": result.get("stage01ControlImageUrl"),
             "previewUrl": preview_urls[0] if preview_urls else None,
             "previewUrls": preview_urls,
+            "layoutVariants": layout_variants,
             "capabilities": {
                 "editableModel": False,
                 "multiView": False,

@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from pydantic import ValidationError
 
 from app.assets import (
+    ASSET_JOB_TYPES,
     LOCAL_OWNER_ID,
     asset_modules,
     backfill_scene_assets,
@@ -35,8 +36,15 @@ from app.assets import (
     scene_asset_read,
 )
 from app.config import WORKSPACE_ROOT, settings
+from app.canvas import build_project_canvas_graph
 from app.database import SessionLocal, get_session, init_db
-from app.jobs import create_job, dispatch_job, reclaim_stale_jobs, shutdown_job_executor
+from app.jobs import (
+    archive_job_asset,
+    create_job,
+    dispatch_job,
+    reclaim_stale_jobs,
+    shutdown_job_executor,
+)
 from app.models import Canvas, CanvasNode, Job, Project, SceneAsset, new_id, utc_now
 from app.processors.ai_workflow import (
     AXONOMETRIC_VARIANTS,
@@ -1824,6 +1832,16 @@ def get_job(job_id: str, session: SessionDep) -> Job:
     job = session.get(Job, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="任务不存在")
+    # C3+C4 竞态愈合：SUCCEEDED 与资产归档是两个事务，轮询可能先看到
+    # SUCCEEDED 而 result.assetId 尚未写入——读到时惰性补归档，对所有调用方收敛
+    if (
+        job.status == "SUCCEEDED"
+        and job.type in ASSET_JOB_TYPES
+        and not (job.result or {}).get("assetId")
+    ):
+        archive_job_asset(job.id)
+        session.expire(job)
+        session.refresh(job)
     return job
 
 
@@ -1896,6 +1914,12 @@ def list_jobs(
 
 
 # W0-d: Canvas persistence endpoints
+
+
+@app.get(f"{settings.api_prefix}/projects/{{project_id}}/canvas-graph")
+def get_project_canvas_graph(project_id: str, session: SessionDep) -> dict[str, Any]:
+    """W0-e：项目画布图谱——逐图节点 + parent→child 派生连线（逻辑结构，不含坐标）。"""
+    return build_project_canvas_graph(session, project_id)
 
 
 @app.post(

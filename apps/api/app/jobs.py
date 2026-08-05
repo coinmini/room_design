@@ -167,7 +167,7 @@ def reclaim_stale_jobs() -> int:
     return count
 
 
-def _archive_job_asset(job_id: str) -> None:
+def archive_job_asset(job_id: str) -> None:
     """终态结果提交后，在独立事务里归档资产（C3）。
 
     归档失败不再摧毁已付费的生成结果；`backfill_scene_assets` 可补偿。
@@ -298,4 +298,4 @@ def run_job(job_id: str) -> None:
     finally:
         session.close()
     if succeeded:
-        _archive_job_asset(job_id)
+        archive_job_asset(job_id)
