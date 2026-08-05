@@ -57,6 +57,7 @@ import {
   expectedSkeletonSlots,
   type SkeletonSlot,
 } from './skeletonMath'
+import { clampMenuPosition } from './menuMath'
 import LayoutDetailDock from './LayoutDetailDock'
 import LocalEditDock, { type LocalEditSession } from './LocalEditDock'
 import StackGallery, { type StackGalleryState } from './StackGallery'
@@ -89,25 +90,6 @@ type ContextMenuState = {
   y: number
   node: CanvasGraphNode | null
 } | null
-
-/** 右键菜单贴边：避免画布底部/右侧被裁切 */
-function clampMenuPosition(
-  clientX: number,
-  clientY: number,
-  menuWidth: number,
-  menuHeight: number,
-) {
-  const pad = 10
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  let x = clientX
-  let y = clientY
-  if (x + menuWidth + pad > vw) x = Math.max(pad, vw - menuWidth - pad)
-  if (y + menuHeight + pad > vh) y = Math.max(pad, vh - menuHeight - pad)
-  if (x < pad) x = pad
-  if (y < pad) y = pad
-  return { x, y }
-}
 
 function ProjectCanvasInner({
   projectId,
@@ -341,7 +323,10 @@ function ProjectCanvasInner({
             graphNode: item,
             actionCtx,
             showActions:
-              selected === item.id && !item.isSkeleton && !item.isStack,
+              (selected === item.id && !item.isStack) ||
+              (Boolean(item.isSkeleton) &&
+                (item.jobStatus === 'FAILED' ||
+                  item.jobStatus === 'CANCELED')),
             onAction: (action: string, node: CanvasGraphNode) =>
               actionRef.current(action, node),
             onCollapseStack: collapseStack,
@@ -999,6 +984,90 @@ function ProjectCanvasInner({
           a.download = `${node.variantId || 'image'}.png`
           a.target = '_blank'
           a.click()
+          return
+        }
+
+        // 失败/取消骨架：丢弃占位
+        if (
+          action === 'delete' &&
+          node?.isSkeleton &&
+          (node.jobStatus === 'FAILED' || node.jobStatus === 'CANCELED')
+        ) {
+          const slot = skeletonSlotsRef.current.find(
+            (s) => s.id === node.variantId || `skeleton:${s.id}` === node.id,
+          )
+          if (slot) {
+            clearSkeletonGroup(slot.groupId)
+            if (slot.jobId) {
+              removeActiveCanvasJob(projectId, {
+                jobId: slot.jobId,
+                groupId: slot.groupId,
+              })
+            }
+            if (graphRef.current) applyGraph(graphRef.current, selectedId)
+            setNotice('已丢弃失败/取消的生成占位')
+          }
+          busyRef.current = false
+          setBusy(false)
+          return
+        }
+
+        // 失败骨架：重试原 job 并继续刷新进度
+        if (
+          action === 'retry' &&
+          node?.isSkeleton &&
+          node.jobStatus === 'FAILED' &&
+          node.jobId
+        ) {
+          const slot = skeletonSlotsRef.current.find(
+            (s) => s.id === node.variantId || `skeleton:${s.id}` === node.id,
+          )
+          const groupId = slot?.groupId ?? null
+          skeletonGroupId = groupId
+          setNotice('正在重试生成…')
+          // 重置该组骨架为生成中
+          if (groupId) {
+            setSkeletonSlots((current) => {
+              const next = current.map((s) =>
+                s.groupId === groupId
+                  ? {
+                      ...s,
+                      jobStatus: 'QUEUED',
+                      errorMessage: null,
+                      label: s.label
+                        .replace(/（失败）$/, '')
+                        .replace(/（已出图）$/, ''),
+                      url: undefined,
+                    }
+                  : s,
+              )
+              skeletonSlotsRef.current = next
+              return next
+            })
+            if (graphRef.current) applyGraph(graphRef.current, selectedId)
+          }
+          try {
+            const result = await executeCanvasAction({
+              projectId,
+              node,
+              action: 'retry',
+              onJob: (job) => {
+                if (groupId) bindSkeletonsToJob(groupId, job)
+              },
+            })
+            if (result.ok) {
+              await loadGraph({ fit: false })
+              if (groupId) clearSkeletonGroup(groupId)
+              setNotice(result.message || '重试完成')
+            }
+          } catch (value) {
+            setNotice(
+              value instanceof Error ? value.message : '重试失败',
+            )
+          } finally {
+            busyRef.current = false
+            setBusy(false)
+          }
           return
         }
 

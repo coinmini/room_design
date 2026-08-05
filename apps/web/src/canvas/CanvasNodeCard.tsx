@@ -47,8 +47,15 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
         'generate_space_render',
         'generate_axonometric',
         'open_full',
+        'retry',
+        'delete',
       ].includes(a.action),
   )
+  const skeletonFailed =
+    node.isSkeleton &&
+    (node.jobStatus === 'FAILED' || node.jobStatus === 'CANCELED')
+  const showFooter =
+    payload.showActions || skeletonFailed
 
   // 01–07：满足前置条件时可拖出拖把线派生下一阶段
   const canSpawn = canSpawnFromNode(node, {
@@ -411,7 +418,7 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
         </button>
       ) : null}
 
-      {payload.showActions && !isStack ? (
+      {showFooter && !isStack ? (
         <div
           className="canvas-node-actions"
           style={{
@@ -431,7 +438,24 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
               className="canvas-btn"
               disabled={!item.enabled}
               title={item.reason || item.label}
-              style={{ height: 26, padding: '0 8px', fontSize: 11 }}
+              style={{
+                height: 26,
+                padding: '0 8px',
+                fontSize: 11,
+                ...(item.action === 'retry'
+                  ? {
+                      background: 'var(--canvas-primary-muted)',
+                      color: 'var(--canvas-primary)',
+                      borderColor: 'transparent',
+                    }
+                  : item.action === 'delete' && skeletonFailed
+                    ? {
+                        background: 'var(--canvas-danger-muted)',
+                        color: 'var(--canvas-danger)',
+                        borderColor: 'transparent',
+                      }
+                    : {}),
+              }}
               onClick={() => payload.onAction?.(item.action, node)}
             >
               {item.label}

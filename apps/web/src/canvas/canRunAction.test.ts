@@ -57,6 +57,20 @@ describe('canRunAction', () => {
     expect(result.enabled).toBe(true)
   })
 
+  it('exposes retry and discard for failed skeleton nodes', () => {
+    const skeleton = baseNode({
+      isSkeleton: true,
+      jobStatus: 'FAILED',
+      jobId: 'job_fail',
+      approved: false,
+    })
+    const names = listNodeActions(skeleton).map((a) => a.action)
+    expect(names).toContain('retry')
+    expect(names).toContain('delete')
+    expect(canRunAction(skeleton, 'retry').enabled).toBe(true)
+    expect(canRunAction(skeleton, 'delete').label).toBe('丢弃')
+  })
+
   it('shows unapprove only when approved, approve only when not', () => {
     const unapproved = listNodeActions(
       baseNode({ workflowStage: 'layout', approved: false }),

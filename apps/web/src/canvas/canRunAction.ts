@@ -130,7 +130,19 @@ export function canRunAction(
 
   if (node.isTemporary || node.isSkeleton) {
     if (action === 'retry' && node.jobStatus === 'FAILED') {
-      return { ...base, enabled: true }
+      return { ...base, enabled: true, label: '重试' }
+    }
+    if (
+      action === 'delete' &&
+      (node.jobStatus === 'FAILED' ||
+        node.jobStatus === 'CANCELED' ||
+        (node.isTemporary && node.jobStatus !== 'RUNNING'))
+    ) {
+      return {
+        ...base,
+        enabled: true,
+        label: node.isSkeleton ? '丢弃' : '删除',
+      }
     }
     if (action === 'open_full' || action === 'download') {
       return { ...base, enabled: Boolean(node.url) }
@@ -138,7 +150,11 @@ export function canRunAction(
     return {
       ...base,
       enabled: false,
-      reason: node.isSkeleton ? '生成中，请稍候' : '临时结果不可审批或派生',
+      reason: node.isSkeleton
+        ? node.jobStatus === 'FAILED'
+          ? '可重试或丢弃'
+          : '生成中，请稍候'
+        : '临时结果不可审批或派生',
     }
   }
 
@@ -234,6 +250,23 @@ export function listNodeActions(
   node: CanvasGraphNode,
   ctx: ActionContext = {},
 ): ActionAvailability[] {
+  // 骨架 / 临时节点：只暴露重试、丢弃、打开/下载
+  if (node.isSkeleton || node.isTemporary) {
+    const ordered: CanvasAction[] = []
+    if (node.jobStatus === 'FAILED') ordered.push('retry')
+    if (
+      node.jobStatus === 'FAILED' ||
+      node.jobStatus === 'CANCELED' ||
+      (node.isTemporary && node.jobStatus !== 'RUNNING')
+    ) {
+      ordered.push('delete')
+    }
+    if (node.url) {
+      ordered.push('open_full', 'download')
+    }
+    return ordered.map((action) => canRunAction(node, action, ctx))
+  }
+
   const stage = normalizeStage(node)
   const approved = ctx.isApprovedVariant ?? isVariantApproved(node)
   const actions = [

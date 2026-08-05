@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import {
   API_BASE,
@@ -8,10 +15,11 @@ import {
   type Job,
 } from './api'
 import AssetLibrary from './AssetLibrary'
-import AiDesignWorkflow from './AiDesignWorkflow'
 import FloorplanModule from './FloorplanModule'
 import { ProjectCanvas } from './canvas'
 import './App.css'
+
+const AiDesignWorkflow = lazy(() => import('./AiDesignWorkflow'))
 
 type ModuleId =
   | 'overview'
@@ -1240,7 +1248,11 @@ function App({ initialModule = null, initialAssetId = null }: AppProps = {}) {
           className="persistent-workflow-module"
           hidden={active !== 'workflow'}
         >
-          <AiDesignWorkflow />
+          {active === 'workflow' ? (
+            <Suspense fallback={<div className="notice">加载旧版向导…</div>}>
+              <AiDesignWorkflow />
+            </Suspense>
+          ) : null}
         </section>
         {active === 'canvas' && (
           <CanvasModule onOpenAssets={() => setActive('assets')} />
