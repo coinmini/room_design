@@ -3,12 +3,28 @@ from __future__ import annotations
 from time import monotonic, sleep
 from typing import Any
 
+import numpy as np
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
-from app.database import SessionLocal
+from app.config import settings
+from app.database import SessionLocal, init_db
 from app.jobs import PROCESSORS, create_job, run_job
 from app.main import app
+
+# 本文件不依赖其他测试的执行顺序：自行确保测试库建表 + 轻量迁移
+init_db()
+
+
+def _write_artifact_png(name: str, *, value: int = 180) -> str:
+    """Write a real PNG under ARTIFACT_DIR so W0-c webp thumbnails can be generated."""
+    import cv2
+
+    settings.artifact_dir.mkdir(parents=True, exist_ok=True)
+    path = settings.artifact_dir / name
+    image = np.full((48, 64, 3), value, dtype=np.uint8)
+    assert cv2.imwrite(str(path), image)
+    return f"/artifacts/{name}"
 
 
 def scene_request(*, generation_mode: str = "structured_3d") -> dict[str, Any]:
@@ -37,6 +53,9 @@ def scene_request(*, generation_mode: str = "structured_3d") -> dict[str, Any]:
 def fake_scene_result(payload: dict[str, Any]) -> dict[str, Any]:
     generation_mode = payload.get("generation_mode", "structured_3d")
     suffix = payload.get("asset_variant_type") or "original"
+    # Materialize representative renders so ensure_scene_asset can emit webp thumbs (W0-c).
+    final_url = _write_artifact_png(f"{suffix}-final.png", value=200)
+    base_url = _write_artifact_png(f"{suffix}-base.png", value=160)
     model_delivery = (
         {
             "blendUrl": f"/artifacts/{suffix}.blend",
@@ -58,8 +77,8 @@ def fake_scene_result(payload: dict[str, Any]) -> dict[str, Any]:
         "topDownUrl": f"/artifacts/{suffix}-top.png",
         "roomPreviewUrl": f"/artifacts/{suffix}-room.png",
         "dollhouseUrl": f"/artifacts/{suffix}-dollhouse.png",
-        "baseRenderUrl": f"/artifacts/{suffix}-base.png",
-        "finalRenderUrl": f"/artifacts/{suffix}-final.png",
+        "baseRenderUrl": base_url,
+        "finalRenderUrl": final_url,
         "manifestUrl": f"/artifacts/{suffix}.json",
         "modelDelivery": model_delivery,
         "room": {"name": payload.get("room_name", "资产测试客厅")},
@@ -103,7 +122,9 @@ def test_scene_jobs_become_assets_and_support_structured_variants(
         assert asset["moduleKey"] == "floorplan"
         assert asset["moduleName"] == "户型识别与效果图"
         assert asset["assetType"] == "structured_scene"
-        assert asset["thumbnailUrl"].endswith("original-final.png")
+        # W0-c：原图落 fullUrl，列表缩略图用 256 webp
+        assert asset["thumbnailUrl"].endswith("original-final-thumb-256.webp")
+        assert asset["deliverables"]["fullUrl"].endswith("original-final.png")
         assert asset["deliverables"]["blendUrl"].endswith("original.blend")
         assert asset["deliverables"]["glbUrl"].endswith("original.glb")
         assert asset["deliverables"]["capabilities"]["multiView"] is True
@@ -157,9 +178,10 @@ def test_scene_jobs_become_assets_and_support_structured_variants(
         assert len([item for item in all_assets if item["jobId"] == source_job["id"]]) == 1
 
 
-def test_asset_list_backfills_historical_success_and_rejects_direct_variants(
+def test_asset_list_does_not_auto_backfill_historical_success(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    """W0-a：列表热路径不再 backfill；需显式 POST /assets/backfill。"""
     monkeypatch.setitem(PROCESSORS, "FLOORPLAN_SCENE", fake_scene_result)
 
     with TestClient(app) as client:
@@ -181,9 +203,16 @@ def test_asset_list_backfills_historical_success_and_rejects_direct_variants(
         finally:
             session.close()
 
-        client.post("/v1/assets/backfill")
+        # 列表不再隐式归档
+        before = client.get("/v1/assets?generationMode=ai_direct&limit=100")
+        assert before.status_code == 200
+        assert all(item["jobId"] != historical_job_id for item in before.json())
 
-        first_list = client.get("/v1/assets?generationMode=ai_direct")
+        backfill = client.post("/v1/assets/backfill")
+        assert backfill.status_code == 200
+        assert backfill.json()["backfilled"] >= 1
+
+        first_list = client.get("/v1/assets?generationMode=ai_direct&limit=100")
         assert first_list.status_code == 200
         matching = [
             item for item in first_list.json() if item["jobId"] == historical_job_id
@@ -192,8 +221,10 @@ def test_asset_list_backfills_historical_success_and_rejects_direct_variants(
         direct_asset = matching[0]
         assert direct_asset["assetType"] == "ai_render"
         assert direct_asset["deliverables"]["blendUrl"] is None
+        assert direct_asset["thumbnailUrl"].endswith("-thumb-256.webp")
+        assert direct_asset["deliverables"]["fullUrl"].endswith("-final.png")
 
-        second_list = client.get("/v1/assets?generationMode=ai_direct").json()
+        second_list = client.get("/v1/assets?generationMode=ai_direct&limit=100").json()
         assert len([item for item in second_list if item["jobId"] == historical_job_id]) == 1
 
         response = client.post(

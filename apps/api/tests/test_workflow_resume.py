@@ -6,10 +6,14 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from app.assets import ensure_scene_asset
+from app.canvas import canvas_node_id
 from app.config import settings
-from app.database import SessionLocal
+from app.database import SessionLocal, init_db
 from app.jobs import create_job
 from app.main import app
+
+# 本文件不依赖其他测试的执行顺序：自行确保测试库建表 + 轻量迁移
+init_db()
 
 
 def _layout_semantic() -> dict[str, Any]:
@@ -372,3 +376,91 @@ def test_workflow_resume_rejects_semantic_drift_inside_ai_workflow_chain() -> No
         response = client.get(f"/v1/assets/{axis_id}/workflow-resume")
         assert response.status_code == 409
         assert "SemanticLayout 版本不一致" in response.json()["detail"]
+
+
+def test_workflow_resume_chain_is_visible_on_canvas_graph() -> None:
+    """W0-e：续接链资产在 canvas-graph 中按谱系展开；SceneAsset 不可因画布软删消失。"""
+    workflow_semantic = _workflow_semantic()
+    with TestClient(app) as client:
+        project_id = client.post(
+            "/v1/projects",
+            json={"name": "续接画布可见性"},
+        ).json()["id"]
+        layout_path, _ = _artifact("resume-graph-layout.png")
+        layout_id = _create_asset(
+            project_id=project_id,
+            job_type="LAYOUT_AI",
+            semantic=_layout_semantic(),
+            output_name="resume-graph-layout.png",
+            variant_id="layout_graph",
+        )
+        layout = _approve(client, layout_id, "layout_graph")
+        layout_version = layout["metadata"]["approvedVersionId"]
+        color_path, _ = _artifact("resume-graph-color.png")
+        color_id = _create_asset(
+            project_id=project_id,
+            job_type="AI_COLOR_PLAN",
+            semantic=workflow_semantic,
+            output_name="resume-graph-color.png",
+            variant_id="simple_2d",
+            parent_asset_id=layout_id,
+            approved_layout_path=layout_path,
+            approved_layout_version_id=layout_version,
+        )
+        _approve(client, color_id, "simple_2d")
+        axis_id = _create_asset(
+            project_id=project_id,
+            job_type="AI_AXONOMETRIC",
+            semantic=workflow_semantic,
+            output_name="resume-graph-axis.png",
+            variant_id="isometric_day",
+            parent_asset_id=color_id,
+            approved_layout_path=layout_path,
+            approved_layout_version_id=layout_version,
+            approved_color_plan_path=color_path,
+        )
+        _approve(client, axis_id, "isometric_day")
+
+        graph = client.get(f"/v1/projects/{project_id}/canvas-graph")
+        assert graph.status_code == 200
+        body = graph.json()
+        node_ids = {node["id"] for node in body["nodes"]}
+        assert canvas_node_id(layout_id, "layout_graph") in node_ids
+        assert canvas_node_id(color_id, "simple_2d") in node_ids
+        assert canvas_node_id(axis_id, "isometric_day") in node_ids
+        edge_pairs = {
+            (edge["sourceAssetId"], edge["targetAssetId"]) for edge in body["edges"]
+        }
+        assert (layout_id, color_id) in edge_pairs
+        assert (color_id, axis_id) in edge_pairs
+
+        # W0-d：canvas_nodes 软删不影响 SceneAsset / workflow-resume
+        canvas = client.post(
+            "/v1/canvases",
+            json={"projectId": project_id, "name": "主画布"},
+        )
+        assert canvas.status_code == 201, canvas.text
+        canvas_id = canvas.json()["id"]
+        node = client.post(
+            f"/v1/canvases/{canvas_id}/nodes",
+            json={
+                "canvasId": canvas_id,
+                "assetId": color_id,
+                "variantId": "simple_2d",
+                "x": 10,
+                "y": 20,
+                "w": 240,
+                "h": 180,
+            },
+        )
+        assert node.status_code == 201, node.text
+        node_id = node.json()["id"]
+        deleted = client.delete(f"/v1/canvases/{canvas_id}/nodes/{node_id}")
+        assert deleted.status_code == 200
+
+        resume = client.get(f"/v1/assets/{color_id}/workflow-resume")
+        assert resume.status_code == 200, resume.text
+        assert resume.json()["workflowStage"] == "color_plan"
+        asset = client.get(f"/v1/assets/{color_id}")
+        assert asset.status_code == 200
+        assert asset.json()["id"] == color_id

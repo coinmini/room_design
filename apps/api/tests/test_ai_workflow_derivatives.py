@@ -13,12 +13,16 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
 from app.assets import ensure_scene_asset, scene_asset_read
+from app.canvas import canvas_node_id
 from app.config import settings
-from app.database import SessionLocal
+from app.database import SessionLocal, init_db
 from app.jobs import PROCESSORS, create_job
 from app.main import app
 from app.processors import ai_workflow
 from app.processors.common import ProcessorError
+
+# 本文件不依赖其他测试的执行顺序：自行确保测试库建表 + 轻量迁移
+init_db()
 
 
 def _image_bytes(value: int = 220, *, width: int = 72, height: int = 48) -> bytes:
@@ -491,4 +495,109 @@ def test_local_edit_rejects_mark_image_without_red_marks(
                 "edit_prompt": "替换标记处的单椅",
                 "asset_parent_id": "asset-tone",
             }
+        )
+
+
+def test_stages_6_to_8_require_asset_parent_id() -> None:
+    """W0-b：06/07/08 的 asset_parent_id 为 Form 必填，缺失直接 422。"""
+    source = _image_bytes()
+    semantic = json.dumps(_semantic_layout(), ensure_ascii=False)
+    with TestClient(app) as client:
+        project_id = client.post(
+            "/v1/projects", json={"name": "阶段 6～8 必填 parent"}
+        ).json()["id"]
+        common = {
+            "semantic_layout": semantic,
+            "space_id": "room_living",
+            "source_approved": "true",
+            "source_space_version_id": "any",
+            "project_id": project_id,
+        }
+        style = client.post(
+            "/v1/ai-workflow/style-schemes",
+            files={"source_space_image": ("space.png", source, "image/png")},
+            data=common,
+        )
+        tone = client.post(
+            "/v1/ai-workflow/tone-schemes",
+            files={"source_space_image": ("style.png", source, "image/png")},
+            data=common,
+        )
+        mark = np.full((48, 72, 3), 25, dtype=np.uint8)
+        mark[10:30, 20:50] = (48, 59, 255)
+        ok, encoded = cv2.imencode(".png", mark)
+        assert ok
+        local = client.post(
+            "/v1/ai-workflow/local-edits",
+            files={
+                "source_space_image": ("tone.png", source, "image/png"),
+                "mark_image": ("mark.png", encoded.tobytes(), "image/png"),
+            },
+            data={**common, "edit_prompt": "替换标记处"},
+        )
+        assert style.status_code == 422, style.text
+        assert tone.status_code == 422, tone.text
+        assert local.status_code == 422, local.text
+
+
+def test_approved_style_variants_expand_on_canvas_graph(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """W0-e：阶段 6 多图 asset 在 canvas-graph 中按 variant 展开（仍一 job 一资产）。"""
+    monkeypatch.setitem(
+        PROCESSORS,
+        "AI_STYLE_SCHEME",
+        _fake_derivative_processor("style_scheme"),
+    )
+    source = _image_bytes()
+    semantic = json.dumps(_semantic_layout(), ensure_ascii=False)
+
+    with TestClient(app) as client:
+        project_id = client.post(
+            "/v1/projects", json={"name": "画布展开 风格方案"}
+        ).json()["id"]
+        space_asset = _create_space_asset(project_id, source)
+        approved_space = client.post(
+            f"/v1/assets/{space_asset['id']}/approve",
+            json={"variantId": "space_room_living"},
+        )
+        assert approved_space.status_code == 200
+        space_version = approved_space.json()["metadata"]["approvedVersionId"]
+
+        style_job = _completed_job(
+            client,
+            client.post(
+                "/v1/ai-workflow/style-schemes",
+                files={"source_space_image": ("space.png", source, "image/png")},
+                data={
+                    "semantic_layout": semantic,
+                    "space_id": "room_living",
+                    "source_approved": "true",
+                    "project_id": project_id,
+                    "asset_parent_id": space_asset["id"],
+                    "source_space_version_id": space_version,
+                },
+            ),
+        )
+        style_asset = _asset_for_job(client, style_job["id"])
+        # 一 job 一资产（W0-X 前仍成立）
+        siblings = [
+            item
+            for item in client.get("/v1/assets?moduleKey=ai_workflow&limit=100").json()
+            if item["jobId"] == style_job["id"]
+        ]
+        assert len(siblings) == 1
+
+        graph = client.get(f"/v1/projects/{project_id}/canvas-graph")
+        assert graph.status_code == 200
+        body = graph.json()
+        node_ids = {node["id"] for node in body["nodes"]}
+        assert canvas_node_id(style_asset["id"], "style_modern_minimal") in node_ids
+        assert canvas_node_id(style_asset["id"], "style_natural_wood") in node_ids
+        assert canvas_node_id(style_asset["id"], "style_midcentury_vintage") in node_ids
+        style_nodes = [n for n in body["nodes"] if n["assetId"] == style_asset["id"]]
+        assert len(style_nodes) == 3
+        assert all(n["workflowStage"] == "style_scheme" for n in style_nodes)
+        assert all(
+            n["parentVariantId"] == "space_room_living" for n in style_nodes
         )
