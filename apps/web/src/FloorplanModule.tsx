@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { apiFetch, assetUrl, pollJob, type Job } from './api'
 import { BatchProgress } from './BatchProgress'
@@ -129,6 +136,101 @@ export type FloorplanStage01Approval = {
   sourceSha256?: string
   detectedBounds: PixelBounds
   approvedAt: string
+}
+
+/** 画布 focus 紧凑工具栏图标 */
+function FocusIcon({
+  children,
+  size = 18,
+}: {
+  children: ReactNode
+  size?: number
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      {children}
+    </svg>
+  )
+}
+
+function FocusIconClose() {
+  return (
+    <FocusIcon>
+      <path d="M18 6 6 18M6 6l12 12" />
+    </FocusIcon>
+  )
+}
+
+function FocusIconSelect() {
+  return (
+    <FocusIcon>
+      <path d="M4 4h7v7H4zM13 13h7v7h-7z" />
+      <path d="M9 15h2v2H9zM15 9h2v2h-2z" />
+    </FocusIcon>
+  )
+}
+
+function FocusIconDraw() {
+  return (
+    <FocusIcon>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </FocusIcon>
+  )
+}
+
+function FocusIconRoom() {
+  return (
+    <FocusIcon>
+      <rect x="4" y="5" width="16" height="14" rx="1.5" strokeDasharray="3 2" />
+    </FocusIcon>
+  )
+}
+
+function FocusIconUndo() {
+  return (
+    <FocusIcon>
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h10a6 6 0 0 1 0 12h-3" />
+    </FocusIcon>
+  )
+}
+
+function FocusIconReset() {
+  return (
+    <FocusIcon>
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <path d="M3 4v5h5" />
+    </FocusIcon>
+  )
+}
+
+function FocusIconTools() {
+  return (
+    <FocusIcon>
+      <path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4Z" />
+      <path d="m15 9 3 3" />
+    </FocusIcon>
+  )
+}
+
+function FocusIconInfo() {
+  return (
+    <FocusIcon>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 10v6M12 7h.01" />
+    </FocusIcon>
+  )
 }
 
 export type FloorplanModuleProps = {
@@ -482,7 +584,7 @@ function useFloorplanJob() {
     return completed
   }
 
-  /** 回放已成功的分析任务（画布双击 01 节点）。 */
+  /** 回放已成功的分析任务（画布 01 节点进入结构编辑）。 */
   const loadExisting = async (jobId: string) => {
     setBusy(true)
     setError('')
@@ -979,6 +1081,12 @@ export default function FloorplanModule({
   const semanticEditorRef = useRef<HTMLDetailsElement | null>(null)
   const [stage01ApprovalSubmitted, setStage01ApprovalSubmitted] =
     useState(false)
+  /** 画布 focus：信息 / 工具侧栏（换图·尺寸·识别·实体校正 统一在扳手里） */
+  const [focusPanel, setFocusPanel] = useState<'none' | 'info' | 'tools'>('none')
+
+  const toggleFocusPanel = useCallback((panel: 'info' | 'tools') => {
+    setFocusPanel((current) => (current === panel ? 'none' : panel))
+  }, [])
 
   const invalidateStage01Approval = useCallback(
     (reason: FloorplanApprovalInvalidationReason) => {
@@ -1190,30 +1298,6 @@ export default function FloorplanModule({
     () => describeEnhancementCapability(apiCompatibility),
     [apiCompatibility],
   )
-  const recognitionWarnings = useMemo(
-    () =>
-      Array.from(
-        new Set([
-          ...(analysis?.quality.warnings ?? []),
-          ...(semanticDraft?.warnings ?? []),
-        ]),
-      ),
-    [analysis, semanticDraft],
-  )
-  const recognitionProvider = analysis
-    ? (analysis.quality.provider ??
-      semanticDraft?.source?.provider ??
-      (analysis.quality.recognitionMode?.includes('fixture')
-        ? 'reviewed-fixture'
-        : 'local'))
-    : apiCompatibility.floorplanVision?.provider
-  const recognitionModel = analysis
-    ? (analysis.quality.model ??
-      semanticDraft?.source?.model ??
-      (analysis.quality.recognitionMode?.includes('fixture')
-        ? semanticDraft?.profileId
-        : 'geometric-fallback'))
-    : apiCompatibility.floorplanVision?.model
   const recognitionConfidence =
     analysis?.quality.confidence ?? semanticDraft?.confidence
 
@@ -2294,25 +2378,34 @@ export default function FloorplanModule({
         </div>
       ) : null}
 
-      {isCanvasFocus ? (
-        <div className="canvas-focus-editor-hint">
-          {resumeStatus === 'loading'
-            ? '正在载入画布中的平面图与识别结果…'
-            : resumedFromCanvas
-              ? '已载入当前画布节点的平面图。请校正房间/墙线 → 勾选「我已核对语义布局」→ '
-              : '在下方编辑房间与墙线 → 勾选「我已核对语义布局」→ '}
-          {resumeStatus !== 'loading' ? (
-            <strong>确认结构并返回画布</strong>
-          ) : null}
+      {/* 画布 focus：仅 loading / error 顶条；成功态并入底部确认区，腾出图纸高度 */}
+      {isCanvasFocus &&
+      (resumeStatus === 'loading' || resumeStatus === 'error') ? (
+        <div
+          className={`canvas-focus-editor-hint${
+            resumeStatus === 'error' ? ' is-error' : ''
+          }`}
+        >
+          {resumeStatus === 'loading' ? (
+            '正在载入画布中的平面图与识别结果…'
+          ) : (
+            <>
+              {resumeError || '自动载入失败'}
+              <span className="canvas-focus-editor-hint-sub">
+                可点「工具」换图后重新识别。
+              </span>
+            </>
+          )}
         </div>
       ) : null}
 
-      {resumeStatus === 'loading' && (
+      {/* 非画布嵌入时仍用独立 notice */}
+      {!isCanvasFocus && resumeStatus === 'loading' && (
         <div className="notice">
           正在从画布节点载入平面图与结构识别结果，无需重新上传…
         </div>
       )}
-      {resumeStatus === 'error' && (
+      {!isCanvasFocus && resumeStatus === 'error' && (
         <div className="notice notice-error">
           {resumeError || '自动载入失败'}
           <div style={{ marginTop: 6, fontSize: 12 }}>
@@ -2320,8 +2413,8 @@ export default function FloorplanModule({
           </div>
         </div>
       )}
-      {resumeStatus === 'ready' && resumedFromCanvas && (
-        <div className="notice" style={{ background: '#ecfdf5', color: '#065f46' }}>
+      {!isCanvasFocus && resumeStatus === 'ready' && resumedFromCanvas && (
+        <div className="notice notice-success">
           已自动载入画布中的平面布局图（{file?.name || '当前节点'}
           ），可直接校正结构并确认。
         </div>
@@ -2374,34 +2467,44 @@ export default function FloorplanModule({
           </div>
         )}
 
-      <div className="floorplan-workspace">
-        <form className="floorplan-controls" onSubmit={analyze}>
+      <div
+        className={`floorplan-workspace${
+          isCanvasFocus ? ' is-canvas-focus' : ''
+        }`}
+      >
+        <form
+          className={[
+            'floorplan-controls',
+            isCanvasFocus ? 'is-focus-drawer' : '',
+            isCanvasFocus && focusPanel === 'tools' ? 'is-open' : '',
+            isCanvasFocus && focusPanel === 'tools' ? 'focus-panel-tools' : '',
+          ]
+            .filter(Boolean)
+            .join(' ')}
+          onSubmit={analyze}
+        >
+          {isCanvasFocus ? (
+            <div className="floorplan-focus-drawer-head">
+              <strong>图纸与工具</strong>
+              <button
+                type="button"
+                className="floorplan-icon-btn"
+                title="关闭"
+                aria-label="关闭"
+                onClick={() => setFocusPanel('none')}
+              >
+                <FocusIconClose />
+              </button>
+            </div>
+          ) : null}
           <div className="control-section">
             <span className="control-section-label">01 / INPUT</span>
             <h2>图纸与比例</h2>
-            {resumedFromCanvas && analysis ? (
-              <div
-                className="file-drop compact"
-                style={{
-                  cursor: 'default',
-                  borderStyle: 'solid',
-                  background: '#f0fdf4',
-                }}
-              >
-                <strong>✓ 已载入画布平面图</strong>
-                <span>
-                  {file?.name || '来自当前节点'} · 无需重新上传
-                  {analysis.planWidthMm && analysis.planDepthMm
-                    ? ` · ${analysis.planWidthMm}×${analysis.planDepthMm} mm`
-                    : ''}
-                </span>
-              </div>
-            ) : null}
             <label
               className="file-drop compact"
               style={
                 resumedFromCanvas && analysis
-                  ? { opacity: 0.72, marginTop: 10 }
+                  ? { opacity: 0.72 }
                   : undefined
               }
             >
@@ -2549,33 +2652,17 @@ export default function FloorplanModule({
                       </span>
                     )}
                   </div>
-                  <dl>
-                    <div>
-                      <dt>Provider</dt>
-                      <dd>{recognitionProvider || 'local'}</dd>
-                    </div>
-                    <div>
-                      <dt>Model</dt>
-                      <dd>{recognitionModel || 'geometric-fallback'}</dd>
-                    </div>
-                    <div>
-                      <dt>Mode</dt>
-                      <dd>
-                        {analysis.quality.recognitionMode || 'unknown'}
-                        {analysis.quality.cacheHit ? ' · 缓存复用' : ''}
-                      </dd>
-                    </div>
-                  </dl>
                   {semanticDraft ? (
                     <p>
                       {semanticDraft.rooms.length} 个房间 ·{' '}
                       {semanticDraft.openings.length} 个门窗 ·{' '}
-                      {semanticDraft.furniture.length} 件家具；当前副本可人工校正并作为
-                      后续 AI 平面布局的语义基准。
+                      {semanticDraft.furniture.length} 件家具
+                      {analysis.quality.cacheHit ? ' · 缓存复用' : ''}
+                      ；可人工校正后作为后续布局语义基准。
                     </p>
                   ) : (
                     <p>
-                      未生成 semanticLayout，无法进入 AI 平面布局；请检查视觉服务配置或识别警告。
+                      未生成语义布局，无法进入 AI 平面布局；请检查视觉服务配置。
                     </p>
                   )}
                   {analysis.quality.visionConfigured === false && (
@@ -2583,18 +2670,14 @@ export default function FloorplanModule({
                       多模态视觉服务未配置，本次结果没有经过房间、门窗和家具视觉识别。
                     </p>
                   )}
-                  {recognitionWarnings.length > 0 && (
-                    <ul>
-                      {recognitionWarnings.map((warning) => (
-                        <li key={warning}>{warning}</li>
-                      ))}
-                    </ul>
-                  )}
                 </div>
                 {semanticDraft && (
                   <details
                     className="semantic-entity-editor"
                     ref={semanticEditorRef}
+                    open={
+                      isCanvasFocus && focusPanel === 'tools' ? true : undefined
+                    }
                   >
                     <summary>房间、门窗与家具校正</summary>
                     <div className="semantic-entity-groups">
@@ -2651,57 +2734,58 @@ export default function FloorplanModule({
                     </div>
                   </details>
                 )}
-                <label
-                  className={`semantic-review-confirmation ${
-                    semanticReviewConfirmed ? 'confirmed' : ''
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={semanticReviewConfirmed}
-                    disabled={!semanticDraft}
-                    onChange={(event) =>
-                      updateSemanticReviewConfirmation(event.target.checked)
-                    }
-                  />
-                  <span>
-                    <strong>我已核对语义布局</strong>
-                    <small>
-                      已确认房间边界、墙线、门窗、家具和尺寸；任何后续编辑都会要求重新确认。
-                    </small>
-                  </span>
-                </label>
-                {isWorkflowStage01 && (
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={!canApproveStage01 || stage01ApprovalSubmitted}
-                    onClick={approveStage01}
-                  >
-                    {stage01ApprovalSubmitted
-                      ? isCanvasFocus
-                        ? '✓ 结构已确认'
-                        : '✓ Stage 01 已批准'
-                      : isCanvasFocus
-                        ? '确认结构并返回画布'
-                        : '批准 Stage 01 并进入 AI 平面布局'}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={removeLastManualWall}
-                  disabled={manualCount === 0}
-                >
-                  撤销上一条补线
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={resetAnalysis}
-                >
-                  重置识别结果
-                </button>
+                {/* 画布 focus：核对与确认改到底部主操作条，避免与图纸抢高 */}
+                {!isCanvasFocus ? (
+                  <>
+                    <label
+                      className={`semantic-review-confirmation ${
+                        semanticReviewConfirmed ? 'confirmed' : ''
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={semanticReviewConfirmed}
+                        disabled={!semanticDraft}
+                        onChange={(event) =>
+                          updateSemanticReviewConfirmation(event.target.checked)
+                        }
+                      />
+                      <span>
+                        <strong>我已核对语义布局</strong>
+                        <small>
+                          已确认房间边界、墙线、门窗、家具和尺寸；任何后续编辑都会要求重新确认。
+                        </small>
+                      </span>
+                    </label>
+                    {isWorkflowStage01 && (
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={!canApproveStage01 || stage01ApprovalSubmitted}
+                        onClick={approveStage01}
+                      >
+                        {stage01ApprovalSubmitted
+                          ? '✓ Stage 01 已批准'
+                          : '批准 Stage 01 并进入 AI 平面布局'}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={removeLastManualWall}
+                      disabled={manualCount === 0}
+                    >
+                      撤销上一条补线
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={resetAnalysis}
+                    >
+                      重置识别结果
+                    </button>
+                  </>
+                ) : null}
               </div>
 
               {!isWorkflowStage01 && (
@@ -2955,43 +3039,245 @@ export default function FloorplanModule({
           )}
           {analysis && (
             <>
-              <div className="editor-toolbar">
-                <div>
-                  <strong>
-                    {mode === 'review'
-                      ? '点击线段启用或排除'
-                      : mode === 'draw-wall'
-                        ? '拖拽补画水平或垂直墙线'
-                        : '拖拽框选一个目标房间'}
-                  </strong>
-                  <span>
-                    图纸 {analysis.imageWidth} × {analysis.imageHeight}px · 比例 X{' '}
-                    {analysis.scaleX.toFixed(2)} / Y {analysis.scaleY.toFixed(2)} mm/px
-                    {semanticDraft ? ' · 点击房间 / 门窗 / 家具可直接修改参数' : ''}
-                  </span>
-                </div>
-                <div className="legend">
-                  <span className="legend-auto">自动墙</span>
-                  {semanticDraft && (
-                    <span className="legend-semantic">语义结构</span>
-                  )}
-                  <span className="legend-manual">手工墙</span>
-                  <span className="legend-room">目标房间</span>
-                  {semanticDraft && (
-                    <>
-                      <span className="legend-opening">门窗</span>
-                      <span className="legend-furniture">家具</span>
-                      <span className="legend-low-confidence">低置信度</span>
-                    </>
-                  )}
-                </div>
-              </div>
+              {isCanvasFocus ? (
+                <>
+                  <aside className="floorplan-focus-rail" aria-label="结构编辑侧栏">
+                    <div
+                      className="floorplan-focus-toolbar"
+                      role="toolbar"
+                      aria-label="结构编辑工具"
+                    >
+                      <div className="floorplan-focus-toolbar-group">
+                        <button
+                          type="button"
+                          className={`floorplan-icon-btn${mode === 'review' ? ' is-active' : ''}`}
+                          title="点选墙线"
+                          aria-label="点选墙线"
+                          onClick={() => setMode('review')}
+                        >
+                          <FocusIconSelect />
+                        </button>
+                        <button
+                          type="button"
+                          className={`floorplan-icon-btn${mode === 'draw-wall' ? ' is-active' : ''}`}
+                          title="补画墙线"
+                          aria-label="补画墙线"
+                          onClick={() => setMode('draw-wall')}
+                        >
+                          <FocusIconDraw />
+                        </button>
+                        <button
+                          type="button"
+                          className={`floorplan-icon-btn${mode === 'select-room' ? ' is-active' : ''}`}
+                          title="框选房间"
+                          aria-label="框选房间"
+                          onClick={() => setMode('select-room')}
+                        >
+                          <FocusIconRoom />
+                        </button>
+                      </div>
+                      <div className="floorplan-focus-toolbar-group">
+                        <button
+                          type="button"
+                          className="floorplan-icon-btn"
+                          title="撤销上一条补线"
+                          aria-label="撤销上一条补线"
+                          disabled={manualCount === 0}
+                          onClick={removeLastManualWall}
+                        >
+                          <FocusIconUndo />
+                        </button>
+                        <button
+                          type="button"
+                          className="floorplan-icon-btn"
+                          title="重置识别结果"
+                          aria-label="重置识别结果"
+                          onClick={resetAnalysis}
+                        >
+                          <FocusIconReset />
+                        </button>
+                        <button
+                          type="button"
+                          className={`floorplan-icon-btn${focusPanel === 'tools' ? ' is-active' : ''}`}
+                          title="图纸与工具（换图 / 尺寸 / 识别 / 实体）"
+                          aria-label="图纸与工具"
+                          onClick={() => toggleFocusPanel('tools')}
+                        >
+                          <FocusIconTools />
+                        </button>
+                        <button
+                          type="button"
+                          className={`floorplan-icon-btn${focusPanel === 'info' ? ' is-active' : ''}`}
+                          title="识别信息与图例"
+                          aria-label="识别信息与图例"
+                          onClick={() => toggleFocusPanel('info')}
+                        >
+                          <FocusIconInfo />
+                        </button>
+                      </div>
+                    </div>
 
-              {analysis.quality.scaleWarning && (
-                <div className="scale-warning">
-                  宽深比例差异为{' '}
-                  {(analysis.quality.scaleDeltaRatio * 100).toFixed(1)}%，请核对总尺寸；
-                  V0.5 分别按 X/Y 方向缩放。
+                    <div className="floorplan-focus-confirm-rail">
+                      <label
+                        className={`semantic-review-confirmation is-hero is-rail${
+                          semanticReviewConfirmed ? ' confirmed' : ''
+                        }`}
+                        title="勾选表示已核对房间、墙线、门窗、家具与尺寸"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={semanticReviewConfirmed}
+                          disabled={!semanticDraft}
+                          onChange={(event) =>
+                            updateSemanticReviewConfirmation(event.target.checked)
+                          }
+                        />
+                        <span>
+                          <strong>我已核对</strong>
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        className="primary-button floorplan-focus-confirm-btn"
+                        disabled={!canApproveStage01 || stage01ApprovalSubmitted}
+                        onClick={approveStage01}
+                        title="确认结构并返回画布"
+                      >
+                        {stage01ApprovalSubmitted ? '已确认' : '确认并返回'}
+                      </button>
+                    </div>
+                  </aside>
+
+                  {focusPanel === 'info' ? (
+                    <div
+                      className="floorplan-focus-info-panel"
+                      role="dialog"
+                      aria-label="识别信息"
+                    >
+                      <div className="floorplan-focus-drawer-head">
+                        <strong>识别信息</strong>
+                        <button
+                          type="button"
+                          className="floorplan-icon-btn"
+                          title="关闭"
+                          aria-label="关闭"
+                          onClick={() => setFocusPanel('none')}
+                        >
+                          <FocusIconClose />
+                        </button>
+                      </div>
+                      <div className="floorplan-focus-info-body">
+                        <p>
+                          <strong className="floorplan-focus-info-kicker">当前操作</strong>
+                          {mode === 'review'
+                            ? '点击线段启用或排除'
+                            : mode === 'draw-wall'
+                              ? '拖拽补画水平或垂直墙线'
+                              : '拖拽框选一个目标房间'}
+                        </p>
+                        {analysis.quality.scaleWarning ? (
+                          <p className="is-warn">
+                            <strong className="floorplan-focus-info-kicker">宽深差</strong>
+                            {(analysis.quality.scaleDeltaRatio * 100).toFixed(1)}
+                            % · 请核对总尺寸（按 X/Y 分别缩放）
+                          </p>
+                        ) : null}
+                        <p>
+                          {semanticDraft
+                            ? `视觉语义识别完成 · 置信度 ${
+                                recognitionConfidence !== undefined
+                                  ? `${Math.round(recognitionConfidence * 100)}%`
+                                  : '—'
+                              }`
+                            : '仅几何墙线回退'}
+                        </p>
+                        {semanticDraft ? (
+                          <p>
+                            {semanticDraft.rooms.length} 房间 ·{' '}
+                            {semanticDraft.openings.length} 门窗 ·{' '}
+                            {semanticDraft.furniture.length} 家具
+                            {analysis.quality.cacheHit ? ' · 缓存复用' : ''}
+                          </p>
+                        ) : null}
+                        <p>
+                          图纸 {analysis.imageWidth}×{analysis.imageHeight}px · 比例 X{' '}
+                          {analysis.scaleX.toFixed(2)} / Y{' '}
+                          {analysis.scaleY.toFixed(2)} mm/px
+                        </p>
+                        {analysis.planWidthMm && analysis.planDepthMm ? (
+                          <p>
+                            尺寸 {analysis.planWidthMm}×{analysis.planDepthMm} mm
+                            {file?.name ? ` · ${file.name}` : ''}
+                          </p>
+                        ) : null}
+                        <p>
+                          墙线 {enabledCount} 启用 · {manualCount} 手工 ·{' '}
+                          {analysis.quality.candidateCount} 候选
+                        </p>
+                        <div className="legend floorplan-focus-legend">
+                          <span className="legend-auto">自动墙</span>
+                          {semanticDraft ? (
+                            <span className="legend-semantic">语义结构</span>
+                          ) : null}
+                          <span className="legend-manual">手工墙</span>
+                          <span className="legend-room">目标房间</span>
+                          {semanticDraft ? (
+                            <>
+                              <span className="legend-opening">门窗</span>
+                              <span className="legend-furniture">家具</span>
+                              <span className="legend-low-confidence">低置信度</span>
+                            </>
+                          ) : null}
+                        </div>
+                        <p className="floorplan-focus-info-tip">
+                          左侧图标切换编辑模式；点图可改房间/门窗/家具。勾选「我已核对」后点「确认并返回」。
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div
+                  className={`editor-toolbar${
+                    analysis.quality.scaleWarning ? ' has-scale-warning' : ''
+                  }`}
+                >
+                  <div className="editor-toolbar-main">
+                    <strong>
+                      {mode === 'review'
+                        ? '点击线段启用或排除'
+                        : mode === 'draw-wall'
+                          ? '拖拽补画水平或垂直墙线'
+                          : '拖拽框选一个目标房间'}
+                    </strong>
+                    <span>
+                      图纸 {analysis.imageWidth} × {analysis.imageHeight}px · 比例 X{' '}
+                      {analysis.scaleX.toFixed(2)} / Y {analysis.scaleY.toFixed(2)} mm/px
+                      {semanticDraft ? ' · 点击房间 / 门窗 / 家具可直接修改参数' : ''}
+                    </span>
+                    {analysis.quality.scaleWarning ? (
+                      <span className="scale-warning-inline">
+                        宽深比例差异{' '}
+                        {(analysis.quality.scaleDeltaRatio * 100).toFixed(1)}
+                        %，请核对总尺寸（按 X/Y 分别缩放）
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="legend">
+                    <span className="legend-auto">自动墙</span>
+                    {semanticDraft && (
+                      <span className="legend-semantic">语义结构</span>
+                    )}
+                    <span className="legend-manual">手工墙</span>
+                    <span className="legend-room">目标房间</span>
+                    {semanticDraft && (
+                      <>
+                        <span className="legend-opening">门窗</span>
+                        <span className="legend-furniture">家具</span>
+                        <span className="legend-low-confidence">低置信度</span>
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
 

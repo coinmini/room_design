@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link, useNavigate } from 'react-router-dom'
 import { apiFetch, assetUrl } from '../api'
+import AboutSheet from './AboutSheet'
 import FbDock from './FbDock'
+import NotifySheet, { countUnreadNotices } from './NotifySheet'
 import './home.css'
 
 type MenuAnchor = {
@@ -58,6 +60,9 @@ export default function ProjectsPage() {
   const [renameProject, setRenameProject] = useState<Project | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [notice, setNotice] = useState('')
+  const [aboutOpen, setAboutOpen] = useState(false)
+  const [notifyOpen, setNotifyOpen] = useState(false)
+  const [notifyUnread, setNotifyUnread] = useState(() => countUnreadNotices())
   const displayName =
     localStorage.getItem('room_design_display_name') || '设计师'
 
@@ -344,6 +349,9 @@ export default function ProjectsPage() {
         active="projects"
         createDisabled={busy}
         onCreate={() => void createProject()}
+        onNotifyClick={() => setNotifyOpen(true)}
+        onAppsClick={() => setAboutOpen(true)}
+        notifyCount={notifyUnread}
       />
 
       <div className="fb-top-chips">
@@ -619,6 +627,13 @@ export default function ProjectsPage() {
           </div>
         </div>
       ) : null}
+
+      <AboutSheet open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <NotifySheet
+        open={notifyOpen}
+        onClose={() => setNotifyOpen(false)}
+        onUnreadChange={setNotifyUnread}
+      />
 
       {pendingDelete ? (
         <div

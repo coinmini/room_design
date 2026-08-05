@@ -56,7 +56,7 @@ const LABELS: Record<CanvasAction, string> = {
   duplicate: '创建副本',
   delete: '删除',
   rebind_baseline: '重新绑定基准',
-  view_structure: '打开结构编辑器',
+  view_structure: '编辑结构',
   reanalyze: '重新识别',
 }
 
@@ -183,7 +183,7 @@ export function canRunAction(
     return {
       ...base,
       enabled: false,
-      reason: '请先双击节点打开结构编辑器并确认结构',
+      reason: '请先打开结构编辑器并确认结构',
     }
   }
 

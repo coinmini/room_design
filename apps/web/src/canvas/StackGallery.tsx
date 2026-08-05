@@ -226,15 +226,16 @@ export default function StackGallery({ gallery, onClose, onSelect }: Props) {
                 ) : (
                   <span className="canvas-muted">无预览</span>
                 )}
-              </div>
-              <div className="canvas-stack-gallery-caption">
-                <span className="canvas-stack-gallery-index">
-                  {globalIndex + 1}/{total}
-                </span>
-                <span className="canvas-stack-gallery-name">{name}</span>
-                {approved ? (
-                  <span className="canvas-stack-gallery-badge">已批准</span>
-                ) : null}
+                {/* 标题叠在图底，避免独立边框卡片显得拥挤 */}
+                <div className="canvas-stack-gallery-caption">
+                  <span className="canvas-stack-gallery-index">
+                    {globalIndex + 1}/{total}
+                  </span>
+                  <span className="canvas-stack-gallery-name">{name}</span>
+                  {approved ? (
+                    <span className="canvas-stack-gallery-badge">已批准</span>
+                  ) : null}
+                </div>
               </div>
             </button>
           )

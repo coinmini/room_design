@@ -1,6 +1,7 @@
 /**
  * W1 · 无限画布作用域深色令牌
- * 仅挂在 .canvas-theme 下，不污染全站（01 编辑器 + AssetLibrary 亮暗接缝登记为已知问题）。
+ * 仅挂在 .canvas-theme 下，不污染全站。
+ * 01 结构编辑器嵌入画布时同样走本文件深色覆盖（见 .canvas-structure-main）。
  */
 
 .canvas-theme {
@@ -213,63 +214,10 @@
   background: #0f0f12;
 }
 
-.canvas-theme .canvas-app-dock {
-  position: absolute;
-  left: 14px;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 8;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
+/* 画布复用首页 .fb-dock；结构聚焦时隐藏 */
+.canvas-theme.canvas-shell.is-app-chrome .fb-dock {
+  z-index: 12;
   pointer-events: auto;
-}
-
-.canvas-theme .canvas-app-dock-plus {
-  width: 40px;
-  height: 40px;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  text-decoration: none;
-  color: #ededec;
-  background: #26262a;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 20px;
-  line-height: 1;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-}
-
-.canvas-theme .canvas-app-dock-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 10px 8px;
-  border-radius: 999px;
-  background: #26262a;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
-}
-
-.canvas-theme .canvas-app-dock-btn {
-  width: 44px;
-  height: 44px;
-  border-radius: 999px;
-  display: grid;
-  place-items: center;
-  text-decoration: none;
-  color: #6d6c6a;
-  font-size: 16px;
-  border: none;
-  background: transparent;
-}
-
-.canvas-theme a.canvas-app-dock-btn:hover,
-.canvas-theme .canvas-app-dock-btn.is-active {
-  background: #2e2e33;
-  color: #ededec;
 }
 
 .canvas-theme.canvas-shell.is-app-chrome .canvas-topbar {
@@ -280,7 +228,7 @@
   left: calc(50% + 24px);
 }
 
-.canvas-theme.canvas-shell.is-structure-focus .canvas-app-dock {
+.canvas-theme.canvas-shell.is-structure-focus .fb-dock {
   display: none;
 }
 
@@ -550,7 +498,7 @@
   display: none;
 }
 
-/* 01 结构专注坞：深色壳 + 左侧上下文 + 亮色编辑主区 */
+/* 01 结构专注坞：深色壳 + 左侧上下文 + 同色编辑主区（对齐画布/首页） */
 .canvas-theme .canvas-structure-dock {
   position: absolute;
   inset: 0;
@@ -562,6 +510,11 @@
     radial-gradient(ellipse 70% 40% at 50% 0%, rgba(59, 130, 246, 0.08), transparent 55%),
     var(--canvas-bg);
   animation: canvas-dock-in 0.22s ease;
+}
+
+/* 全宽：去掉左轨，图纸最大化 */
+.canvas-theme .canvas-structure-dock.is-fullwidth {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 @keyframes canvas-dock-in {
@@ -606,35 +559,895 @@
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: 12px;
+  padding: 0;
   background: transparent;
+  color: var(--canvas-text);
 }
 
+/* —— 01 FloorplanModule 嵌入深色覆盖（不污染独立亮色路由） —— */
 .canvas-theme .canvas-structure-main .floorplan-page {
   width: 100%;
   max-width: none;
   min-height: 100%;
-  background: #f6f7fb;
-  border-radius: 14px;
-  border: 1px solid var(--canvas-border-strong);
-  box-shadow: var(--canvas-shadow);
+  background: var(--canvas-bg);
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
   overflow: hidden;
+  color: var(--canvas-text);
 }
 
 .canvas-theme .canvas-structure-main .floorplan-workspace {
-  min-height: calc(100vh - 140px);
+  min-height: calc(100vh - 48px);
   border: none;
   border-radius: 0;
   box-shadow: none;
+  background: var(--canvas-bg);
 }
 
-.canvas-theme .canvas-focus-editor-hint {
+.canvas-theme .canvas-structure-main .canvas-focus-editor-hint {
   margin: 0;
-  padding: 10px 14px;
+  padding: 10px 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--canvas-text-secondary);
+  background: rgba(59, 130, 246, 0.1);
+  border-bottom: 1px solid var(--canvas-border);
+}
+
+.canvas-theme .canvas-structure-main .canvas-focus-editor-hint.is-ready {
+  color: #86efac;
+  background: var(--canvas-success-muted);
+  border-bottom-color: rgba(34, 197, 94, 0.35);
+}
+
+.canvas-theme .canvas-structure-main .canvas-focus-editor-hint.is-error {
+  color: #fecaca;
+  background: var(--canvas-danger-muted);
+  border-bottom-color: rgba(239, 68, 68, 0.35);
+}
+
+.canvas-theme .canvas-structure-main .canvas-focus-editor-hint strong {
+  color: var(--canvas-text);
+  font-weight: 650;
+}
+
+.canvas-theme .canvas-structure-main .canvas-focus-editor-hint.is-ready strong {
+  color: #bbf7d0;
+}
+
+.canvas-theme .canvas-structure-main .canvas-focus-editor-hint-file {
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.canvas-theme .canvas-structure-main .canvas-focus-editor-hint-sub {
+  display: block;
+  margin-top: 4px;
+  opacity: 0.85;
+  font-size: 11px;
+}
+
+.canvas-theme .canvas-structure-main .notice {
+  margin: 0;
+  padding: 12px 16px;
+  color: var(--canvas-text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--canvas-primary-muted);
+  border: none;
+  border-bottom: 1px solid var(--canvas-primary-border);
+  border-radius: 0;
+  border-left: none;
+}
+
+.canvas-theme .canvas-structure-main .notice-error {
+  color: #fecaca;
+  background: var(--canvas-danger-muted);
+  border-bottom-color: rgba(239, 68, 68, 0.35);
+}
+
+.canvas-theme .canvas-structure-main .notice-success {
+  color: #86efac;
+  background: var(--canvas-success-muted);
+  border-bottom-color: rgba(34, 197, 94, 0.35);
+}
+
+/* 工具栏 + 比例警告合并为一条 */
+.canvas-theme .canvas-structure-main .editor-toolbar {
+  align-items: flex-start;
+  gap: 12px 18px;
+}
+
+.canvas-theme .canvas-structure-main .editor-toolbar-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.canvas-theme .canvas-structure-main .editor-toolbar.has-scale-warning {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: linear-gradient(
+    90deg,
+    rgba(245, 158, 11, 0.1) 0%,
+    rgba(28, 28, 32, 0.92) 42%
+  );
+}
+
+.canvas-theme .canvas-structure-main .scale-warning-inline {
+  display: block;
+  margin-top: 2px;
+  color: #fcd34d;
+  font-size: 11px;
+  line-height: 1.45;
+  font-weight: 600;
+}
+
+.canvas-theme .canvas-structure-main .file-drop.is-loaded-from-canvas {
+  cursor: default;
+  border-style: solid;
+  background: var(--canvas-success-muted);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.canvas-theme .canvas-structure-main .file-drop.is-loaded-from-canvas strong {
+  color: #86efac;
+}
+
+.canvas-theme .canvas-structure-main .file-drop.is-loaded-from-canvas:hover {
+  background: var(--canvas-success-muted);
+  border-color: rgba(34, 197, 94, 0.35);
+  box-shadow: none;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-controls {
+  padding: 0 16px 24px;
+  background: var(--canvas-bg-elevated);
+  border-right: 1px solid var(--canvas-border);
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .control-section {
+  border-bottom-color: var(--canvas-divider);
+}
+
+.canvas-theme .canvas-structure-main .control-section-label {
+  color: var(--canvas-primary);
+}
+
+.canvas-theme .canvas-structure-main .control-section h2 {
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .field-label,
+.canvas-theme .canvas-structure-main .dimension-help {
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-structure-main .file-drop {
+  background: var(--canvas-card);
+  border-color: var(--canvas-border-strong);
+  color: var(--canvas-text-secondary);
+}
+
+.canvas-theme .canvas-structure-main .file-drop:hover {
+  background: var(--canvas-card-hover);
+  border-color: var(--canvas-primary-border);
+  box-shadow: 0 0 0 3px var(--canvas-primary-muted);
+}
+
+.canvas-theme .canvas-structure-main .file-drop strong {
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .file-drop span {
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-structure-main .primary-button {
+  color: #fff;
+  background: var(--canvas-primary);
+  border: 1px solid transparent;
+  box-shadow: 0 8px 20px rgba(59, 130, 246, 0.28);
+  border-radius: var(--canvas-radius-pill);
+}
+
+.canvas-theme .canvas-structure-main .primary-button:hover:not(:disabled) {
+  background: var(--canvas-primary-hover);
+  box-shadow: 0 10px 24px rgba(59, 130, 246, 0.36);
+  transform: translateY(-1px);
+}
+
+.canvas-theme .canvas-structure-main .primary-button:disabled {
+  opacity: 0.4;
+  box-shadow: none;
+}
+
+.canvas-theme .canvas-structure-main .secondary-button {
+  color: var(--canvas-text);
+  background: var(--canvas-card);
+  border: 1px solid var(--canvas-border);
+  border-radius: var(--canvas-radius-pill);
+}
+
+.canvas-theme .canvas-structure-main .secondary-button:hover:not(:disabled) {
+  background: var(--canvas-card-hover);
+  border-color: var(--canvas-border-strong);
+}
+
+.canvas-theme .canvas-structure-main .secondary-button:disabled {
+  opacity: 0.4;
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-structure-main .editor-modes button {
+  color: var(--canvas-text-secondary);
+  background: var(--canvas-card);
+  border-color: var(--canvas-border);
+}
+
+.canvas-theme .canvas-structure-main .editor-modes button:hover:not(.active) {
+  border-color: var(--canvas-border-strong);
+  background: var(--canvas-card-hover);
+}
+
+.canvas-theme .canvas-structure-main .editor-modes button.active {
+  color: #fff;
+  background: var(--canvas-primary-muted);
+  border-color: var(--canvas-primary-border);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
+}
+
+.canvas-theme .canvas-structure-main .wall-stats {
+  background: var(--canvas-card);
+  border-color: var(--canvas-border);
+}
+
+.canvas-theme .canvas-structure-main .wall-stats span {
+  color: var(--canvas-text-muted);
+  border-right-color: var(--canvas-divider);
+}
+
+.canvas-theme .canvas-structure-main .wall-stats strong {
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .semantic-recognition-card {
+  color: var(--canvas-text-secondary);
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.22);
+  border-left: 3px solid var(--canvas-success);
+}
+
+.canvas-theme .canvas-structure-main .semantic-recognition-card.is-warning {
+  color: #fbbf24;
+  background: var(--canvas-warning-muted);
+  border-color: rgba(245, 158, 11, 0.35);
+  border-left-color: var(--canvas-warning);
+}
+
+.canvas-theme .canvas-structure-main .semantic-recognition-heading strong {
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .semantic-recognition-heading span {
+  color: #86efac;
+}
+
+.canvas-theme .canvas-structure-main .semantic-recognition-card.is-warning
+  .semantic-recognition-heading
+  span {
+  color: #fcd34d;
+}
+
+.canvas-theme .canvas-structure-main .semantic-recognition-card dt {
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-structure-main .semantic-recognition-card dd {
+  color: var(--canvas-text-secondary);
+}
+
+.canvas-theme .canvas-structure-main .semantic-recognition-card ul {
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.canvas-theme .canvas-structure-main .semantic-recognition-card .semantic-service-warning {
+  color: #fecaca;
+  background: var(--canvas-danger-muted);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-editor {
+  border-color: var(--canvas-border);
+  background: transparent;
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-editor summary {
+  color: var(--canvas-text-secondary);
+  background: var(--canvas-card);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-editor summary:hover {
+  background: var(--canvas-card-hover);
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-groups {
+  border-top-color: var(--canvas-divider);
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-groups h3 {
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-groups p {
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-structure-main .semantic-group-heading button,
+.canvas-theme .canvas-structure-main .semantic-card-heading button {
+  color: #93c5fd;
+  background: var(--canvas-card);
+  border-color: var(--canvas-primary-border);
+}
+
+.canvas-theme .canvas-structure-main .semantic-group-heading button:hover {
+  background: var(--canvas-primary-muted);
+}
+
+.canvas-theme .canvas-structure-main .semantic-card-heading button {
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.canvas-theme .canvas-structure-main .semantic-card-heading button:hover {
+  background: var(--canvas-danger-muted);
+}
+
+.canvas-theme .canvas-structure-main .semantic-card-heading strong {
+  color: var(--canvas-text-secondary);
+}
+
+.canvas-theme .canvas-structure-main .semantic-card-heading span {
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-structure-main .semantic-geometry-card {
+  background: var(--canvas-card);
+  border-color: var(--canvas-border);
+}
+
+.canvas-theme .canvas-structure-main .semantic-geometry-card.selected {
+  border-color: var(--canvas-primary-border);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.canvas-theme .canvas-structure-main .semantic-coordinate-grid label,
+.canvas-theme .canvas-structure-main .semantic-full-field,
+.canvas-theme .canvas-structure-main .semantic-point-row label {
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-structure-main .semantic-room-row input,
+.canvas-theme .canvas-structure-main .semantic-room-row select,
+.canvas-theme .canvas-structure-main .semantic-coordinate-grid input,
+.canvas-theme .canvas-structure-main .semantic-coordinate-grid select,
+.canvas-theme .canvas-structure-main .semantic-full-field select,
+.canvas-theme .canvas-structure-main .semantic-point-row input,
+.canvas-theme .canvas-structure-main input[type='text'],
+.canvas-theme .canvas-structure-main input[type='number'],
+.canvas-theme .canvas-structure-main select,
+.canvas-theme .canvas-structure-main textarea {
+  color: var(--canvas-text);
+  background: #121218;
+  border: 1px solid var(--canvas-border);
+  border-radius: 8px;
+}
+
+.canvas-theme .canvas-structure-main .semantic-room-row input:focus,
+.canvas-theme .canvas-structure-main .semantic-room-row select:focus,
+.canvas-theme .canvas-structure-main .semantic-coordinate-grid input:focus,
+.canvas-theme .canvas-structure-main .semantic-coordinate-grid select:focus,
+.canvas-theme .canvas-structure-main .semantic-full-field select:focus,
+.canvas-theme .canvas-structure-main .semantic-point-row input:focus,
+.canvas-theme .canvas-structure-main input[type='text']:focus,
+.canvas-theme .canvas-structure-main input[type='number']:focus,
+.canvas-theme .canvas-structure-main select:focus,
+.canvas-theme .canvas-structure-main textarea:focus {
+  outline: none;
+  border-color: var(--canvas-primary-border);
+  box-shadow: 0 0 0 2px var(--canvas-primary-muted);
+}
+
+.canvas-theme .canvas-structure-main .semantic-point-row > span {
+  color: #a78bfa;
+}
+
+.canvas-theme .canvas-structure-main .semantic-room-links {
+  border-color: var(--canvas-border);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.canvas-theme .canvas-structure-main .semantic-room-links legend,
+.canvas-theme .canvas-structure-main .semantic-room-links label {
+  color: var(--canvas-text-secondary);
+}
+
+.canvas-theme .canvas-structure-main .semantic-room-links input {
+  accent-color: var(--canvas-primary);
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation {
+  color: #fcd34d;
+  background: var(--canvas-warning-muted);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation.confirmed {
+  color: #86efac;
+  background: var(--canvas-success-muted);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation strong {
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation small {
+  color: inherit;
+  opacity: 0.9;
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation input {
+  accent-color: var(--canvas-primary);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-row {
+  color: var(--canvas-text-secondary);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-row button {
+  color: #fca5a5;
+  background: transparent;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-main {
+  padding: 16px 18px 20px;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.02) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.02) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.02) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.02) 75%),
+    #0c0c10;
+  background-position:
+    0 0,
+    0 10px,
+    10px -10px,
+    -10px 0;
+  background-size: 20px 20px;
+}
+
+.canvas-theme .canvas-structure-main .editor-toolbar {
+  background: rgba(28, 28, 32, 0.92);
+  border-color: var(--canvas-border);
+  box-shadow: var(--canvas-shadow-soft);
+  backdrop-filter: blur(8px);
+}
+
+.canvas-theme .canvas-structure-main .editor-toolbar strong {
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .editor-toolbar span,
+.canvas-theme .canvas-structure-main .legend {
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-structure-main .scale-warning {
+  color: #fcd34d;
+  background: var(--canvas-warning-muted);
+  border-color: rgba(245, 158, 11, 0.35);
+  border-left-color: var(--canvas-warning);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-stage {
+  background: #141418;
+  border-color: var(--canvas-border-strong);
+  box-shadow: var(--canvas-shadow);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-popover {
+  background: rgba(28, 28, 32, 0.97);
+  border-color: var(--canvas-primary-border);
+  box-shadow: var(--canvas-shadow);
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-popover > header {
+  color: #93c5fd;
+  background: var(--canvas-primary-muted);
+  border-bottom-color: var(--canvas-border);
+}
+
+.canvas-theme .canvas-structure-main .semantic-entity-popover > header button {
+  color: #93c5fd;
+  background: var(--canvas-card);
+  border-color: var(--canvas-border);
+}
+
+/* 户型图上的语义标注：深色底上略提亮，保持可辨 */
+.canvas-theme .canvas-structure-main .semantic-room {
+  fill: rgba(96, 165, 250, 0.08);
+  stroke: rgba(147, 197, 253, 0.55);
+}
+
+.canvas-theme .canvas-structure-main .semantic-room-label {
+  fill: rgba(237, 237, 236, 0.92);
+  stroke: rgba(15, 15, 18, 0.85);
+}
+
+.canvas-theme .canvas-structure-main .provider-hint,
+.canvas-theme .canvas-structure-main .generation-mode-help {
+  color: var(--canvas-text-secondary);
+  background: var(--canvas-card);
+  border-color: var(--canvas-border);
+}
+
+.canvas-theme .canvas-structure-main .job-running-notice strong,
+.canvas-theme .canvas-structure-main .job-error-notice strong {
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .job-error-notice button {
+  color: #fecaca;
+  background: var(--canvas-card);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+
+/* —— 01 画布 focus：图纸最大化 + 图标工具栏 + 底部主确认 —— */
+.canvas-theme .canvas-structure-main .floorplan-workspace.is-canvas-focus {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: calc(100vh - 48px);
+  height: calc(100vh - 48px);
+  background: var(--canvas-bg);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-workspace.is-canvas-focus .floorplan-main {
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  background: #0a0a0e;
+}
+
+/* 有侧轨时：左竖栏 + 图纸 */
+.canvas-theme .canvas-structure-main .floorplan-workspace.is-canvas-focus .floorplan-main:has(.floorplan-focus-rail) {
+  grid-template-columns: 96px minmax(0, 1fr);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-workspace.is-canvas-focus .floorplan-stage {
+  min-height: 0;
+  height: 100%;
+  margin: 8px 10px 10px 0;
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.015) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 255, 255, 0.015) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.015) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.015) 75%),
+    #101014;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+  background-size: 20px 20px;
+  /* 去掉顶边框，避免顶栏「完成」下方多出一条圆角线框 */
+  border: none;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+/* 结构编辑专注态：隐藏右上角 toast，避免与「完成」叠出空框 */
+.canvas-theme.canvas-shell.is-structure-focus .canvas-toast:not(.canvas-toast-error) {
+  display: none;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-workspace.is-canvas-focus .floorplan-stage svg {
+  width: 100%;
+  height: 100%;
+  max-height: calc(100vh - 64px);
+  object-fit: contain;
+}
+
+/* 侧栏抽屉：默认收起（相对主区，从左轨旁滑出） */
+.canvas-theme .canvas-structure-main .floorplan-controls.is-focus-drawer {
+  position: absolute;
+  top: 10px;
+  left: 104px;
+  z-index: 20;
+  width: min(360px, calc(100vw - 120px));
+  max-height: calc(100% - 20px);
+  padding: 0 14px 16px;
+  overflow: auto;
+  border: 1px solid var(--canvas-border);
+  border-radius: 14px;
+  background: rgba(22, 22, 26, 0.96);
+  box-shadow: var(--canvas-shadow);
+  backdrop-filter: blur(10px);
+  transform: translateX(-12px);
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.18s ease, opacity 0.18s ease;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-controls.is-focus-drawer.is-open {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0 -14px 8px;
+  padding: 12px 14px;
+  background: rgba(22, 22, 26, 0.98);
+  border-bottom: 1px solid var(--canvas-divider);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-drawer-head strong {
+  color: var(--canvas-text);
   font-size: 13px;
-  color: #334155;
-  background: #eef2ff;
-  border-bottom: 1px solid #e2e8f0;
+}
+
+/* 抽屉内：隐藏已迁到图标栏/信息面板的重复控件；换图·尺寸·识别·实体统一在扳手里 */
+.canvas-theme .canvas-structure-main .floorplan-controls.is-focus-drawer .editor-modes,
+.canvas-theme .canvas-structure-main .floorplan-controls.is-focus-drawer .wall-stats,
+.canvas-theme .canvas-structure-main .floorplan-controls.is-focus-drawer .semantic-recognition-card,
+.canvas-theme .canvas-structure-main .floorplan-controls.is-focus-drawer .control-section-label,
+.canvas-theme .canvas-structure-main .floorplan-controls.is-focus-drawer .control-section h2,
+.canvas-theme .canvas-structure-main .floorplan-controls.is-focus-drawer .dimension-help {
+  display: none !important;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-controls.focus-panel-tools .semantic-entity-editor summary {
+  font-size: 12px;
+  color: var(--canvas-text-secondary);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-controls.focus-panel-tools .semantic-entity-groups {
+  max-height: min(320px, 40vh);
+}
+
+/* 图标按钮 */
+.canvas-theme .canvas-structure-main .floorplan-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 11px;
+  border: 1px solid var(--canvas-border);
+  background: var(--canvas-card);
+  color: var(--canvas-text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-icon-btn:hover:not(:disabled) {
+  background: var(--canvas-card-hover);
+  border-color: var(--canvas-border-strong);
+  color: var(--canvas-text);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-icon-btn.is-active {
+  color: #fff;
+  background: var(--canvas-primary-muted);
+  border-color: var(--canvas-primary-border);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* 左侧竖轨：工具图标 + 底部确认 */
+.canvas-theme .canvas-structure-main .floorplan-focus-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-height: 0;
+  padding: 10px 8px 12px;
+  border-right: 1px solid var(--canvas-border);
+  background: rgba(18, 18, 22, 0.96);
+  z-index: 5;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-toolbar {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-toolbar-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0 0 8px;
+  border-right: none;
+  border-bottom: 1px solid var(--canvas-divider);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-toolbar-group:last-of-type {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-confirm-rail {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation.is-hero.is-rail {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 6px;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--canvas-border);
+  border-radius: 12px;
+  color: var(--canvas-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation.is-hero.is-rail.confirmed {
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.14);
+  border-color: rgba(34, 197, 94, 0.45);
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation.is-hero.is-rail strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--canvas-text);
+  letter-spacing: 0.02em;
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation.is-hero.is-rail.confirmed strong {
+  color: #ecfdf5;
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation.is-hero.is-rail small {
+  display: none;
+}
+
+.canvas-theme .canvas-structure-main .semantic-review-confirmation.is-hero.is-rail input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--canvas-primary);
+  flex-shrink: 0;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-confirm-btn {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  padding: 10px 6px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+  border-radius: 12px;
+  white-space: normal;
+  letter-spacing: 0.02em;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-confirm-btn:disabled {
+  opacity: 0.4;
+}
+
+/*
+ * 信息面板相对 floorplan-main 定位
+ */
+.canvas-theme .canvas-structure-main .floorplan-focus-info-panel {
+  position: absolute;
+  top: 10px;
+  left: 104px;
+  right: auto;
+  z-index: 30;
+  width: min(340px, calc(100vw - 120px));
+  max-height: min(70vh, calc(100% - 20px));
+  overflow: auto;
+  border: 1px solid var(--canvas-border);
+  border-radius: 14px;
+  background: rgba(22, 22, 26, 0.98);
+  box-shadow: var(--canvas-shadow);
+  backdrop-filter: blur(10px);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-info-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 14px 14px;
+  color: var(--canvas-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-info-body p {
+  margin: 0;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-info-kicker {
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--canvas-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: none;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-info-body .is-warn {
+  color: #fcd34d;
+}
+
+/* 画布 focus 不展示旧横条工具栏提示（操作/宽深差仅在 ℹ 面板） */
+.canvas-theme .canvas-structure-main .floorplan-workspace.is-canvas-focus .editor-toolbar,
+.canvas-theme .canvas-structure-main .floorplan-workspace.is-canvas-focus .floorplan-focus-mode-hint {
+  display: none !important;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-info-tip {
+  color: var(--canvas-text-muted);
+  font-size: 11px;
+  padding-top: 4px;
+  border-top: 1px solid var(--canvas-divider);
+}
+
+.canvas-theme .canvas-structure-main .floorplan-focus-legend {
+  justify-content: flex-start;
+  gap: 10px;
+  font-size: 11px;
 }
 
 /* 02 布局详情坞 */
@@ -676,6 +1489,70 @@
   border: 1px solid var(--canvas-border);
   box-shadow: var(--canvas-shadow);
   background: #fff;
+  display: block;
+}
+
+/* 01：大图可点进结构编辑器 */
+.canvas-theme .canvas-layout-detail-image-btn {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 12px;
+  max-width: 100%;
+  transition:
+    transform 0.15s ease,
+    filter 0.15s ease;
+}
+
+.canvas-theme .canvas-layout-detail-image-btn:hover:not(:disabled) {
+  transform: scale(1.008);
+  filter: brightness(1.03);
+}
+
+.canvas-theme .canvas-layout-detail-image-btn:hover:not(:disabled) .canvas-layout-detail-image {
+  border-color: rgba(96, 165, 250, 0.55);
+  box-shadow:
+    0 0 0 1.5px rgba(59, 130, 246, 0.4),
+    var(--canvas-shadow);
+}
+
+.canvas-theme .canvas-layout-detail-image-btn:focus-visible {
+  outline: 2px solid rgba(96, 165, 250, 0.7);
+  outline-offset: 3px;
+}
+
+.canvas-theme .canvas-layout-detail-image-btn:disabled {
+  cursor: wait;
+  opacity: 0.85;
+}
+
+.canvas-theme .canvas-layout-detail-image-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  opacity: 0.88;
+  white-space: nowrap;
+  transition: opacity 0.15s ease;
+}
+
+.canvas-theme .canvas-layout-detail-image-btn:hover:not(:disabled)
+  .canvas-layout-detail-image-hint {
+  opacity: 1;
 }
 
 .canvas-theme .canvas-layout-detail-empty {
@@ -842,61 +1719,78 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  gap: 10px;
-  padding: 8px 10px 6px;
+  /* contact-sheet：细缝分隔，不靠每格描边 */
+  gap: 4px;
+  padding: 10px 12px 8px;
   /* 固定 2×2 / 每屏最多 4 张，格子尽量大；翻页用滚轮/按钮 */
   overflow: hidden;
 }
 
 .canvas-theme .canvas-stack-gallery-grid.is-page-4 {
-  padding-bottom: 4px;
+  padding-bottom: 6px;
 }
 
 .canvas-theme .canvas-stack-gallery-cell {
   min-width: 0;
   min-height: 0;
   padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 12px;
-  background: #12131a;
+  border: none;
+  border-radius: 0;
+  background: transparent;
   cursor: pointer;
-  overflow: hidden;
-  /* 上图下文：图完整 contain，标题不挡画面 */
-  display: flex;
-  flex-direction: column;
+  overflow: visible;
+  display: block;
+  position: relative;
   transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease,
-    transform 0.12s ease;
+    transform 0.15s ease,
+    filter 0.15s ease;
 }
 
 .canvas-theme .canvas-stack-gallery-cell.is-empty {
   cursor: default;
-  border-style: dashed;
-  border-color: rgba(255, 255, 255, 0.06);
-  background: rgba(18, 19, 26, 0.35);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px;
   pointer-events: none;
 }
 
 .canvas-theme .canvas-stack-gallery-cell:not(.is-empty):hover {
-  border-color: rgba(96, 165, 250, 0.55);
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35),
-    0 10px 28px rgba(0, 0, 0, 0.4);
-  transform: translateY(-1px);
+  z-index: 2;
+  transform: scale(1.012);
 }
 
-.canvas-theme .canvas-stack-gallery-cell.is-approved {
-  border-color: rgba(34, 197, 94, 0.45);
+.canvas-theme .canvas-stack-gallery-cell:not(.is-empty):hover .canvas-stack-gallery-frame {
+  box-shadow:
+    0 0 0 1.5px rgba(96, 165, 250, 0.55),
+    0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.canvas-theme .canvas-stack-gallery-cell:not(.is-empty):focus-visible .canvas-stack-gallery-frame {
+  box-shadow:
+    0 0 0 2px rgba(96, 165, 250, 0.7),
+    0 12px 32px rgba(0, 0, 0, 0.45);
+  outline: none;
+}
+
+.canvas-theme .canvas-stack-gallery-cell.is-approved .canvas-stack-gallery-frame {
+  box-shadow: inset 0 0 0 1.5px rgba(34, 197, 94, 0.4);
+}
+
+.canvas-theme .canvas-stack-gallery-cell.is-approved:hover .canvas-stack-gallery-frame {
+  box-shadow:
+    0 0 0 1.5px rgba(74, 222, 128, 0.65),
+    0 12px 32px rgba(0, 0, 0, 0.45);
 }
 
 .canvas-theme .canvas-stack-gallery-frame {
-  /* 必须定高：flex:1 + min-height:0，供 img 的 100% 高度解析 */
+  /* 必须定高：100% 铺满 cell，供 img 的 100% 高度解析 */
   position: relative;
-  flex: 1 1 0;
-  min-height: 0;
   width: 100%;
-  background: #0a0a0d;
+  height: 100%;
+  min-height: 0;
+  background: #0c0d12;
   overflow: hidden;
+  border-radius: 6px;
+  transition: box-shadow 0.15s ease;
 }
 
 /*
@@ -912,19 +1806,36 @@
   object-fit: contain;
   object-position: center;
   display: block;
-  background: #0a0a0d;
+  background: #0c0d12;
 }
 
+/* 图底渐变叠字：不占独立条带，4 图并排更疏朗 */
 .canvas-theme .canvas-stack-gallery-caption {
-  flex-shrink: 0;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px;
+  padding: 22px 10px 8px;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.92);
-  background: #16171e;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.94);
+  background: linear-gradient(
+    to top,
+    rgba(0, 0, 0, 0.72) 0%,
+    rgba(0, 0, 0, 0.35) 55%,
+    transparent 100%
+  );
+  border: none;
+  pointer-events: none;
+  opacity: 0.92;
+  transition: opacity 0.15s ease;
+}
+
+.canvas-theme .canvas-stack-gallery-cell:not(.is-empty):hover .canvas-stack-gallery-caption {
+  opacity: 1;
 }
 
 .canvas-theme .canvas-stack-gallery-pager {
@@ -1369,4 +2280,263 @@
   outline: none;
   border-color: rgba(96, 165, 250, 0.55);
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+/* —— 画布工作区 chrome（无首页 dock） —— */
+.canvas-theme.canvas-shell.is-app-chrome .canvas-topbar {
+  left: 12px;
+}
+
+.canvas-theme.canvas-shell.is-app-chrome .canvas-bottombar {
+  display: none;
+}
+
+.canvas-theme .cw-project-menu {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.canvas-theme .cw-project-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(280px, 40vw);
+  height: 36px;
+  padding: 0 12px 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(28, 28, 32, 0.92);
+  color: var(--canvas-text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+}
+
+.canvas-theme .cw-project-logo {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--canvas-text-secondary);
+}
+
+.canvas-theme .cw-project-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.canvas-theme .cw-project-chevron {
+  color: var(--canvas-text-muted);
+  font-size: 10px;
+}
+
+.canvas-theme .cw-canvas-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(28, 28, 32, 0.75);
+  color: var(--canvas-text-secondary);
+  font-size: 12px;
+}
+
+.canvas-theme .cw-menu-panel {
+  position: absolute;
+  z-index: 20;
+  min-width: 200px;
+  padding: 6px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(28, 28, 32, 0.98);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+}
+
+.canvas-theme .cw-project-dropdown {
+  top: calc(100% + 8px);
+  left: 0;
+}
+
+.canvas-theme .cw-menu-panel button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--canvas-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.canvas-theme .cw-menu-panel button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.canvas-theme .cw-menu-panel button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.canvas-theme .cw-menu-panel button.is-danger {
+  color: #fca5a5;
+}
+
+.canvas-theme .cw-menu-section-label {
+  padding: 8px 12px 4px;
+  color: var(--canvas-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.canvas-theme .cw-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--canvas-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.canvas-theme .cw-badge.is-new {
+  background: rgba(59, 130, 246, 0.2);
+  color: #93c5fd;
+}
+
+.canvas-theme .cw-bottom-left {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(28, 28, 32, 0.92);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px);
+}
+
+.canvas-theme .cw-bottom-center {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 8;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.canvas-theme .cw-center-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(28, 28, 32, 0.94);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px);
+}
+
+.canvas-theme .cw-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--canvas-text-secondary);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.canvas-theme .cw-icon-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--canvas-text);
+}
+
+.canvas-theme .cw-icon-btn.is-active {
+  background: rgba(59, 130, 246, 0.18);
+  color: #93c5fd;
+}
+
+.canvas-theme .cw-add-btn {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--canvas-text);
+}
+
+.canvas-theme .cw-add-btn.is-active {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+.canvas-theme .cw-bar-divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.canvas-theme .cw-zoom-wrap {
+  position: relative;
+}
+
+.canvas-theme .cw-zoom-btn {
+  width: auto;
+  min-width: 44px;
+  padding: 0 8px;
+}
+
+.canvas-theme .cw-zoom-label {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.canvas-theme .cw-zoom-menu {
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 120px;
+}
+
+.canvas-theme .cw-add-menu {
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(260px, 80vw);
+  max-height: min(60vh, 480px);
+  overflow: auto;
+}
+
+/* 结构/详情聚焦时不显示图谱 chrome */
+.canvas-theme.canvas-shell.is-structure-focus .cw-project-menu,
+.canvas-theme.canvas-shell.is-structure-focus .cw-bottom-left,
+.canvas-theme.canvas-shell.is-structure-focus .cw-bottom-center {
+  display: none;
 }

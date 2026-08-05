@@ -54,7 +54,8 @@ const assetModules: AssetModuleDefinition[] = [
   },
   {
     key: 'ai_workflow',
-    number: '03–08',
+    // 徽章圆标仅放短码；完整阶段号在文案中展示，避免「03–08」挤爆 18px 圆
+    number: '03+',
     label: 'AI 设计工作流',
     emptyHint:
       '彩平、轴侧、空间效果、风格、色调和局部修改结果会按工作流阶段自动归档到这里。',
@@ -85,7 +86,11 @@ const filterOptions: Array<{ value: AssetFilter; label: string }> = [
     .filter((module) => showLegacyTools || !legacyModuleKeys.has(module.key))
     .map((module) => ({
       value: module.key,
-      label: `${module.number} ${module.label}`,
+      // 工作流用更短筛选项，避免「03–08 AI 设计工作流」换行错乱
+      label:
+        module.key === 'ai_workflow'
+          ? '03-08 AI 工作流'
+          : `${module.number} ${module.label}`,
     })),
 ]
 
@@ -283,7 +288,44 @@ function moduleDisplayName(
   // The API keeps the original moduleName for historical compatibility. Do not
   // present the retired EFFECT_RENDER pipeline as a current production module.
   if (module.key === 'effect_render') return module.label
+  if (module.key === 'ai_workflow') return 'AI 工作流'
   return asset.moduleName?.trim() || module.label
+}
+
+/** 徽章左侧圆标文案：工作流优先显示阶段号（03–08），其它模块用固定编号 */
+function moduleBadgeCode(
+  module: AssetModuleDefinition,
+  workflowStage?: string | null,
+): string {
+  if (module.key === 'ai_workflow') {
+    const stageLabel = workflowStage
+      ? workflowStageLabels[workflowStage]
+      : null
+    // "08 局部修改" → "08"
+    const stageNo = stageLabel?.match(/^(\d{2})\b/)?.[1]
+    if (stageNo) return stageNo
+    return '03+'
+  }
+  return module.number
+}
+
+/** 徽章右侧说明：工作流显示阶段名，避免与圆标重复「03–08」 */
+function moduleBadgeCaption(
+  asset: SceneAsset,
+  module: AssetModuleDefinition,
+  workflowStage?: string | null,
+): string {
+  if (module.key === 'ai_workflow') {
+    const stageLabel = workflowStage
+      ? workflowStageLabels[workflowStage]
+      : null
+    if (stageLabel) {
+      // "08 局部修改" → "局部修改"
+      return stageLabel.replace(/^\d{2}\s*/, '') || stageLabel
+    }
+    return 'AI 工作流'
+  }
+  return moduleDisplayName(asset, module)
 }
 
 function generationModeLabel(mode: string): string {
@@ -1348,8 +1390,12 @@ export default function AssetLibrary({
                       <span
                         className={`asset-module-badge asset-module-${assetModule.key}`}
                       >
-                        <i>{assetModule.number}</i>
-                        {moduleDisplayName(asset, assetModule)}
+                        <i>{moduleBadgeCode(assetModule, workflowStage)}</i>
+                        {moduleBadgeCaption(
+                          asset,
+                          assetModule,
+                          workflowStage,
+                        )}
                       </span>
                     </div>
                     <div className="asset-card-body">
@@ -1407,9 +1453,28 @@ export default function AssetLibrary({
                 <span
                   className={`asset-module-badge asset-module-${selectedModule?.key ?? 'floorplan'}`}
                 >
-                  <i>{selectedModule?.number}</i>
+                  <i>
+                    {selectedModule
+                      ? moduleBadgeCode(
+                          selectedModule,
+                          pickString(
+                            selectedMetadata,
+                            'workflowStage',
+                            'workflow_stage',
+                          ),
+                        )
+                      : '—'}
+                  </i>
                   {selectedModule
-                    ? moduleDisplayName(detail, selectedModule)
+                    ? moduleBadgeCaption(
+                        detail,
+                        selectedModule,
+                        pickString(
+                          selectedMetadata,
+                          'workflowStage',
+                          'workflow_stage',
+                        ),
+                      )
                     : '未知来源'}
                 </span>
               </div>

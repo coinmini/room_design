@@ -13,7 +13,17 @@ import {
   pollJob,
   type Job,
 } from '../api'
+import AboutSheet from './AboutSheet'
 import FbDock from './FbDock'
+import NotifySheet, { countUnreadNotices } from './NotifySheet'
+import {
+  SCHOOL_CARDS,
+  SCHOOL_TABS,
+  SCHOOL_VISIBLE,
+  type SchoolCard,
+  type SchoolTabKey,
+} from './schoolData'
+import { SchoolDetailSheet, SchoolListSheet } from './SchoolSheets'
 import './home.css'
 
 type Project = {
@@ -73,13 +83,6 @@ const CHIP_ACTIONS = [
   { label: '创作者挑战赛', tone: 'purple' },
   { label: '加入合伙人', tone: 'cyan' },
   { label: '邀请有礼', tone: 'peach' },
-]
-
-const COURSE_CARDS = [
-  { title: '洗图 — 质感增强', en: 'FENG BAO AI', tone: 'teal' },
-  { title: '图像编辑器', en: 'Image Editor', tone: 'blue' },
-  { title: '多角度材质渲染', en: 'Multi-angle material', tone: 'purple' },
-  { title: '材质编辑器', en: 'Material Editor', tone: 'gold' },
 ]
 
 /** 精选案例（本地静态图 + 设计意向，点击后新建项目并进入画布） */
@@ -332,8 +335,65 @@ export default function HomePage() {
   const [genStatus, setGenStatus] = useState('')
   const [error, setError] = useState('')
   const [pendingDelete, setPendingDelete] = useState<Project | null>(null)
+  const [schoolTab, setSchoolTab] = useState<SchoolTabKey>('tutor')
+  const [schoolPage, setSchoolPage] = useState(0)
+  const [aboutOpen, setAboutOpen] = useState(false)
+  const [notifyOpen, setNotifyOpen] = useState(false)
+  const [notifyUnread, setNotifyUnread] = useState(() => countUnreadNotices())
+  const [schoolDetail, setSchoolDetail] = useState<SchoolCard | null>(null)
+  const [schoolListOpen, setSchoolListOpen] = useState(false)
+  const schoolViewportRef = useRef<HTMLDivElement>(null)
   const displayName =
     localStorage.getItem('room_design_display_name') || '设计师'
+
+  const schoolCards = SCHOOL_CARDS[schoolTab]
+  const schoolMaxPage = Math.max(0, schoolCards.length - SCHOOL_VISIBLE)
+
+  const scrollSchoolTo = (pageIndex: number) => {
+    const viewport = schoolViewportRef.current
+    if (!viewport) return
+    const card = viewport.querySelector('.fb-course-card') as HTMLElement | null
+    if (!card) return
+    const styles = window.getComputedStyle(viewport.querySelector('.fb-carousel-track')!)
+    const gap = Number.parseFloat(styles.columnGap || styles.gap || '12') || 12
+    const step = card.offsetWidth + gap
+    const clamped = Math.max(0, Math.min(schoolMaxPage, pageIndex))
+    viewport.scrollTo({ left: clamped * step, behavior: 'smooth' })
+    setSchoolPage(clamped)
+  }
+
+  useEffect(() => {
+    setSchoolPage(0)
+    const viewport = schoolViewportRef.current
+    if (viewport) viewport.scrollTo({ left: 0 })
+  }, [schoolTab])
+
+  // 学堂轮播自动播放
+  useEffect(() => {
+    if (schoolMaxPage <= 0) return
+    const timer = window.setInterval(() => {
+      setSchoolPage((current) => {
+        const next = current >= schoolMaxPage ? 0 : current + 1
+        const viewport = schoolViewportRef.current
+        const card = viewport?.querySelector(
+          '.fb-course-card',
+        ) as HTMLElement | null
+        if (viewport && card) {
+          const track = viewport.querySelector('.fb-carousel-track')
+          const gap = track
+            ? Number.parseFloat(
+                window.getComputedStyle(track).columnGap ||
+                  window.getComputedStyle(track).gap ||
+                  '12',
+              ) || 12
+            : 12
+          viewport.scrollTo({ left: next * (card.offsetWidth + gap), behavior: 'smooth' })
+        }
+        return next
+      })
+    }, 4200)
+    return () => window.clearInterval(timer)
+  }, [schoolTab, schoolMaxPage])
 
   attachmentsRef.current = attachments
 
@@ -651,6 +711,9 @@ export default function HomePage() {
         active="home"
         createDisabled={busy}
         onCreate={() => void createProject('未命名项目', prompt)}
+        onNotifyClick={() => setNotifyOpen(true)}
+        onAppsClick={() => setAboutOpen(true)}
+        notifyCount={notifyUnread}
       />
 
       {/* 右上用户胶囊 */}
@@ -856,53 +919,105 @@ export default function HomePage() {
           </Link>
         </section>
 
-        {/* 学堂 / 课程 — 宽于项目行 */}
-        <section className="fb-courses fb-band fb-band--md">
+        {/* 我的学堂：讲师课程 / 讲师作品 轮播 */}
+        <section className="fb-courses fb-band fb-band--md" aria-label="我的学堂">
           <div className="fb-section-head">
-            <div className="fb-tabs">
-              <button type="button" className="fb-tab is-active">
-                风暴学堂
-              </button>
-              <button type="button" className="fb-tab">
-                讲师课程
-              </button>
-              <button type="button" className="fb-tab">
-                讲师作品
-              </button>
+            <div className="fb-school-heading">
+              <h2>我的学堂</h2>
+              <div className="fb-tabs" role="tablist" aria-label="学堂分类">
+                {SCHOOL_TABS.map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={schoolTab === tab.key}
+                    className={`fb-tab${schoolTab === tab.key ? ' is-active' : ''}`}
+                    onClick={() => setSchoolTab(tab.key)}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
             </div>
             <button
               type="button"
               className="fb-section-link"
-              onClick={() =>
-                document
-                  .getElementById('fb-featured-cases')
-                  ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-              }
+              onClick={() => setSchoolListOpen(true)}
             >
-              查看全部 ›
+              全部{schoolTab === 'tutor' ? '课程' : '作品'} ›
             </button>
           </div>
-          <div className="fb-course-row">
-            {COURSE_CARDS.map((card) => (
-              <article
-                key={card.title}
-                className={`fb-course-card fb-course-card--${card.tone}`}
-              >
-                <div className="fb-course-en">{card.en}</div>
-                <div className="fb-course-title">{card.title}</div>
-              </article>
-            ))}
+
+          <div className="fb-carousel">
+            <button
+              type="button"
+              className="fb-carousel-nav fb-carousel-nav--prev"
+              aria-label="上一组"
+              disabled={schoolPage <= 0}
+              onClick={() => scrollSchoolTo(schoolPage - 1)}
+            >
+              ‹
+            </button>
+            <div className="fb-carousel-viewport" ref={schoolViewportRef}>
+              <div className="fb-carousel-track">
+                {schoolCards.map((card) => (
+                  <button
+                    key={`${schoolTab}-${card.id}`}
+                    type="button"
+                    className="fb-course-card"
+                    onClick={() => setSchoolDetail(card)}
+                  >
+                    <img
+                      className="fb-course-cover"
+                      src={card.image}
+                      alt={card.title}
+                      loading="lazy"
+                    />
+                    <div className="fb-course-shade" aria-hidden />
+                    <div className="fb-course-copy">
+                      <div className="fb-course-en">{card.en}</div>
+                      <div className="fb-course-title">{card.title}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="fb-carousel-nav fb-carousel-nav--next"
+              aria-label="下一组"
+              disabled={schoolPage >= schoolMaxPage}
+              onClick={() => scrollSchoolTo(schoolPage + 1)}
+            >
+              ›
+            </button>
           </div>
+
+          {schoolMaxPage > 0 ? (
+            <div className="fb-carousel-dots" role="tablist" aria-label="轮播页">
+              {Array.from({ length: schoolMaxPage + 1 }, (_, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  className={`fb-carousel-dot${
+                    schoolPage === index ? ' is-active' : ''
+                  }`}
+                  aria-label={`第 ${index + 1} 页`}
+                  onClick={() => scrollSchoolTo(index)}
+                />
+              ))}
+            </div>
+          ) : null}
         </section>
 
-        {/* 我的资产 — 与风暴学堂等宽 */}
+        {/* 我的资产 — 与我的学堂等宽 */}
         <section
           className="fb-assets fb-band fb-band--md"
           ref={assetsSectionRef}
         >
           <div className="fb-section-head">
             <h2>我的资产</h2>
-            <Link to="/workspace?module=assets" className="fb-section-link">
+            <Link to="/assets" className="fb-section-link">
               查看全部 ›
             </Link>
           </div>
@@ -911,7 +1026,7 @@ export default function HomePage() {
               {assets.slice(0, 8).map((asset) => (
                 <Link
                   key={asset.id}
-                  to={`/workspace?module=assets&assetId=${encodeURIComponent(asset.id)}`}
+                  to={`/assets?assetId=${encodeURIComponent(asset.id)}`}
                   className="fb-asset-card"
                   title={`打开「${asset.title}」`}
                 >
@@ -979,6 +1094,29 @@ export default function HomePage() {
           </div>
         </section>
       </main>
+
+      <AboutSheet open={aboutOpen} onClose={() => setAboutOpen(false)} />
+      <NotifySheet
+        open={notifyOpen}
+        onClose={() => setNotifyOpen(false)}
+        onUnreadChange={setNotifyUnread}
+      />
+      <SchoolDetailSheet
+        open={Boolean(schoolDetail)}
+        kind={schoolTab}
+        card={schoolDetail}
+        onClose={() => setSchoolDetail(null)}
+      />
+      <SchoolListSheet
+        open={schoolListOpen}
+        kind={schoolTab}
+        cards={schoolCards}
+        onClose={() => setSchoolListOpen(false)}
+        onSelect={(card) => {
+          setSchoolListOpen(false)
+          setSchoolDetail(card)
+        }}
+      />
 
       {pendingDelete ? (
         <div

@@ -18,11 +18,13 @@ type Props = {
   primaryActions: StageDetailPrimaryAction[]
   onOpenFull: () => void
   onDownload: () => void
+  /** 01：点击大图进入结构编辑器；02–08 一般不传 */
+  onImageClick?: () => void
 }
 
 /**
- * 02–08 图片阶段详情坞：展示当前节点图，支持批准与下游派生。
- * 不是 01 结构编辑器。
+ * 01–08 图片阶段详情坞：展示当前节点图。
+ * 01 可再点图进入结构编辑器；02–08 支持批准与下游派生。
  */
 export default function LayoutDetailDock({
   node,
@@ -32,9 +34,11 @@ export default function LayoutDetailDock({
   primaryActions,
   onOpenFull,
   onDownload,
+  onImageClick,
 }: Props) {
   const stage = normalizeStage(node)
   const meta = stageDetailMeta(stage)
+  const imageEditable = Boolean(onImageClick)
 
   const imageUrl = assetUrl(node.url || node.thumbnailUrl || undefined)
   const title = (
@@ -152,11 +156,31 @@ export default function LayoutDetailDock({
 
         <div className="canvas-layout-detail-stage">
           {imageUrl ? (
-            <img
-              src={imageUrl}
-              alt={title}
-              className="canvas-layout-detail-image"
-            />
+            imageEditable ? (
+              <button
+                type="button"
+                className="canvas-layout-detail-image-btn"
+                onClick={onImageClick}
+                disabled={busy}
+                title={meta.imageClickHint || '点击进入编辑'}
+              >
+                <img
+                  src={imageUrl}
+                  alt={title}
+                  className="canvas-layout-detail-image"
+                  draggable={false}
+                />
+                <span className="canvas-layout-detail-image-hint">
+                  {meta.imageClickHint || '点击进入编辑'}
+                </span>
+              </button>
+            ) : (
+              <img
+                src={imageUrl}
+                alt={title}
+                className="canvas-layout-detail-image"
+              />
+            )
           ) : (
             <div className="canvas-layout-detail-empty">
               当前节点没有可显示的图片 URL

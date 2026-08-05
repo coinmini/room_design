@@ -168,7 +168,7 @@ async function runLayoutFromFloorplan(
     throw new Error('户型节点缺少 assetId/jobId')
   }
   if (!stage01Approval) {
-    throw new Error('请先双击户型节点，在结构编辑器中确认结构后再生成布局')
+    throw new Error('请先打开结构编辑器并确认结构后再生成布局')
   }
   if (stage01Approval.analysisJobId !== node.jobId) {
     throw new Error('结构确认与当前节点不匹配，请重新打开编辑器确认')

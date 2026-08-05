@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
+import CanvasChrome from './CanvasChrome'
 import {
   Background,
   BackgroundVariant,
@@ -44,6 +45,7 @@ import {
   zoomPercent,
 } from './layoutMath'
 import {
+  canOpenStageDetail,
   isImageDetailStage,
   primaryDeriveActionsForStage,
 } from './stageDetail'
@@ -198,6 +200,11 @@ function ProjectCanvasInner({
   /** 画布页：把首页/向导并入单行顶栏，避免外壳再占一行 */
   showAppChrome?: boolean
 }) {
+  const navigate = useNavigate()
+  const [projectName, setProjectName] = useState('')
+  const [showMinimap, setShowMinimap] = useState(true)
+  const [snapToGrid, setSnapToGrid] = useState(false)
+  const [hideEdges, setHideEdges] = useState(false)
   const [graph, setGraph] = useState<CanvasGraph | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -446,6 +453,28 @@ function ProjectCanvasInner({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skeletonSlots, expandedStacks])
 
+  useEffect(() => {
+    let active = true
+    void (async () => {
+      try {
+        const response = await apiFetch('/v1/projects')
+        if (!response.ok || !active) return
+        const body = (await response.json()) as Array<{
+          id: string
+          name?: string
+        }>
+        const list = Array.isArray(body) ? body : []
+        const hit = list.find((p) => p.id === projectId)
+        if (active && hit?.name) setProjectName(hit.name)
+      } catch {
+        /* 名称仅装饰，失败忽略 */
+      }
+    })()
+    return () => {
+      active = false
+    }
+  }, [projectId])
+
   const loadGraph = useCallback(
     async (opts?: { fit?: boolean }) => {
       if (!projectId) return
@@ -539,23 +568,28 @@ function ProjectCanvasInner({
     return isImageDetailStage(normalizeStage(node))
   }, [])
 
-  /** 02–08：图片详情坞，自动载入当前方案图 */
+  /** 01–08：图片详情坞；01 可再点图进入结构编辑器 */
   const openLayoutDetail = useCallback((node: CanvasGraphNode) => {
     if (!node.url && !node.thumbnailUrl) {
       setNotice('该节点没有可显示的图片')
       return
     }
-    if (!isImageDetailStage(normalizeStage(node))) {
+    if (!canOpenStageDetail(normalizeStage(node))) {
       setNotice('当前节点阶段不支持图片详情页')
       return
     }
     setContextMenu(null)
-    // 关闭 01 结构编辑器，避免叠在详情上
+    // 关闭结构编辑器，避免叠在详情上
     setStructureEditor(null)
     setLayoutDetail({ ...node })
     setSelectedId(node.id)
-    const label = stageLabel(normalizeStage(node))
-    setNotice(`已打开 ${label} 详情（当前方案图已载入）`)
+    const stage = normalizeStage(node)
+    const label = stageLabel(stage)
+    setNotice(
+      stage === 'floorplan'
+        ? `已打开 ${label} 预览 · 点击大图进入结构编辑`
+        : `已打开 ${label} 详情（当前方案图已载入）`,
+    )
   }, [])
 
   /** 01 专用：结构编辑器（FloorplanModule）——禁止 LAYOUT_AI / 彩平进入 */
@@ -595,6 +629,7 @@ function ProjectCanvasInner({
       }
       setContextMenu(null)
       setLayoutDetail(null)
+      setNotice('') // 避免预览 toast 残留成右上角空框
       setStructureEditor({ jobId: node.jobId, node })
     },
     [isStage01Node, isStageImageDetailNode, openLayoutDetail],
@@ -791,8 +826,8 @@ function ProjectCanvasInner({
         }
 
         if (action === 'open_full' && node) {
-          // 02–08：打开详情坞（自动载入当前图），不要新窗口/结构编辑器
-          if (isStageImageDetailNode(node)) {
+          // 01–08：打开详情坞（自动载入当前图），不要新窗口
+          if (isStageImageDetailNode(node) || isStage01Node(node)) {
             openLayoutDetail(node)
             return
           }
@@ -825,7 +860,7 @@ function ProjectCanvasInner({
         if (action === 'generate_layout' && node?.jobId) {
           const approval = stage01ByJobRef.current[node.jobId]
           if (!approval) {
-            setNotice('请先双击节点，在结构编辑器中确认结构后再生成布局')
+            setNotice('请先在结构编辑器中确认结构后再生成布局')
             void openStructureEditor(node)
             return
           }
@@ -937,7 +972,7 @@ function ProjectCanvasInner({
               workflowStage: 'floorplan',
             },
           })
-          setNotice('识别完成：请在结构编辑器中核对房间参数并确认')
+          setNotice('识别完成：单击节点预览，再点大图进入结构编辑并确认')
         }
       } catch (value) {
         if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
@@ -993,7 +1028,7 @@ function ProjectCanvasInner({
     void runAction(action, node)
   }
 
-  // 单击堆叠 → 全屏图库；单击 02–08 方案图 → 详情坞；其它仅选中
+  // 单击堆叠 → 全屏图库；单击 01–08 方案图 → 详情坞（01 可再点图进结构编辑）
   const onNodeClick: NodeMouseHandler = useCallback(
     (_event, node) => {
       const graphNode = (node.data as CanvasNodeData).graphNode
@@ -1003,11 +1038,12 @@ function ProjectCanvasInner({
         openStackGallery(graphNode)
         return
       }
-      if (isStageImageDetailNode(graphNode) && !graphNode.isStack) {
+      if (graphNode.isStack) return
+      if (isStageImageDetailNode(graphNode) || isStage01Node(graphNode)) {
         openLayoutDetail(graphNode)
       }
     },
-    [isStageImageDetailNode, openLayoutDetail, openStackGallery],
+    [isStage01Node, isStageImageDetailNode, openLayoutDetail, openStackGallery],
   )
 
   const onNodeDoubleClick: NodeMouseHandler = useCallback(
@@ -1018,13 +1054,9 @@ function ProjectCanvasInner({
         openStackGallery(graphNode)
         return
       }
-      // 02–08 优先：进图片详情，绝不进 01 结构编辑器
-      if (isStageImageDetailNode(graphNode)) {
+      // 01–08：与单击一致进图片详情（01 再点图进结构编辑器）
+      if (isStageImageDetailNode(graphNode) || isStage01Node(graphNode)) {
         openLayoutDetail(graphNode)
-        return
-      }
-      if (isStage01Node(graphNode)) {
-        void openStructureEditor(graphNode)
         return
       }
       if (graphNode.url) {
@@ -1034,7 +1066,6 @@ function ProjectCanvasInner({
     [
       isStage01Node,
       isStageImageDetailNode,
-      openStructureEditor,
       openLayoutDetail,
       openStackGallery,
     ],
@@ -1212,157 +1243,83 @@ function ProjectCanvasInner({
         border: showAppChrome ? 'none' : '1px solid var(--canvas-border)',
       }}
     >
-      {/* 左浮 dock：对齐风暴工作台；仅导航壳，不介入 01–08 节点逻辑 */}
-      {showAppChrome && !inStackGallery ? (
-        <aside className="canvas-app-dock" aria-label="工作台导航">
-          <Link to="/" className="canvas-app-dock-plus" title="回首页新建">
-            +
-          </Link>
-          <div className="canvas-app-dock-rail">
-            <Link to="/" className="canvas-app-dock-btn" title="首页">
-              ⌂
-            </Link>
-            <span className="canvas-app-dock-btn is-active" title="画布">
-              ⧉
-            </span>
-            <Link
-              to="/workspace?module=assets"
-              className="canvas-app-dock-btn"
-              title="资产"
-            >
-              ▤
-            </Link>
-            <Link to="/workspace" className="canvas-app-dock-btn" title="工作台">
-              ▦
-            </Link>
-          </div>
-        </aside>
+      {/* 图谱模式：风暴式 chrome（左上项目 / 左下视图 / 底中 +） */}
+      {showAppChrome && !inAnyFocus && !inStackGallery ? (
+        <CanvasChrome
+          projectId={projectId}
+          projectName={projectName}
+          zoom={zoom}
+          busy={busy}
+          showMinimap={showMinimap}
+          snapToGrid={snapToGrid}
+          hideEdges={hideEdges}
+          onToggleMinimap={() => setShowMinimap((v) => !v)}
+          onToggleSnap={() => setSnapToGrid((v) => !v)}
+          onToggleHideEdges={() => setHideEdges((v) => !v)}
+          onOrganize={() => {
+            if (graphRef.current) {
+              applyGraph(graphRef.current, selectedId)
+            }
+            requestAnimationFrame(() => fitView({ padding: 0.18, duration: 280 }))
+            setNotice('已整理画布布局')
+          }}
+          onZoomIn={() => zoomIn({ duration: 120 })}
+          onZoomOut={() => zoomOut({ duration: 120 })}
+          onFitView={() => fitView({ padding: 0.18, duration: 200 })}
+          onUploadFloorplan={() => void runAction('upload_floorplan', null)}
+          onOpenAssets={() => {
+            if (onOpenAssets) onOpenAssets()
+            else navigate('/assets')
+          }}
+          onNotice={setNotice}
+        />
       ) : null}
 
-      {/* 全模式统一单行顶栏；图库打开时隐藏（StackGallery 自带栏） */}
-      <div
-        className="canvas-topbar canvas-topbar-oneline"
-        style={inStackGallery ? { display: 'none' } : undefined}
-      >
-        <div className="canvas-topbar-row">
-          {showAppChrome ? (
-            <Link to="/" className="canvas-btn canvas-topbar-btn" title="返回首页">
-              ← 首页
-            </Link>
-          ) : null}
-
-          {inStructureFocus ? (
-            <>
-              <button
-                type="button"
-                className="canvas-btn canvas-topbar-btn"
-                onClick={() =>
-                  exitStructureFocus({
-                    notice: focusConfirmed
-                      ? undefined
-                      : '已返回图谱（结构尚未确认）',
-                  })
-                }
-              >
-                ← 图谱
-              </button>
-              <span className="canvas-pill canvas-topbar-pill">
-                01 结构
-                {focusConfirmed ? ' · 已确认' : ' · 编辑中'}
-              </span>
-              <span className="canvas-topbar-title">
-                {structureEditor?.node.title ||
-                  structureEditor?.node.label ||
-                  '户型分析'}
-              </span>
-            </>
-          ) : inLocalEdit && localEdit ? (
-            <>
-              <button
-                type="button"
-                className="canvas-btn canvas-topbar-btn"
-                onClick={() => exitLocalEdit({ notice: '已退出局部修改' })}
-              >
-                ← 图谱
-              </button>
-              <span className="canvas-pill canvas-topbar-pill">
-                08 局部 · 标注中
-              </span>
-              <span className="canvas-topbar-title">
-                {(
-                  localEdit.node.label ||
-                  localEdit.node.variantId ||
-                  '色调方案'
-                ).replaceAll('_', ' ')}
-              </span>
-            </>
-          ) : inLayoutDetail && layoutDetailLive ? (
-            <>
-              <button
-                type="button"
-                className="canvas-btn canvas-topbar-btn"
-                onClick={() => exitLayoutDetail()}
-              >
-                ← 图谱
-              </button>
-              <span className="canvas-pill canvas-topbar-pill">
-                {stageLabel(normalizeStage(layoutDetailLive))} 详情
-                {layoutDetailLive.approved ? ' · 已批准' : ''}
-              </span>
-              <span className="canvas-topbar-title">
-                {(
-                  layoutDetailLive.label ||
-                  layoutDetailLive.variantId ||
-                  '方案'
-                ).replaceAll('_', ' ')}
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="canvas-pill canvas-topbar-pill">
-                {projectId.slice(0, 10)} ·{' '}
-                {loading ? '同步…' : `${graph?.nodeCount ?? 0} 节点`}
-              </span>
-            </>
-          )}
-
-          <span className="canvas-topbar-spacer" />
-
-          {!inAnyFocus ? (
-            <>
-              <input
-                className="canvas-prompt-inline canvas-topbar-prompt"
-                value={designPrompt}
-                onChange={(e) => setDesignPrompt(e.target.value)}
-                placeholder="设计意向"
-              />
-              <button
-                type="button"
-                className="canvas-btn canvas-btn-primary canvas-topbar-btn"
-                disabled={busy}
-                onClick={() => void runAction('upload_floorplan', null)}
-              >
-                + 户型
-              </button>
-              <button
-                type="button"
-                className="canvas-btn canvas-topbar-btn"
-                onClick={() => void loadGraph()}
-                disabled={busy}
-              >
-                刷新
-              </button>
-              {onOpenAssets ? (
-                <button
-                  type="button"
-                  className="canvas-btn canvas-topbar-btn"
-                  onClick={() => onOpenAssets()}
-                >
-                  资产
-                </button>
-              ) : null}
-            </>
-          ) : (
+      {/* 专注模式顶栏（结构 / 详情 / 局部）；图谱模式不占顶栏 */}
+      {inAnyFocus && !inStackGallery ? (
+        <div className="canvas-topbar canvas-topbar-oneline">
+          <div className="canvas-topbar-row">
+            {inStructureFocus ? (
+              <>
+                <span className="canvas-pill canvas-topbar-pill">
+                  01 结构
+                  {focusConfirmed ? ' · 已确认' : ' · 编辑中'}
+                </span>
+                <span className="canvas-topbar-title">
+                  {structureEditor?.node.title ||
+                    structureEditor?.node.label ||
+                    '户型分析'}
+                </span>
+              </>
+            ) : inLocalEdit && localEdit ? (
+              <>
+                <span className="canvas-pill canvas-topbar-pill">
+                  08 局部 · 标注中
+                </span>
+                <span className="canvas-topbar-title">
+                  {(
+                    localEdit.node.label ||
+                    localEdit.node.variantId ||
+                    '色调方案'
+                  ).replaceAll('_', ' ')}
+                </span>
+              </>
+            ) : layoutDetailLive ? (
+              <>
+                <span className="canvas-pill canvas-topbar-pill">
+                  {stageLabel(normalizeStage(layoutDetailLive))} 详情
+                  {layoutDetailLive.approved ? ' · 已批准' : ''}
+                </span>
+                <span className="canvas-topbar-title">
+                  {(
+                    layoutDetailLive.label ||
+                    layoutDetailLive.variantId ||
+                    '方案'
+                  ).replaceAll('_', ' ')}
+                </span>
+              </>
+            ) : null}
+            <span className="canvas-topbar-spacer" />
             <button
               type="button"
               className="canvas-btn canvas-btn-primary canvas-topbar-btn"
@@ -1382,18 +1339,9 @@ function ProjectCanvasInner({
             >
               完成
             </button>
-          )}
-
-          {showAppChrome ? (
-            <Link
-              to="/workspace?module=workflow"
-              className="canvas-btn canvas-topbar-btn"
-            >
-              向导
-            </Link>
-          ) : null}
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <div className="canvas-body">
         {/* 图谱常驻挂载，focus 时仅隐藏，保留视口 */}
@@ -1403,7 +1351,7 @@ function ProjectCanvasInner({
         >
           <ReactFlow
             nodes={nodes}
-            edges={edges}
+            edges={hideEdges ? [] : edges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             nodeTypes={canvasNodeTypes}
@@ -1416,6 +1364,8 @@ function ProjectCanvasInner({
             minZoom={0.05}
             maxZoom={16}
             zoomOnDoubleClick={false}
+            snapToGrid={snapToGrid}
+            snapGrid={[16, 16]}
             proOptions={{ hideAttribution: true }}
             style={{ width: '100%', height: '100%' }}
           >
@@ -1431,63 +1381,68 @@ function ProjectCanvasInner({
               }
               bgColor={showAppChrome ? '#181818' : '#0a0a0d'}
             />
-            <MiniMap
-              pannable
-              zoomable
-              style={{
-                background: showAppChrome ? '#1c1c20' : '#12131a',
-                border: '1px solid rgba(255,255,255,0.08)',
-                borderRadius: 12,
-              }}
-              maskColor="rgba(10,10,13,0.55)"
-              nodeColor={() => 'rgba(255,255,255,0.22)'}
-            />
-            <Controls showInteractive={false} />
+            {showMinimap ? (
+              <MiniMap
+                pannable
+                zoomable
+                style={{
+                  background: showAppChrome ? '#1c1c20' : '#12131a',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 12,
+                }}
+                maskColor="rgba(10,10,13,0.55)"
+                nodeColor={() => 'rgba(255,255,255,0.22)'}
+              />
+            ) : null}
+            {/* 缩放/控件改由 CanvasChrome 左下与底中提供 */}
+            {!showAppChrome ? <Controls showInteractive={false} /> : null}
           </ReactFlow>
 
-          <div className="canvas-bottombar">
-            <div className="canvas-toolbar canvas-bottombar-toolbar">
-              <button
-                type="button"
-                className="canvas-btn canvas-topbar-btn"
-                title="缩小"
-                onClick={() => zoomOut({ duration: 120 })}
-              >
-                −
-              </button>
-              <button
-                type="button"
-                className="canvas-btn canvas-topbar-btn"
-                title="适应画布 · 滚轮最高 1600%"
-                onClick={() => fitView({ padding: 0.18 })}
-              >
-                {zoomPercent(zoom)}%
-              </button>
-              <button
-                type="button"
-                className="canvas-btn canvas-topbar-btn"
-                title="放大"
-                onClick={() => zoomIn({ duration: 120 })}
-              >
-                +
-              </button>
-              {selectedNode ? (
-                <span className="canvas-pill canvas-topbar-pill">
-                  已选{' '}
-                  {(selectedNode.label || selectedNode.variantId || '')
-                    .replaceAll('_', ' ')
-                    .slice(0, 18)}
-                </span>
-              ) : (
-                <span className="canvas-pill canvas-topbar-pill canvas-muted-pill">
-                  右键上传 · 单击 02–08 · 双击 01
-                </span>
-              )}
-              {busy ? (
-                <span className="canvas-pill canvas-topbar-pill">执行中…</span>
-              ) : null}
+          {!showAppChrome ? (
+            <div className="canvas-bottombar">
+              <div className="canvas-toolbar canvas-bottombar-toolbar">
+                <button
+                  type="button"
+                  className="canvas-btn canvas-topbar-btn"
+                  title="缩小"
+                  onClick={() => zoomOut({ duration: 120 })}
+                >
+                  −
+                </button>
+                <button
+                  type="button"
+                  className="canvas-btn canvas-topbar-btn"
+                  title="适应画布 · 滚轮最高 1600%"
+                  onClick={() => fitView({ padding: 0.18 })}
+                >
+                  {zoomPercent(zoom)}%
+                </button>
+                <button
+                  type="button"
+                  className="canvas-btn canvas-topbar-btn"
+                  title="放大"
+                  onClick={() => zoomIn({ duration: 120 })}
+                >
+                  +
+                </button>
+                {selectedNode ? (
+                  <span className="canvas-pill canvas-topbar-pill">
+                    已选{' '}
+                    {(selectedNode.label || selectedNode.variantId || '')
+                      .replaceAll('_', ' ')
+                      .slice(0, 18)}
+                  </span>
+                ) : (
+                  <span className="canvas-pill canvas-topbar-pill canvas-muted-pill">
+                    右键上传 · 单击节点放大
+                  </span>
+                )}
+                {busy ? (
+                  <span className="canvas-pill canvas-topbar-pill">执行中…</span>
+                ) : null}
+              </div>
             </div>
-          </div>
+          ) : null}
 
           {!loading &&
           graph &&
@@ -1514,46 +1469,9 @@ function ProjectCanvasInner({
           ) : null}
         </div>
 
-        {/* 01 结构专注坞：深色壳 + 亮色绘图区，不跳路由 */}
+        {/* 01 结构专注坞：全宽主区最大化图纸（返回在顶栏） */}
         {structureEditor ? (
-          <div className="canvas-structure-dock">
-            <aside className="canvas-structure-rail">
-              <div className="canvas-structure-rail-title">画布上下文</div>
-              <div className="canvas-pill" style={{ width: '100%', justifyContent: 'center' }}>
-                阶段 01
-              </div>
-              <p className="canvas-secondary" style={{ fontSize: 12, lineHeight: 1.5 }}>
-                正在编辑节点结构，确认后返回同一图谱继续生成布局。
-              </p>
-              {structureEditor.node.url || structureEditor.node.thumbnailUrl ? (
-                <img
-                  className="canvas-structure-thumb"
-                  src={assetUrl(
-                    structureEditor.node.thumbnailUrl ||
-                      structureEditor.node.url ||
-                      undefined,
-                  )}
-                  alt=""
-                />
-              ) : null}
-              <button
-                type="button"
-                className="canvas-btn"
-                style={{ width: '100%' }}
-                onClick={() =>
-                  exitStructureFocus({
-                    notice: focusConfirmed
-                      ? undefined
-                      : '已返回图谱（结构尚未确认）',
-                  })
-                }
-              >
-                ← 返回图谱
-              </button>
-              <p className="canvas-muted" style={{ fontSize: 11 }}>
-                Esc 也可返回
-              </p>
-            </aside>
+          <div className="canvas-structure-dock is-fullwidth">
             <div className="canvas-structure-main">
               <FloorplanModule
                 key={structureEditor.jobId}
@@ -1596,7 +1514,7 @@ function ProjectCanvasInner({
           </div>
         ) : null}
 
-        {/* 02–07 方案详情坞：自动载入当前方案图 */}
+        {/* 01–08 方案详情坞：01 点图进结构编辑；02–08 批准/派生 */}
         {layoutDetailLive && !localEdit ? (
           <LayoutDetailDock
             node={layoutDetailLive}
@@ -1610,6 +1528,17 @@ function ProjectCanvasInner({
               const stage = normalizeStage(target)
               const runDerived = (action: string) => {
                 void (async () => {
+                  // 01：编辑结构 / 生成布局
+                  if (action === 'view_structure' || action === 'edit_structure') {
+                    setLayoutDetail(null)
+                    await openStructureEditor(target)
+                    return
+                  }
+                  if (action === 'generate_layout') {
+                    exitLayoutDetail({ focusNodeId: target.id })
+                    await runAction('generate_layout', target)
+                    return
+                  }
                   // 先尽量批准，再派生（busy 用 ref，可连续 await）
                   if (!target.approved) {
                     await runAction('approve', target)
@@ -1627,7 +1556,13 @@ function ProjectCanvasInner({
               return primaryDeriveActionsForStage(stage).map((item) => ({
                 ...item,
                 key: item.action,
-                disabled: !target.assetId,
+                disabled:
+                  item.action === 'view_structure' ||
+                  item.action === 'edit_structure'
+                    ? !target.jobId
+                    : item.action === 'generate_layout'
+                      ? !target.jobId
+                      : !target.assetId,
                 onClick: () => runDerived(item.action),
               }))
             })()}
@@ -1644,6 +1579,15 @@ function ProjectCanvasInner({
             onDownload={() => {
               void runAction('download', layoutDetailLive)
             }}
+            onImageClick={
+              normalizeStage(layoutDetailLive) === 'floorplan'
+                ? () => {
+                    const target = layoutDetailLive
+                    setLayoutDetail(null)
+                    void openStructureEditor(target)
+                  }
+                : undefined
+            }
           />
         ) : null}
 

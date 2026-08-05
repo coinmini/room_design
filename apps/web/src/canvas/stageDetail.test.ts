@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canOpenStageDetail,
   isImageDetailStage,
   primaryDeriveActionsForStage,
   stageDetailMeta,
@@ -7,7 +8,7 @@ import {
 import { normalizeStage } from './types'
 
 describe('stageDetail', () => {
-  it('marks 02–08 as image detail stages', () => {
+  it('marks 02–08 as image detail stages; 01 opens detail separately', () => {
     expect(isImageDetailStage('layout')).toBe(true)
     expect(isImageDetailStage('color_plan')).toBe(true)
     expect(isImageDetailStage('axonometric')).toBe(true)
@@ -17,9 +18,16 @@ describe('stageDetail', () => {
     expect(isImageDetailStage('local_edit')).toBe(true)
     expect(isImageDetailStage('floorplan')).toBe(false)
     expect(isImageDetailStage('other')).toBe(false)
+    expect(canOpenStageDetail('floorplan')).toBe(true)
+    expect(canOpenStageDetail('layout')).toBe(true)
+    expect(canOpenStageDetail('other')).toBe(false)
   })
 
   it('provides derive actions per stage chain', () => {
+    expect(primaryDeriveActionsForStage('floorplan').map((a) => a.action)).toEqual([
+      'view_structure',
+      'generate_layout',
+    ])
     expect(primaryDeriveActionsForStage('layout').map((a) => a.action)).toEqual([
       'generate_color_plan',
     ])
@@ -41,7 +49,9 @@ describe('stageDetail', () => {
     expect(primaryDeriveActionsForStage('local_edit')).toEqual([])
   })
 
-  it('hides approve for local_edit only', () => {
+  it('hides approve for floorplan and local_edit', () => {
+    expect(stageDetailMeta('floorplan').showApprove).toBe(false)
+    expect(stageDetailMeta('floorplan').imageClickHint).toBeTruthy()
     expect(stageDetailMeta('layout').showApprove).toBe(true)
     expect(stageDetailMeta('axonometric').showApprove).toBe(true)
     expect(stageDetailMeta('local_edit').showApprove).toBe(false)

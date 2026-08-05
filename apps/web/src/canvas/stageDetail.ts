@@ -1,5 +1,6 @@
 /**
- * 02–08 图片阶段详情坞：元信息 + 下游主操作。
+ * 01–08 图片阶段详情坞：元信息 + 下游主操作。
+ * 01 先放大预览，再点图进入结构编辑器；02–08 为方案图详情。
  */
 
 export type StageDetailMeta = {
@@ -7,8 +8,10 @@ export type StageDetailMeta = {
   pill: string
   description: string
   footer: string
-  /** 是否展示「批准」按钮（08 局部结果一般不可再批） */
+  /** 是否展示「批准」按钮（01 用结构确认、08 末端结果一般不批） */
   showApprove: boolean
+  /** 主图是否可点进入编辑（01 结构编辑） */
+  imageClickHint?: string
 }
 
 export type StageDeriveAction = {
@@ -17,7 +20,7 @@ export type StageDeriveAction = {
   primary?: boolean
 }
 
-/** 单击即可进入图片详情坞的阶段（02–08，不含 01 结构） */
+/** 单击即可进入图片详情坞的阶段（02–08 方案图；01 单独用 canOpenStageDetail） */
 export const IMAGE_DETAIL_STAGES = [
   'layout',
   'color_plan',
@@ -34,7 +37,21 @@ export function isImageDetailStage(stage: string): stage is ImageDetailStage {
   return (IMAGE_DETAIL_STAGES as readonly string[]).includes(stage)
 }
 
-const STAGE_META: Record<ImageDetailStage, StageDetailMeta> = {
+/** 01–08：均可先放大预览（01 再进结构编辑器） */
+export function canOpenStageDetail(stage: string): boolean {
+  return stage === 'floorplan' || isImageDetailStage(stage)
+}
+
+const STAGE_META: Record<string, StageDetailMeta> = {
+  floorplan: {
+    code: '01 / STRUCTURE DETAIL',
+    pill: '阶段 01 · 结构识别',
+    description:
+      '已载入户型识别结果。点击大图进入结构编辑器，核对房间参数并确认后可生成布局（02）。',
+    footer: '单击大图或点「编辑结构」进入编辑模式；确认结构后返回图谱再生成布局。',
+    showApprove: false,
+    imageClickHint: '点击进入结构编辑',
+  },
   layout: {
     code: '02 / LAYOUT DETAIL',
     pill: '阶段 02 · 平面布局',
@@ -87,7 +104,7 @@ const STAGE_META: Record<ImageDetailStage, StageDetailMeta> = {
 }
 
 export function stageDetailMeta(stage: string): StageDetailMeta {
-  if (isImageDetailStage(stage)) return STAGE_META[stage]
+  if (STAGE_META[stage]) return STAGE_META[stage]
   return {
     code: `${stage.toUpperCase()} DETAIL`,
     pill: stage,
@@ -97,9 +114,21 @@ export function stageDetailMeta(stage: string): StageDetailMeta {
   }
 }
 
-/** 各阶段详情页主按钮：派生下一阶段 */
+/** 各阶段详情页主按钮：01 编辑结构 / 02–08 派生下一阶段 */
 export function primaryDeriveActionsForStage(stage: string): StageDeriveAction[] {
   switch (stage) {
+    case 'floorplan':
+      return [
+        {
+          action: 'view_structure',
+          label: '编辑结构',
+          primary: true,
+        },
+        {
+          action: 'generate_layout',
+          label: '生成布局（02）',
+        },
+      ]
     case 'layout':
       return [
         {

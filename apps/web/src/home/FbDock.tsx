@@ -4,7 +4,6 @@ type DockKey =
   | 'home'
   | 'projects'
   | 'assets'
-  | 'explore'
   | 'notify'
   | 'learn'
   | 'apps'
@@ -19,11 +18,11 @@ type DockItem = {
 const DOCK_ORDER: DockItem[] = [
   { key: 'home', title: '首页', to: '/' },
   { key: 'projects', title: '项目', to: '/projects' },
-  { key: 'assets', title: '资产', to: '/workspace?module=assets' },
-  { key: 'explore', title: '探索' },
+  { key: 'assets', title: '资产', to: '/assets' },
   { key: 'notify', title: '通知' },
   { key: 'learn', title: '学堂' },
-  { key: 'apps', title: '应用', to: '/workspace' },
+  // 最下方「应用」打开关于/协议面板，不跳转旧工作台
+  { key: 'apps', title: '应用' },
 ]
 
 /** 与 fengbaoch 左侧栏一致的描边图标（24 viewBox） */
@@ -62,14 +61,6 @@ function DockIcon({ name }: { name: DockKey }) {
           <path d="m7.2 16.2 3.1-3.4 2.4 2.5 2.3-2.7 3.1 3.6" />
         </svg>
       )
-    case 'explore':
-      return (
-        <svg {...common}>
-          <circle cx="12" cy="12" r="8" />
-          <path d="M3.8 12h16.4" />
-          <path d="M12 4c2.1 2.4 3.2 4.9 3.2 8s-1.1 5.6-3.2 8c-2.1-2.4-3.2-4.9-3.2-8s1.1-5.6 3.2-8Z" />
-        </svg>
-      )
     case 'notify':
       return (
         <svg {...common}>
@@ -105,6 +96,12 @@ type FbDockProps = {
   active?: DockKey
   onCreate?: () => void
   createDisabled?: boolean
+  /** 点击「通知」：打开消息面板 */
+  onNotifyClick?: () => void
+  /** 点击最下方「应用」：打开关于 / 协议 / 客服 */
+  onAppsClick?: () => void
+  /** 未读通知数，>0 时在铃铛上显示角标 */
+  notifyCount?: number
 }
 
 /**
@@ -115,6 +112,9 @@ export default function FbDock({
   active = 'home',
   onCreate,
   createDisabled,
+  onNotifyClick,
+  onAppsClick,
+  notifyCount = 0,
 }: FbDockProps) {
   const items = DOCK_ORDER.map((item) => ({
     ...item,
@@ -148,6 +148,13 @@ export default function FbDock({
       <div className="fb-dock-rail">
         {items.map((item) => {
           const showDividerBefore = item.key === 'notify'
+          const onItemClick =
+            item.key === 'apps'
+              ? () => onAppsClick?.()
+              : item.key === 'notify'
+                ? () => onNotifyClick?.()
+                : undefined
+          const showBadge = item.key === 'notify' && notifyCount > 0
           return (
             <div key={item.key} className="fb-dock-slot">
               {showDividerBefore ? (
@@ -166,11 +173,23 @@ export default function FbDock({
               ) : (
                 <button
                   type="button"
-                  className={`fb-dock-item${item.active ? ' is-active' : ''}`}
+                  className={`fb-dock-item${item.active ? ' is-active' : ''}${
+                    showBadge ? ' has-badge' : ''
+                  }`}
                   title={item.title}
-                  aria-label={item.title}
+                  aria-label={
+                    showBadge
+                      ? `${item.title}，${notifyCount} 条未读`
+                      : item.title
+                  }
+                  onClick={onItemClick}
                 >
                   <DockIcon name={item.key} />
+                  {showBadge ? (
+                    <span className="fb-dock-badge" aria-hidden>
+                      {notifyCount > 9 ? '9+' : notifyCount}
+                    </span>
+                  ) : null}
                 </button>
               )}
             </div>

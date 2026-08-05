@@ -655,6 +655,26 @@ main {
   border-left-color: var(--red);
 }
 
+.notice-success {
+  color: #065f46;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  border-left-color: #10b981;
+}
+
+.file-drop.is-loaded-from-canvas {
+  cursor: default;
+  border-style: solid;
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+
+.file-drop.is-loaded-from-canvas:hover {
+  background: #f0fdf4;
+  border-color: #86efac;
+  box-shadow: none;
+}
+
 .job-running-notice,
 .job-error-notice {
   display: grid;
@@ -2629,10 +2649,13 @@ textarea {
   box-shadow: var(--shadow-sm);
 }
 
-.editor-toolbar > div:first-child {
+.editor-toolbar > div:first-child,
+.editor-toolbar-main {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .editor-toolbar strong {
@@ -2643,6 +2666,24 @@ textarea {
 .editor-toolbar span {
   color: #82939f;
   font-size: 10px;
+}
+
+.editor-toolbar.has-scale-warning {
+  border-color: #ead8ab;
+  background: linear-gradient(
+    90deg,
+    #fff8e8 0%,
+    rgba(255, 255, 255, 0.96) 42%
+  );
+}
+
+.scale-warning-inline {
+  display: block;
+  margin-top: 2px;
+  color: #7e5a29;
+  font-size: 11px;
+  line-height: 1.45;
+  font-weight: 600;
 }
 
 .legend {
