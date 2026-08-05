@@ -46,6 +46,114 @@ type ContextMenuState = {
   node: CanvasGraphNode | null
 } | null
 
+/** 生成中占位：一点击就显示，避免「后台在跑、界面没反应」 */
+type SkeletonSlot = {
+  id: string
+  groupId: string
+  label: string
+  /** 落在哪一列（layout / color_plan …） */
+  workflowStage: string
+  parentAssetId?: string
+  /** 画布父节点 id，用于连线 */
+  parentNodeId?: string
+  /** 绑定到真实 job 后写入 */
+  jobId?: string
+}
+
+function expectedSkeletonSlots(
+  action: string,
+  parent: CanvasGraphNode | null,
+): Omit<SkeletonSlot, 'id' | 'groupId'>[] {
+  const parentAssetId = parent?.assetId || undefined
+  const parentNodeId = parent?.id
+  if (action === 'generate_layout') {
+    return [
+      {
+        label: '布局方案 1',
+        workflowStage: 'layout',
+        parentAssetId,
+        parentNodeId,
+      },
+      {
+        label: '布局方案 2',
+        workflowStage: 'layout',
+        parentAssetId,
+        parentNodeId,
+      },
+    ]
+  }
+  if (action === 'generate_color_plan') {
+    return [1, 2, 3, 4].map((n) => ({
+      label: `彩平方案 ${n}`,
+      workflowStage: 'color_plan',
+      parentAssetId,
+      parentNodeId,
+    }))
+  }
+  if (action === 'generate_axonometric') {
+    return [1, 2, 3].map((n) => ({
+      label: `轴侧 ${n}`,
+      workflowStage: 'axonometric',
+      parentAssetId,
+      parentNodeId,
+    }))
+  }
+  if (action === 'generate_style_scheme') {
+    return [1, 2, 3].map((n) => ({
+      label: `风格 ${n}`,
+      workflowStage: 'style_scheme',
+      parentAssetId,
+      parentNodeId,
+    }))
+  }
+  if (action === 'generate_tone_scheme') {
+    return [1, 2, 3].map((n) => ({
+      label: `色调 ${n}`,
+      workflowStage: 'tone_scheme',
+      parentAssetId,
+      parentNodeId,
+    }))
+  }
+  if (action === 'generate_space_render') {
+    return [
+      {
+        label: '分空间生成中…',
+        workflowStage: 'space_render',
+        parentAssetId,
+        parentNodeId,
+      },
+    ]
+  }
+  if (action === 'local_edit') {
+    return [
+      {
+        label: '局部修改中…',
+        workflowStage: 'local_edit',
+        parentAssetId,
+        parentNodeId,
+      },
+    ]
+  }
+  if (action === 'upload_floorplan_submit' || action === 'reanalyze') {
+    return [
+      {
+        label: '户型识别中…',
+        workflowStage: 'floorplan',
+        parentAssetId,
+        parentNodeId,
+      },
+    ]
+  }
+  return [
+    {
+      label: '生成中…',
+      workflowStage: 'other',
+      parentAssetId,
+      parentNodeId,
+    },
+  ]
+}
+
 function ProjectCanvasInner({
   projectId,
   onOpenAssets,
@@ -61,12 +169,11 @@ function ProjectCanvasInner({
   const [contextMenu, setContextMenu] = useState<ContextMenuState>(null)
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const [busyAction, setBusyAction] = useState<string | null>(null)
   const [designPrompt, setDesignPrompt] = useState('')
   const [panel, setPanel] = useState<StagePanelRequest | null>(null)
   const [panelNode, setPanelNode] = useState<CanvasGraphNode | null>(null)
-  const [skeletonJobs, setSkeletonJobs] = useState<
-    Array<{ jobId: string; label: string; parentId?: string }>
-  >([])
+  const [skeletonSlots, setSkeletonSlots] = useState<SkeletonSlot[]>([])
   const [downstreamByAsset, setDownstreamByAsset] = useState<Set<string>>(
     () => new Set(),
   )
@@ -115,7 +222,11 @@ function ProjectCanvasInner({
   )
 
   const applyGraph = useCallback(
-    (body: CanvasGraph, selected: string | null) => {
+    (
+      body: CanvasGraph,
+      selected: string | null,
+      skeletons: SkeletonSlot[] = skeletonSlots,
+    ) => {
       setGraph(body)
       const parentIds = new Set<string>()
       for (const edge of body.edges) {
@@ -123,23 +234,36 @@ function ProjectCanvasInner({
       }
       setDownstreamByAsset(parentIds)
 
-      const withSkeletons: CanvasGraphNode[] = [
-        ...body.nodes,
-        ...skeletonJobs.map((item) => ({
-          id: `skeleton:${item.jobId}`,
-          jobId: item.jobId,
-          variantId: '_batch',
-          label: item.label,
-          title: item.label,
-          isSkeleton: true,
-          workflowStage: 'other',
-          parentAssetId: item.parentId,
-        })),
-      ]
+      const skeletonNodes: CanvasGraphNode[] = skeletons.map((item) => ({
+        id: `skeleton:${item.id}`,
+        jobId: item.jobId,
+        variantId: item.id,
+        label: item.label,
+        title: item.label,
+        isSkeleton: true,
+        workflowStage: item.workflowStage,
+        parentAssetId: item.parentAssetId,
+        moduleKey:
+          item.workflowStage === 'layout'
+            ? 'layout'
+            : item.workflowStage === 'floorplan'
+              ? 'floorplan'
+              : 'ai_workflow',
+      }))
 
+      const withSkeletons: CanvasGraphNode[] = [...body.nodes, ...skeletonNodes]
       const laid = layoutGraphByStage(withSkeletons)
       const flowEdges = resolveFlowEdges(body.nodes, body.edges)
       const confirmedJobs = stage01ByJobRef.current
+
+      // 父节点 → 骨架占位连线
+      const skeletonEdges = skeletons
+        .filter((s) => s.parentNodeId)
+        .map((s) => ({
+          id: `sk-edge:${s.id}`,
+          source: s.parentNodeId!,
+          target: `skeleton:${s.id}`,
+        }))
 
       setNodes(
         laid.map((item) => {
@@ -157,7 +281,7 @@ function ProjectCanvasInner({
           const data: CanvasNodeData = {
             graphNode: item,
             actionCtx,
-            showActions: selected === item.id,
+            showActions: selected === item.id && !item.isSkeleton,
             onAction: (action: string, node: CanvasGraphNode) =>
               actionRef.current(action, node),
           }
@@ -167,21 +291,43 @@ function ProjectCanvasInner({
             position: { x: item.x, y: item.y },
             data,
             style: { width: item.w },
+            draggable: !item.isSkeleton,
           }
         }),
       )
       setEdges(
-        flowEdges.map((edge) => ({
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          type: 'default',
-          style: { stroke: 'rgba(255,255,255,0.22)', strokeWidth: 1.5 },
-        })),
+        [
+          ...flowEdges.map((edge) => ({
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            type: 'default' as const,
+            style: { stroke: 'rgba(255,255,255,0.22)', strokeWidth: 1.5 },
+          })),
+          ...skeletonEdges.map((edge) => ({
+            id: edge.id,
+            source: edge.source,
+            target: edge.target,
+            type: 'default' as const,
+            animated: true,
+            style: {
+              stroke: 'rgba(59,130,246,0.55)',
+              strokeWidth: 1.5,
+              strokeDasharray: '6 4',
+            },
+          })),
+        ],
       )
     },
-    [setNodes, setEdges, skeletonJobs],
+    [setNodes, setEdges, skeletonSlots],
   )
+
+  // 骨架一更新就重排节点（不必等 loadGraph）
+  useEffect(() => {
+    if (!graph) return
+    applyGraph(graph, selectedId, skeletonSlots)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skeletonSlots])
 
   const loadGraph = useCallback(
     async (opts?: { fit?: boolean }) => {
@@ -258,18 +404,30 @@ function ProjectCanvasInner({
     setStructureEditor({ jobId: node.jobId, node })
   }, [])
 
-  const trackJob = useCallback((job: Job, label: string, parentId?: string) => {
-    if (['QUEUED', 'RUNNING'].includes(job.status)) {
-      setSkeletonJobs((current) => {
-        if (current.some((item) => item.jobId === job.id)) return current
-        return [...current, { jobId: job.id, label, parentId }]
-      })
-    }
-    if (['SUCCEEDED', 'FAILED', 'CANCELED'].includes(job.status)) {
-      setSkeletonJobs((current) =>
-        current.filter((item) => item.jobId !== job.id),
-      )
-    }
+  const clearSkeletonGroup = useCallback((groupId: string) => {
+    setSkeletonSlots((current) => current.filter((s) => s.groupId !== groupId))
+  }, [])
+
+  const spawnSkeletons = useCallback(
+    (action: string, parent: CanvasGraphNode | null): string => {
+      const groupId = `gen-${action}-${Date.now()}`
+      const slots = expectedSkeletonSlots(action, parent).map((slot, index) => ({
+        ...slot,
+        id: `${groupId}-${index + 1}`,
+        groupId,
+      }))
+      setSkeletonSlots((current) => [...current, ...slots])
+      return groupId
+    },
+    [],
+  )
+
+  const bindSkeletonsToJob = useCallback((groupId: string, job: Job) => {
+    setSkeletonSlots((current) =>
+      current.map((slot) =>
+        slot.groupId === groupId ? { ...slot, jobId: job.id } : slot,
+      ),
+    )
   }, [])
 
   const runAction = useCallback(
@@ -280,7 +438,31 @@ function ProjectCanvasInner({
     ) => {
       setContextMenu(null)
       setNotice('')
+
+      // 防连点：同一生成动作进行中直接提示
+      if (
+        busy &&
+        [
+          'generate_layout',
+          'generate_color_plan',
+          'generate_axonometric',
+          'generate_space_render',
+          'generate_style_scheme',
+          'generate_tone_scheme',
+          'local_edit',
+          'upload_floorplan_submit',
+        ].includes(action)
+      ) {
+        setNotice(
+          busyAction
+            ? `「${actionLabel(busyAction)}」进行中，请勿重复点击`
+            : '任务进行中，请勿重复点击',
+        )
+        return
+      }
+
       setBusy(true)
+      let skeletonGroupId: string | null = null
       try {
         if (action === 'open_full' && node?.url) {
           window.open(assetUrl(node.url), '_blank', 'noopener,noreferrer')
@@ -317,6 +499,31 @@ function ProjectCanvasInner({
           }
         }
 
+        // 点击即出占位框图（布局固定 2 个方案框）
+        const needsSkeleton = [
+          'generate_layout',
+          'generate_color_plan',
+          'generate_axonometric',
+          'generate_space_render',
+          'generate_style_scheme',
+          'generate_tone_scheme',
+          'local_edit',
+          'upload_floorplan_submit',
+          'reanalyze',
+        ].includes(action)
+        if (needsSkeleton) {
+          setBusyAction(action)
+          skeletonGroupId = spawnSkeletons(action, node)
+          const n = expectedSkeletonSlots(action, node).length
+          setNotice(
+            action === 'generate_layout'
+              ? `正在生成 ${n} 个布局方案…（图中已显示占位框）`
+              : `正在${actionLabel(action)}…`,
+          )
+          // 让出一帧，确保骨架先上屏
+          await new Promise((r) => requestAnimationFrame(() => r(undefined)))
+        }
+
         const result = await executeCanvasAction({
           projectId,
           node,
@@ -325,24 +532,29 @@ function ProjectCanvasInner({
             designPrompt,
             ...extras,
           },
-          onJob: (job) =>
-            trackJob(
-              job,
-              actionLabel(action),
-              node?.assetId || undefined,
-            ),
+          onJob: (job) => {
+            if (skeletonGroupId) bindSkeletonsToJob(skeletonGroupId, job)
+            if (['SUCCEEDED', 'FAILED', 'CANCELED'].includes(job.status)) {
+              if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
+            }
+          },
           onNeedPanel: (next) => {
+            // 需要弹窗时先清占位（用户还在填参数）
+            if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
+            skeletonGroupId = null
             setPanel(next)
             setPanelNode(node)
           },
         })
 
         if (!result.ok) {
+          if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
           setPanel(result.needPanel)
           setPanelNode(node)
           return
         }
 
+        if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
         setNotice(result.message)
         setPanel(null)
         setPanelNode(null)
@@ -368,6 +580,7 @@ function ProjectCanvasInner({
           setNotice('识别完成：请在结构编辑器中核对房间参数并确认')
         }
       } catch (value) {
+        if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
         const message = value instanceof Error ? value.message : '操作失败'
         setNotice(message)
         if (
@@ -395,15 +608,20 @@ function ProjectCanvasInner({
         }
       } finally {
         setBusy(false)
+        setBusyAction(null)
       }
     },
     [
       projectId,
       designPrompt,
-      trackJob,
       loadGraph,
       setNodes,
       openStructureEditor,
+      busy,
+      busyAction,
+      spawnSkeletons,
+      bindSkeletonsToJob,
+      clearSkeletonGroup,
     ],
   )
 
@@ -723,7 +941,10 @@ function ProjectCanvasInner({
             </div>
           </div>
 
-          {!loading && graph && graph.nodeCount === 0 && !skeletonJobs.length ? (
+          {!loading &&
+          graph &&
+          graph.nodeCount === 0 &&
+          !skeletonSlots.length ? (
             <div className="canvas-empty">
               <div className="canvas-card" style={{ padding: 28, textAlign: 'center' }}>
                 <div style={{ fontWeight: 600, marginBottom: 8 }}>从户型开始</div>

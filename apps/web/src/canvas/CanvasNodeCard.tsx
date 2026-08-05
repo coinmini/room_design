@@ -151,12 +151,21 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
               width: '86%',
               height: '78%',
               borderRadius: 8,
+              border: '1px dashed rgba(59,130,246,0.45)',
               background:
                 'linear-gradient(90deg, var(--canvas-skeleton), var(--canvas-skeleton-shine), var(--canvas-skeleton))',
               backgroundSize: '200% 100%',
               animation: 'canvas-shimmer 1.2s ease-in-out infinite',
+              display: 'grid',
+              placeItems: 'center',
+              color: 'var(--canvas-text-muted)',
+              fontSize: 11,
+              gap: 6,
             }}
-          />
+          >
+            <span style={{ opacity: 0.85 }}>生成中…</span>
+            <span style={{ fontSize: 10, opacity: 0.55 }}>请稍候</span>
+          </div>
         ) : thumb ? (
           <img
             src={thumb}
