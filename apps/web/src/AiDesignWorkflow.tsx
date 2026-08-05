@@ -1926,10 +1926,32 @@ export default function AiDesignWorkflow() {
 
   return (
     <div className="page ai-workflow-page">
+      <div
+        className="notice"
+        style={{
+          margin: '0 0 12px',
+          padding: '10px 14px',
+          borderRadius: 10,
+          border: '1px solid rgba(245,158,11,0.45)',
+          background: 'rgba(245,158,11,0.12)',
+          color: 'inherit',
+          fontSize: 13,
+          lineHeight: 1.5,
+        }}
+        role="status"
+      >
+        <strong>此页面为历史 8 阶段向导（已废弃）</strong>
+        。生产主路径请使用{' '}
+        <a href="/" style={{ color: '#3b82f6', fontWeight: 650 }}>
+          首页 → 项目 → 无限画布
+        </a>
+        。默认导航已隐藏本页；仅兼容调试时通过{' '}
+        <code>VITE_SHOW_LEGACY_TOOLS=true</code> 打开。
+      </div>
       <header className="module-header">
         <div>
-          <span className="eyebrow">PROJECT WORKFLOW · AI NATIVE</span>
-          <h1>AI 设计工作流</h1>
+          <span className="eyebrow">PROJECT WORKFLOW · LEGACY</span>
+          <h1>AI 设计工作流（废弃）</h1>
           <p>
             在一个工作台内完成标注、布局、彩平、轴侧、空间效果、风格、色调与局部修改；每一步都继承人工批准的同项目版本。
           </p>

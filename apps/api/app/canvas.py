@@ -177,19 +177,34 @@ def expand_asset_variants(asset: SceneAsset) -> list[dict[str, Any]]:
 
 
 def partial_node_id(job_id: str, variant_id: str) -> str:
-    """临时节点身份（取消/失败 job 的 partial output）：``partial:{jobId}:{variantId}``"""
+    """临时节点身份（进行中/取消/失败 job 的 partial output）：``partial:{jobId}:{variantId}``"""
     return f"partial:{job_id}:{variant_id}"
 
 
-def expand_job_partial_outputs(job: Job) -> list[dict[str, Any]]:
-    """从 CANCELLED/FAILED job 的 result 中提取仍可视的 partial outputs。
+# job.type → 画布列 workflowStage（partial 节点落列）
+_PARTIAL_STAGE_BY_JOB_TYPE: dict[str, str] = {
+    "LAYOUT": "layout",
+    "LAYOUT_AI": "layout",
+    "AI_COLOR_PLAN": "color_plan",
+    "AI_AXONOMETRIC": "axonometric",
+    "AI_SPACE_RENDER": "space_render",
+    "AI_STYLE_SCHEME": "style_scheme",
+    "AI_TONE_SCHEME": "tone_scheme",
+    "AI_LOCAL_EDIT": "local_edit",
+    "FLOORPLAN_ANALYZE": "floorplan",
+}
 
-    只返回带 url 的成功/部分成功输出；无可见结果的 job 返回空列表。
+
+def expand_job_partial_outputs(job: Job) -> list[dict[str, Any]]:
+    """从 RUNNING/CANCELED/FAILED job 的 result 提取已落盘、可预览的 partial outputs。
+
+    只返回带 url 的输出；无可见结果时返回空列表。
     """
-    if job.status not in {"CANCELED", "FAILED"} or not job.result:
+    if job.status not in {"CANCELED", "FAILED", "RUNNING"} or not job.result:
         return []
     result = _mapping(job.result)
     job_type = job.type
+    # RUNNING 时 batchStatus 应为 running；仍允许读取已完成的 outputs
 
     def make(variant_id: str, url: str | None, *, label: str | None = None) -> dict[str, Any] | None:
         if not isinstance(url, str) or not url:
@@ -369,14 +384,14 @@ def build_project_canvas_graph(
                 }
             )
 
-    # W0-f：收集 CANCELLED/FAILED job 的 partial outputs 作为临时节点
+    # W0-f / 增量预览：RUNNING 已出图 + CANCELED/FAILED 残留图 → 临时节点
     partial_jobs = list(
         session.scalars(
             select(Job)
             .where(
                 Job.project_id == project_id,
                 Job.type.in_(ASSET_JOB_TYPES),
-                Job.status.in_({"CANCELED", "FAILED"}),
+                Job.status.in_({"CANCELED", "FAILED", "RUNNING"}),
             )
             .order_by(Job.created_at.asc())
         )
@@ -389,16 +404,28 @@ def build_project_canvas_graph(
         payload = _mapping(job.payload)
         parent_asset_id = payload.get("asset_parent_id")
         parent_variant_id = payload.get("parent_variant_id")
+        stage = _PARTIAL_STAGE_BY_JOB_TYPE.get(job.type)
+        status_label = {
+            "RUNNING": "生成中",
+            "FAILED": "失败",
+            "CANCELED": "已取消",
+        }.get(job.status, job.status)
         for variant in variants:
             partial_nodes.append(
                 {
                     "id": partial_node_id(job.id, variant["variantId"]),
                     **variant,
-                    "title": f"{job.type}（{job.status}）",
+                    "title": f"{job.type}（{status_label}）",
                     "assetType": "partial_output",
                     "generationMode": "partial",
-                    "moduleKey": None,
-                    "workflowStage": None,
+                    "moduleKey": (
+                        "layout"
+                        if stage == "layout"
+                        else "floorplan"
+                        if stage == "floorplan"
+                        else "ai_workflow"
+                    ),
+                    "workflowStage": stage,
                     "approvalStatus": None,
                     "parentAssetId": parent_asset_id,
                     "parentVariantId": parent_variant_id,

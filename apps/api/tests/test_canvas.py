@@ -376,6 +376,60 @@ def test_failed_job_partial_outputs_appear_as_temporary_nodes() -> None:
     assert temp_node["jobStatus"] == "FAILED"
 
 
+def test_running_job_partial_outputs_appear_on_canvas() -> None:
+    """进行中 job 已落盘的输出应出现在画布，便于首图预览。"""
+    project_id = _project("project_running_partial")
+    parent = _make_asset(
+        "AI_COLOR_PLAN",
+        {"variant_group_id": "vg-p"},
+        {
+            "workflowStage": "color_plan",
+            "outputs": [
+                {"variantId": "warm", "url": "/artifacts/parent.png", "status": "succeeded"},
+            ],
+        },
+        project_id=project_id,
+    )
+    running_id = _make_cancelled_job_with_partial_outputs(
+        "AI_AXONOMETRIC",
+        {
+            "variant_group_id": "vg-run",
+            "asset_parent_id": parent.id,
+            "parent_variant_id": "warm",
+        },
+        {
+            "workflowStage": "axonometric",
+            "batchStatus": "running",
+            "succeededCount": 1,
+            "outputs": [
+                {
+                    "variantId": "isometric_day",
+                    "url": "/artifacts/ax-day.png",
+                    "status": "succeeded",
+                },
+            ],
+        },
+        project_id=project_id,
+    )
+    with SessionLocal() as session:
+        job = session.get(Job, running_id)
+        assert job is not None
+        job.status = "RUNNING"
+        session.commit()
+
+    with SessionLocal() as session:
+        graph = build_project_canvas_graph(session, project_id)
+
+    from app.canvas import partial_node_id
+
+    node_ids = {n["id"] for n in graph["nodes"]}
+    assert partial_node_id(running_id, "isometric_day") in node_ids
+    temp = next(n for n in graph["nodes"] if n.get("jobStatus") == "RUNNING")
+    assert temp["isTemporary"] is True
+    assert temp["workflowStage"] == "axonometric"
+    assert temp["url"] == "/artifacts/ax-day.png"
+
+
 def test_cancelled_job_without_outputs_does_not_create_nodes() -> None:
     """W0-f：取消 job 若无任何输出，不应产生临时节点。"""
     project_id = _project("project_empty_cancel_test")

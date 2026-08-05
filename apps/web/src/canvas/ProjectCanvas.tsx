@@ -25,14 +25,8 @@ import './theme.css'
 import { apiFetch, assetUrl, pollJob, type Job } from '../api'
 import {
   actionFromJobType,
-  isActiveJobStatus,
-  loadActiveCanvasJobs,
-  parentAssetIdFromJob,
-  clearActiveCanvasJobs,
   removeActiveCanvasJob,
   upsertActiveCanvasJob,
-  workflowStageFromAction,
-  type ActiveCanvasJobRecord,
 } from './activeJobs'
 import FloorplanModule, {
   type FloorplanStage01Approval,
@@ -827,100 +821,9 @@ function ProjectCanvasInner({
   /** 离开再进入：恢复进行中任务的占位框并继续轮询 */
   const resumeActiveJobs = useCallback(
     async (signal?: AbortSignal) => {
-      // 1) 服务端进行中任务
-      let serverJobs: Job[] = []
-      try {
-        const response = await apiFetch(
-          `/v1/jobs?projectId=${encodeURIComponent(projectId)}&limit=50`,
-          { cache: 'no-store', signal },
-        )
-        if (response.ok) {
-          const list = (await response.json()) as Job[]
-          serverJobs = Array.isArray(list)
-            ? list.filter((j) => isActiveJobStatus(j.status))
-            : []
-        }
-      } catch {
-        /* 网络失败时仍尝试 localStorage */
-      }
-      if (signal?.aborted) return
-
-      const local = loadActiveCanvasJobs(projectId)
-      const byJobId = new Map<string, ActiveCanvasJobRecord>()
-      for (const item of local) byJobId.set(item.jobId, item)
-
-      // 合并：以服务端活跃任务为准，补本地骨架信息
-      const toResume: ActiveCanvasJobRecord[] = []
-      for (const job of serverJobs) {
-        const action = actionFromJobType(job.type)
-        if (!action) continue
-        const cached = byJobId.get(job.id)
-        const parentAssetId =
-          cached?.parentAssetId || parentAssetIdFromJob(job)
-        const stage = workflowStageFromAction(action)
-        const count =
-          action === 'generate_layout'
-            ? Math.max(1, Number(job.payload?.count) || 2)
-            : action === 'generate_color_plan'
-              ? 4
-              : action === 'generate_axonometric' ||
-                  action === 'generate_style_scheme' ||
-                  action === 'generate_tone_scheme'
-                ? 3
-                : 1
-        const groupId = cached?.groupId || `resume-${job.id}`
-        const slots =
-          cached?.slots?.length === count
-            ? cached.slots
-            : Array.from({ length: count }, (_, i) => ({
-                id: `${groupId}-${i + 1}`,
-                label:
-                  action === 'generate_layout'
-                    ? `布局方案 ${i + 1}`
-                    : `生成中 ${i + 1}`,
-                workflowStage: stage,
-              }))
-        toResume.push({
-          jobId: job.id,
-          action,
-          groupId,
-          parentAssetId,
-          parentNodeId: cached?.parentNodeId,
-          slots,
-          updatedAt: Date.now(),
-        })
-      }
-
-      // 本地有、服务端列表可能漏掉的（刚提交）
-      for (const item of local) {
-        if (toResume.some((r) => r.jobId === item.jobId)) continue
-        try {
-          const response = await apiFetch(
-            `/v1/jobs/${encodeURIComponent(item.jobId)}`,
-            { cache: 'no-store', signal },
-          )
-          if (!response.ok) {
-            removeActiveCanvasJob(projectId, { jobId: item.jobId })
-            continue
-          }
-          const job = (await response.json()) as Job
-          if (isActiveJobStatus(job.status)) toResume.push(item)
-          else if (job.status === 'SUCCEEDED') {
-            removeActiveCanvasJob(projectId, { jobId: item.jobId })
-          } else {
-            removeActiveCanvasJob(projectId, { jobId: item.jobId })
-          }
-        } catch {
-          /* keep for next visit */
-        }
-      }
-
-      if (signal?.aborted || !toResume.length) {
-        if (!toResume.length && local.length) {
-          clearActiveCanvasJobs(projectId)
-        }
-        return
-      }
+      const { collectActiveJobsToResume } = await import('./resumeActiveJobs')
+      const toResume = await collectActiveJobsToResume(projectId, signal)
+      if (signal?.aborted || !toResume.length) return
 
       // 恢复骨架
       const restored: SkeletonSlot[] = []
@@ -957,13 +860,15 @@ function ProjectCanvasInner({
       busyRef.current = true
       setBusy(true)
 
-      // 并行轮询
+      // 并行轮询；过程中刷新 partial 预览
       await Promise.all(
         toResume.map(async (item) => {
           try {
             const completed = await pollJob(
               item.jobId,
-              undefined,
+              (job) => {
+                bindSkeletonsToJob(item.groupId, job)
+              },
               undefined,
               signal,
             )
@@ -980,6 +885,8 @@ function ProjectCanvasInner({
                   : '生成任务已完成',
               )
             } else {
+              // 失败/取消：再拉一次图谱，把 partial 临时节点留下
+              await loadGraph({ fit: false })
               setNotice(
                 `任务结束：${completed.status}${
                   completed.errorMessage ? ` · ${completed.errorMessage}` : ''
@@ -988,7 +895,6 @@ function ProjectCanvasInner({
             }
           } catch (err) {
             if (signal?.aborted) return
-            // 超时仍保留记录，便于再次进入继续跟
             setNotice(
               err instanceof Error
                 ? err.message
@@ -1004,7 +910,14 @@ function ProjectCanvasInner({
         setBusy(false)
       }
     },
-    [projectId, applyGraph, selectedId, clearSkeletonGroup, loadGraph],
+    [
+      projectId,
+      applyGraph,
+      selectedId,
+      clearSkeletonGroup,
+      loadGraph,
+      bindSkeletonsToJob,
+    ],
   )
 
   // 进入画布：恢复进行中的生成（离开首页再回来不丢进度）
