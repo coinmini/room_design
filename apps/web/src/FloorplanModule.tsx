@@ -146,6 +146,11 @@ export type FloorplanModuleProps = {
    * 画布回放：加载已有 FLOORPLAN_ANALYZE job，进入结构编辑（图1）而非仅看 overlay。
    */
   resumeAnalysisJobId?: string | null
+  /**
+   * 画布节点上的预览/原图 URL（/artifacts/...），作为 job.result 缺图时的回退，
+   * 避免用户还要再上传一次平面图。
+   */
+  resumeImageUrl?: string | null
   /** 画布返回图谱（未确认离开） */
   onRequestClose?: () => void
 }
@@ -890,11 +895,36 @@ function JobBadge({ job }: { job: Job | null }) {
   )
 }
 
+async function fetchPlanImageAsFile(
+  pathOrUrl: string,
+  name: string,
+): Promise<File> {
+  const absolute = assetUrl(pathOrUrl)
+  if (!absolute) throw new Error(`缺少${name}`)
+  const separator = absolute.includes('?') ? '&' : '?'
+  const response = await apiFetch(
+    `${absolute}${separator}stage01_resume=${Date.now()}`,
+    { cache: 'no-store' },
+  )
+  if (!response.ok) throw new Error(`读取${name}失败：${response.status}`)
+  const blob = await response.blob()
+  if (!blob.size) throw new Error(`${name}为空`)
+  const ext = blob.type.includes('jpeg')
+    ? 'jpg'
+    : blob.type.includes('webp')
+      ? 'webp'
+      : 'png'
+  return new File([blob], `${name}.${ext}`, {
+    type: blob.type || 'image/png',
+  })
+}
+
 export default function FloorplanModule({
   presentation = 'standalone',
   onApproved,
   onApprovalInvalidated,
   resumeAnalysisJobId = null,
+  resumeImageUrl = null,
   onRequestClose,
 }: FloorplanModuleProps = {}) {
   const isCanvasFocus = presentation === 'canvas-focus'
@@ -906,6 +936,7 @@ export default function FloorplanModule({
     'idle' | 'loading' | 'ready' | 'error'
   >('idle')
   const [resumeError, setResumeError] = useState('')
+  const [resumedFromCanvas, setResumedFromCanvas] = useState(false)
   const [apiCompatibility, setApiCompatibility] = useState<ApiCompatibility>({
     state: 'checking',
   })
@@ -974,68 +1005,108 @@ export default function FloorplanModule({
     }
   }, [])
 
-  // 画布回放：加载已有 FLOORPLAN_ANALYZE，进入完整结构编辑器（图1）
+  // 画布回放：加载已有 FLOORPLAN_ANALYZE + 当前节点图纸，无需再上传
   useEffect(() => {
     if (!resumeAnalysisJobId) {
       setResumeStatus('idle')
       setResumeError('')
+      setResumedFromCanvas(false)
       return
     }
     let cancelled = false
     setResumeStatus('loading')
     setResumeError('')
+    setResumedFromCanvas(false)
     ;(async () => {
       try {
         const completed = await runner.loadExisting(resumeAnalysisJobId)
         if (cancelled) return
-        if (!completed || completed.type !== 'FLOORPLAN_ANALYZE') {
-          throw new Error('不是成功的户型分析任务，无法打开结构编辑器')
+        if (!completed) {
+          throw new Error('无法加载分析任务')
         }
-        const result = completed.result as FloorplanAnalysis | null
-        if (!result?.sourceImageUrl) {
-          throw new Error('分析结果缺少原图，无法打开结构编辑器')
+        const jobType = String(completed.type || '')
+        if (jobType && jobType !== 'FLOORPLAN_ANALYZE') {
+          throw new Error(
+            `当前节点不是户型分析任务（${jobType}），无法打开结构编辑器`,
+          )
         }
-        // 批准阶段需要 File：从 artifacts 拉取原图
-        const separator = result.sourceImageUrl.includes('?') ? '&' : '?'
-        const imageResponse = await apiFetch(
-          `${result.sourceImageUrl}${separator}stage01_resume=${Date.now()}`,
-          { cache: 'no-store' },
-        )
-        if (!imageResponse.ok) {
-          throw new Error(`读取原图失败：${imageResponse.status}`)
+        if (completed.status !== 'SUCCEEDED') {
+          throw new Error(`分析任务状态为 ${completed.status}，请等待识别完成`)
         }
-        const blob = await imageResponse.blob()
-        if (!blob.size) throw new Error('原图为空')
-        const ext = blob.type.includes('jpeg')
-          ? 'jpg'
-          : blob.type.includes('webp')
-            ? 'webp'
-            : 'png'
-        const resumedFile = new File([blob], `stage01-source.${ext}`, {
-          type: blob.type || 'image/png',
-        })
+        const result = (completed.result || {}) as FloorplanAnalysis
+        // 多路回退：job 原图 → overlay → 画布节点 URL
+        const imageCandidates = [
+          result.sourceImageUrl,
+          (result as { overlayPreviewUrl?: string }).overlayPreviewUrl,
+          resumeImageUrl || undefined,
+        ].filter((u): u is string => typeof u === 'string' && u.length > 0)
+
+        if (!imageCandidates.length) {
+          throw new Error('找不到平面图，请从画布重新识别或手动选择文件')
+        }
+
+        let resumedFile: File | null = null
+        let lastError: unknown = null
+        for (const candidate of imageCandidates) {
+          try {
+            resumedFile = await fetchPlanImageAsFile(
+              candidate,
+              'stage01-canvas-source',
+            )
+            break
+          } catch (err) {
+            lastError = err
+          }
+        }
+        if (!resumedFile) {
+          throw lastError instanceof Error
+            ? lastError
+            : new Error('读取平面图失败')
+        }
+
+        // 保证 analysis 里至少有可用的 sourceImageUrl（SVG <image> 依赖它）
+        const patched: Job = {
+          ...completed,
+          type: 'FLOORPLAN_ANALYZE',
+          result: {
+            ...result,
+            sourceImageUrl:
+              result.sourceImageUrl ||
+              imageCandidates[0] ||
+              resumeImageUrl ||
+              '',
+            overlayPreviewUrl:
+              (result as { overlayPreviewUrl?: string }).overlayPreviewUrl ||
+              result.sourceImageUrl ||
+              imageCandidates[0],
+          },
+        }
+
         if (cancelled) return
         setFile(resumedFile)
-        applyAnalysisResult(completed)
+        applyAnalysisResult(patched)
+        setResumedFromCanvas(true)
         setResumeStatus('ready')
-        // 滚到编辑区
         window.setTimeout(() => {
-          semanticEditorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }, 120)
+          semanticEditorRef.current?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          })
+        }, 150)
       } catch (value) {
         if (cancelled) return
         setResumeStatus('error')
         setResumeError(
           value instanceof Error ? value.message : '加载结构编辑器失败',
         )
+        setResumedFromCanvas(false)
       }
     })()
     return () => {
       cancelled = true
     }
-    // 仅在 jobId 变化时回放；runner/apply 稳定足够
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resumeAnalysisJobId])
+  }, [resumeAnalysisJobId, resumeImageUrl])
 
   const planDimensionsValid =
     integerInRange(planWidth, 2400, 30000) &&
@@ -2225,16 +2296,35 @@ export default function FloorplanModule({
 
       {isCanvasFocus ? (
         <div className="canvas-focus-editor-hint">
-          在下方编辑房间与墙线 → 勾选「我已核对语义布局」→{' '}
-          <strong>确认结构并返回画布</strong>
+          {resumeStatus === 'loading'
+            ? '正在载入画布中的平面图与识别结果…'
+            : resumedFromCanvas
+              ? '已载入当前画布节点的平面图。请校正房间/墙线 → 勾选「我已核对语义布局」→ '
+              : '在下方编辑房间与墙线 → 勾选「我已核对语义布局」→ '}
+          {resumeStatus !== 'loading' ? (
+            <strong>确认结构并返回画布</strong>
+          ) : null}
         </div>
       ) : null}
 
       {resumeStatus === 'loading' && (
-        <div className="notice">正在加载结构识别结果到编辑器…</div>
+        <div className="notice">
+          正在从画布节点载入平面图与结构识别结果，无需重新上传…
+        </div>
       )}
       {resumeStatus === 'error' && (
-        <div className="notice notice-error">{resumeError || '加载失败'}</div>
+        <div className="notice notice-error">
+          {resumeError || '自动载入失败'}
+          <div style={{ marginTop: 6, fontSize: 12 }}>
+            可在左侧重新选择文件；若持续失败请返回画布重新识别。
+          </div>
+        </div>
+      )}
+      {resumeStatus === 'ready' && resumedFromCanvas && (
+        <div className="notice" style={{ background: '#ecfdf5', color: '#065f46' }}>
+          已自动载入画布中的平面布局图（{file?.name || '当前节点'}
+          ），可直接校正结构并确认。
+        </div>
       )}
 
       {!isWorkflowStage01 && (
@@ -2289,7 +2379,32 @@ export default function FloorplanModule({
           <div className="control-section">
             <span className="control-section-label">01 / INPUT</span>
             <h2>图纸与比例</h2>
-            <label className="file-drop compact">
+            {resumedFromCanvas && analysis ? (
+              <div
+                className="file-drop compact"
+                style={{
+                  cursor: 'default',
+                  borderStyle: 'solid',
+                  background: '#f0fdf4',
+                }}
+              >
+                <strong>✓ 已载入画布平面图</strong>
+                <span>
+                  {file?.name || '来自当前节点'} · 无需重新上传
+                  {analysis.planWidthMm && analysis.planDepthMm
+                    ? ` · ${analysis.planWidthMm}×${analysis.planDepthMm} mm`
+                    : ''}
+                </span>
+              </div>
+            ) : null}
+            <label
+              className="file-drop compact"
+              style={
+                resumedFromCanvas && analysis
+                  ? { opacity: 0.72, marginTop: 10 }
+                  : undefined
+              }
+            >
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/webp"
@@ -2298,11 +2413,22 @@ export default function FloorplanModule({
                   setFile(event.target.files?.[0] ?? null)
                   setPlanWidth(0)
                   setPlanDepth(0)
+                  setResumedFromCanvas(false)
                   clearRecognizedPlan('source_changed')
                 }}
               />
-              <strong>{file ? file.name : '选择平面布局图'}</strong>
-              <span>推荐清晰正交图 · 最大 20 MB</span>
+              <strong>
+                {resumedFromCanvas && analysis
+                  ? '更换平面图（可选）'
+                  : file
+                    ? file.name
+                    : '选择平面布局图'}
+              </strong>
+              <span>
+                {resumedFromCanvas && analysis
+                  ? '仅在需要换图时使用'
+                  : '推荐清晰正交图 · 最大 20 MB'}
+              </span>
             </label>
             <div className="field-row">
               <label>

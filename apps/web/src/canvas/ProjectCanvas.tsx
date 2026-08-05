@@ -1051,6 +1051,11 @@ function ProjectCanvasInner({
                 key={structureEditor.jobId}
                 presentation="canvas-focus"
                 resumeAnalysisJobId={structureEditor.jobId}
+                resumeImageUrl={
+                  structureEditor.node.url ||
+                  structureEditor.node.thumbnailUrl ||
+                  null
+                }
                 onRequestClose={() =>
                   exitStructureFocus({
                     notice: focusConfirmed
