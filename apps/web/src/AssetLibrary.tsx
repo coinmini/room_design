@@ -868,7 +868,14 @@ function AssetDownload({
   )
 }
 
-export default function AssetLibrary() {
+type AssetLibraryProps = {
+  /** 从首页 / 深链传入时，挂载后自动打开该资产详情 */
+  initialAssetId?: string | null
+}
+
+export default function AssetLibrary({
+  initialAssetId = null,
+}: AssetLibraryProps = {}) {
   const [filter, setFilter] = useState<AssetFilter>('all')
   const [assets, setAssets] = useState<SceneAsset[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -885,6 +892,7 @@ export default function AssetLibrary() {
   const [renderNotice, setRenderNotice] = useState('')
   const [downloadingGalleryKey, setDownloadingGalleryKey] = useState('')
   const detailRef = useRef<HTMLElement | null>(null)
+  const openedInitialRef = useRef(false)
 
   const loadAssets = useCallback(async (silent = false) => {
     if (!silent) setLoading(true)
@@ -960,6 +968,28 @@ export default function AssetLibrary() {
     const timeout = window.setTimeout(() => void loadDetail(selectedId), 0)
     return () => window.clearTimeout(timeout)
   }, [loadDetail, selectedId])
+
+  // 首页 / 深链：自动打开指定资产（列表加载后；若列表未命中则直接拉详情）
+  useEffect(() => {
+    if (!initialAssetId || openedInitialRef.current) return
+    if (loading) return
+
+    openedInitialRef.current = true
+    const hit = assets.find((asset) => asset.id === initialAssetId)
+    setDetail(null)
+    setDetailLoading(true)
+    setSelectedId(initialAssetId)
+    setRenderJob(null)
+    setRenderNotice('')
+    if (hit) {
+      const moduleKey = inferAssetModule(hit).key
+      setFilter(moduleKey)
+    }
+    window.setTimeout(
+      () => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+      120,
+    )
+  }, [initialAssetId, loading, assets])
 
   const filteredAssets = useMemo(
     () =>

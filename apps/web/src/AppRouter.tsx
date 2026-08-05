@@ -1,18 +1,21 @@
-import { useEffect } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from 'react-router-dom'
 import App from './App'
 import HomePage from './home/HomePage'
 import ProjectCanvasPage from './home/ProjectCanvasPage'
+import ProjectsPage from './home/ProjectsPage'
 import './home/home.css'
 
-/** 兼容 workspace?module= 深链，把 query 写入 sessionStorage 供 App 读取。 */
+/** 兼容 workspace?module=&assetId= 深链，同步传给 App（避免 useEffect 晚于 useState）。 */
 function WorkspaceBridge() {
   const [params] = useSearchParams()
-  useEffect(() => {
-    const module = params.get('module')
-    if (module) sessionStorage.setItem('room_design_workspace_module', module)
-  }, [params])
-  return <App />
+  const module = params.get('module')
+  const assetId = params.get('assetId')
+  return (
+    <App
+      initialModule={module}
+      initialAssetId={assetId}
+    />
+  )
 }
 
 export default function AppRouter() {
@@ -20,6 +23,7 @@ export default function AppRouter() {
     <BrowserRouter>
       <Routes>
         <Route path="/" element={<HomePage />} />
+        <Route path="/projects" element={<ProjectsPage />} />
         <Route path="/projects/:projectId/canvas" element={<ProjectCanvasPage />} />
         <Route path="/workspace/*" element={<WorkspaceBridge />} />
         <Route path="*" element={<Navigate to="/" replace />} />

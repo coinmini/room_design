@@ -4,26 +4,27 @@
  */
 
 .canvas-theme {
-  /* 基础 */
-  --canvas-bg: #0a0a0d;
-  --canvas-bg-elevated: #12131a;
-  --canvas-card: #17181c;
-  --canvas-card-hover: #1c1d24;
+  /* 基础 · 对齐风暴工作台深色编辑壳（#0f0f12 / #181818 画布） */
+  --canvas-bg: #0f0f12;
+  --canvas-bg-elevated: #1c1c20;
+  --canvas-card: #26262a;
+  --canvas-card-hover: #2e2e33;
   --canvas-border: rgba(255, 255, 255, 0.08);
-  --canvas-border-strong: rgba(255, 255, 255, 0.14);
+  --canvas-border-strong: rgba(255, 255, 255, 0.12);
   --canvas-divider: rgba(255, 255, 255, 0.06);
 
-  /* 主色 */
+  /* 主色：保留可读蓝，点缀接近风暴 lime 的强调 */
   --canvas-primary: #3b82f6;
   --canvas-primary-hover: #2563eb;
   --canvas-primary-muted: rgba(59, 130, 246, 0.16);
   --canvas-primary-border: rgba(59, 130, 246, 0.45);
+  --canvas-accent: #d4f954;
 
   /* 文字 */
-  --canvas-text: rgba(255, 255, 255, 0.92);
-  --canvas-text-secondary: rgba(255, 255, 255, 0.62);
-  --canvas-text-muted: rgba(255, 255, 255, 0.38);
-  --canvas-text-inverse: #0a0a0d;
+  --canvas-text: #ededec;
+  --canvas-text-secondary: rgba(237, 237, 236, 0.62);
+  --canvas-text-muted: rgba(237, 237, 236, 0.38);
+  --canvas-text-inverse: #0f0f12;
 
   /* 状态 */
   --canvas-success: #22c55e;
@@ -68,6 +69,7 @@
   color: var(--canvas-text);
   background: var(--canvas-bg);
   font-family:
+    Outfit,
     Inter,
     ui-sans-serif,
     system-ui,
@@ -149,14 +151,28 @@
 }
 
 .canvas-theme .canvas-btn-primary {
-  background: var(--canvas-primary);
+  background: #ededec;
   border-color: transparent;
-  color: #fff;
+  color: #0f0f12;
 }
 
 .canvas-theme .canvas-btn-primary:hover:not(:disabled) {
-  background: var(--canvas-primary-hover);
+  background: #fff;
   border-color: transparent;
+}
+
+/* 关键主操作仍可用蓝（节点内批准等） */
+.canvas-theme .canvas-node-card .canvas-btn-primary,
+.canvas-theme .canvas-layout-detail-header .canvas-btn-primary,
+.canvas-theme .canvas-oneline-header .canvas-btn-primary {
+  background: var(--canvas-primary);
+  color: #fff;
+}
+
+.canvas-theme .canvas-node-card .canvas-btn-primary:hover:not(:disabled),
+.canvas-theme .canvas-layout-detail-header .canvas-btn-primary:hover:not(:disabled),
+.canvas-theme .canvas-oneline-header .canvas-btn-primary:hover:not(:disabled) {
+  background: var(--canvas-primary-hover);
 }
 
 .canvas-theme .canvas-toolbar {
@@ -192,12 +208,88 @@
   background: var(--canvas-bg);
 }
 
+/* 进项目编辑器：全屏深空壳 + 左 dock（对齐风暴 app-page--dock） */
+.canvas-theme.canvas-shell.is-app-chrome {
+  background: #0f0f12;
+}
+
+.canvas-theme .canvas-app-dock {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.canvas-theme .canvas-app-dock-plus {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  text-decoration: none;
+  color: #ededec;
+  background: #26262a;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 20px;
+  line-height: 1;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.canvas-theme .canvas-app-dock-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 8px;
+  border-radius: 999px;
+  background: #26262a;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+
+.canvas-theme .canvas-app-dock-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  text-decoration: none;
+  color: #6d6c6a;
+  font-size: 16px;
+  border: none;
+  background: transparent;
+}
+
+.canvas-theme a.canvas-app-dock-btn:hover,
+.canvas-theme .canvas-app-dock-btn.is-active {
+  background: #2e2e33;
+  color: #ededec;
+}
+
+.canvas-theme.canvas-shell.is-app-chrome .canvas-topbar {
+  left: 88px;
+}
+
+.canvas-theme.canvas-shell.is-app-chrome .canvas-bottombar {
+  left: calc(50% + 24px);
+}
+
+.canvas-theme.canvas-shell.is-structure-focus .canvas-app-dock {
+  display: none;
+}
+
 /* 全模式单行顶栏（图谱 / 01 / 详情 / 08） */
 .canvas-theme .canvas-topbar {
   position: absolute;
-  top: 8px;
-  left: 8px;
-  right: 8px;
+  top: 12px;
+  left: 12px;
+  right: 12px;
   z-index: 6;
   pointer-events: none;
 }
@@ -218,12 +310,12 @@
   min-width: 0;
   flex-wrap: nowrap;
   overflow: hidden;
-  padding: 0 6px 0 4px;
+  padding: 0 8px 0 6px;
   border-radius: var(--canvas-radius-pill);
-  background: rgba(23, 24, 28, 0.92);
-  border: 1px solid var(--canvas-border);
-  box-shadow: var(--canvas-shadow-soft);
-  backdrop-filter: blur(10px);
+  background: rgba(38, 38, 42, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
 }
 
 .canvas-theme .canvas-topbar-btn {
@@ -318,9 +410,22 @@
 .canvas-theme .canvas-bottombar {
   position: absolute;
   left: 50%;
-  bottom: 14px;
+  bottom: 16px;
   transform: translateX(-50%);
   z-index: 6;
+  pointer-events: none;
+}
+
+.canvas-theme .canvas-bottombar > * {
+  pointer-events: auto;
+}
+
+.canvas-theme .canvas-bottombar-toolbar {
+  background: rgba(38, 38, 42, 0.94) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35) !important;
+  padding: 4px 6px !important;
+  gap: 4px !important;
 }
 
 .canvas-theme .canvas-prompt-inline {

@@ -26,6 +26,26 @@ class ProjectCreate(APIModel):
     cover_url: str | None = Field(default=None, max_length=500)
 
 
+class ProjectUpdate(APIModel):
+    """部分更新；至少提供一个字段。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    design_prompt: str | None = Field(default=None, max_length=2000)
+    cover_url: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def require_at_least_one_field(self) -> ProjectUpdate:
+        if (
+            self.name is None
+            and self.description is None
+            and self.design_prompt is None
+            and self.cover_url is None
+        ):
+            raise ValueError("至少提供一个待更新字段")
+        return self
+
+
 class ProjectRead(ProjectCreate):
     id: str
     created_at: datetime

@@ -1199,7 +1199,9 @@ function ProjectCanvasInner({
 
   return (
     <div
-      className={`canvas-theme canvas-shell${inAnyFocus ? ' is-structure-focus' : ''}`}
+      className={`canvas-theme canvas-shell${inAnyFocus ? ' is-structure-focus' : ''}${
+        showAppChrome ? ' is-app-chrome' : ''
+      }`}
       style={{
         position: 'relative',
         width: '100%',
@@ -1210,6 +1212,33 @@ function ProjectCanvasInner({
         border: showAppChrome ? 'none' : '1px solid var(--canvas-border)',
       }}
     >
+      {/* 左浮 dock：对齐风暴工作台；仅导航壳，不介入 01–08 节点逻辑 */}
+      {showAppChrome && !inStackGallery ? (
+        <aside className="canvas-app-dock" aria-label="工作台导航">
+          <Link to="/" className="canvas-app-dock-plus" title="回首页新建">
+            +
+          </Link>
+          <div className="canvas-app-dock-rail">
+            <Link to="/" className="canvas-app-dock-btn" title="首页">
+              ⌂
+            </Link>
+            <span className="canvas-app-dock-btn is-active" title="画布">
+              ⧉
+            </span>
+            <Link
+              to="/workspace?module=assets"
+              className="canvas-app-dock-btn"
+              title="资产"
+            >
+              ▤
+            </Link>
+            <Link to="/workspace" className="canvas-app-dock-btn" title="工作台">
+              ▦
+            </Link>
+          </div>
+        </aside>
+      ) : null}
+
       {/* 全模式统一单行顶栏；图库打开时隐藏（StackGallery 自带栏） */}
       <div
         className="canvas-topbar canvas-topbar-oneline"
@@ -1393,16 +1422,20 @@ function ProjectCanvasInner({
             <Background
               id="dots"
               variant={BackgroundVariant.Dots}
-              gap={22}
-              size={1.4}
-              color="rgba(255,255,255,0.09)"
-              bgColor="#0a0a0d"
+              gap={showAppChrome ? 30 : 22}
+              size={showAppChrome ? 1.2 : 1.4}
+              color={
+                showAppChrome
+                  ? 'rgba(255,255,255,0.14)'
+                  : 'rgba(255,255,255,0.09)'
+              }
+              bgColor={showAppChrome ? '#181818' : '#0a0a0d'}
             />
             <MiniMap
               pannable
               zoomable
               style={{
-                background: '#12131a',
+                background: showAppChrome ? '#1c1c20' : '#12131a',
                 border: '1px solid rgba(255,255,255,0.08)',
                 borderRadius: 12,
               }}
@@ -1413,17 +1446,10 @@ function ProjectCanvasInner({
           </ReactFlow>
 
           <div className="canvas-bottombar">
-            <div className="canvas-toolbar">
+            <div className="canvas-toolbar canvas-bottombar-toolbar">
               <button
                 type="button"
-                className="canvas-btn"
-                onClick={() => onOpenAssets?.()}
-              >
-                资产管理
-              </button>
-              <button
-                type="button"
-                className="canvas-btn"
+                className="canvas-btn canvas-topbar-btn"
                 title="缩小"
                 onClick={() => zoomOut({ duration: 120 })}
               >
@@ -1431,34 +1457,35 @@ function ProjectCanvasInner({
               </button>
               <button
                 type="button"
-                className="canvas-btn"
-                title="适应画布（单击）· 滚轮可放大到 1600%"
+                className="canvas-btn canvas-topbar-btn"
+                title="适应画布 · 滚轮最高 1600%"
                 onClick={() => fitView({ padding: 0.18 })}
               >
                 {zoomPercent(zoom)}%
               </button>
               <button
                 type="button"
-                className="canvas-btn"
-                title="放大（最高 1600%）"
+                className="canvas-btn canvas-topbar-btn"
+                title="放大"
                 onClick={() => zoomIn({ duration: 120 })}
               >
                 +
               </button>
               {selectedNode ? (
-                <span className="canvas-pill">
+                <span className="canvas-pill canvas-topbar-pill">
                   已选{' '}
-                  {(selectedNode.label || selectedNode.variantId || '').replaceAll(
-                    '_',
-                    ' ',
-                  )}
+                  {(selectedNode.label || selectedNode.variantId || '')
+                    .replaceAll('_', ' ')
+                    .slice(0, 18)}
                 </span>
               ) : (
-                <span className="canvas-pill canvas-muted-pill">
-                  右键空白处上传户型 · 单击 02–08 打开详情 · 双击 01 编辑结构
+                <span className="canvas-pill canvas-topbar-pill canvas-muted-pill">
+                  右键上传 · 单击 02–08 · 双击 01
                 </span>
               )}
-              {busy ? <span className="canvas-pill">执行中…</span> : null}
+              {busy ? (
+                <span className="canvas-pill canvas-topbar-pill">执行中…</span>
+              ) : null}
             </div>
           </div>
 

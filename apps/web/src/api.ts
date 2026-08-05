@@ -108,13 +108,26 @@ function xhrRequest(
             )
           }
         })
-      resolve(
-        new Response(request.response, {
-          status: request.status,
-          statusText: request.statusText,
-          headers,
-        }),
-      )
+      // Fetch Response forbids a body on null-body statuses (101/204/205/304).
+      // XHR with responseType=blob still yields a Blob (often empty); passing it
+      // throws inside onload and leaves the Promise forever pending — which
+      // freezes UI that awaits apiFetch (e.g. project delete stuck on 删除中…).
+      const nullBodyStatus =
+        request.status === 101 ||
+        request.status === 204 ||
+        request.status === 205 ||
+        request.status === 304
+      try {
+        resolve(
+          new Response(nullBodyStatus ? null : request.response, {
+            status: request.status,
+            statusText: request.statusText,
+            headers,
+          }),
+        )
+      } catch (error) {
+        reject(error instanceof Error ? error : new TypeError(String(error)))
+      }
     }
     request.onerror = () => retryOrFail('无法连接本地 API')
     request.ontimeout = () => retryOrFail('本地 API 请求超时')
@@ -202,6 +215,13 @@ export function createToneSchemeRenders(form: FormData) {
 
 export function createLocalEditRender(form: FormData) {
   return apiFetch('/v1/ai-workflow/local-edits', {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function createWhiteModelRender(form: FormData) {
+  return apiFetch('/v1/white-model-renders', {
     method: 'POST',
     body: form,
   })

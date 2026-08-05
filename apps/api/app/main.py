@@ -75,6 +75,7 @@ from app.schemas import (
     JobRead,
     ProjectCreate,
     ProjectRead,
+    ProjectUpdate,
     SceneAssetDetail,
     SceneAssetApprovalRequest,
     SceneAssetRead,
@@ -897,6 +898,70 @@ def list_projects(session: SessionDep) -> list[Project]:
             )
         )
     )
+
+
+@app.patch(
+    f"{settings.api_prefix}/projects/{{project_id}}",
+    response_model=ProjectRead,
+)
+def update_project(
+    project_id: str,
+    payload: ProjectUpdate,
+    session: SessionDep,
+) -> Project:
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    data = payload.model_dump(exclude_unset=True)
+    if "name" in data and data["name"] is not None:
+        project.name = str(data["name"]).strip() or project.name
+    if "description" in data:
+        project.description = data["description"]
+    if "design_prompt" in data:
+        project.design_prompt = data["design_prompt"]
+    if "cover_url" in data:
+        project.cover_url = data["cover_url"]
+    session.add(project)
+    session.commit()
+    session.refresh(project)
+    return project
+
+
+@app.delete(
+    f"{settings.api_prefix}/projects/{{project_id}}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_project(project_id: str, session: SessionDep) -> None:
+    """删除项目记录；资产/任务解绑为孤儿（project_id=null），不物理删生成图。"""
+    project = session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 画布节点 → 画布
+    canvases = list(
+        session.scalars(select(Canvas).where(Canvas.project_id == project_id))
+    )
+    for canvas in canvases:
+        nodes = list(
+            session.scalars(
+                select(CanvasNode).where(CanvasNode.canvas_id == canvas.id)
+            )
+        )
+        for node in nodes:
+            session.delete(node)
+        session.delete(canvas)
+
+    # 资产 / 任务仅解绑，保留文件与归档
+    for asset in session.scalars(
+        select(SceneAsset).where(SceneAsset.project_id == project_id)
+    ):
+        asset.project_id = None
+    for job in session.scalars(select(Job).where(Job.project_id == project_id)):
+        job.project_id = None
+
+    session.delete(project)
+    session.commit()
+    return None
 
 
 @app.get(f"{settings.api_prefix}/assets", response_model=list[SceneAssetRead])

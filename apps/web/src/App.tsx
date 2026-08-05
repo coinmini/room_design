@@ -1138,20 +1138,41 @@ function CanvasModule({ onOpenAssets }: { onOpenAssets: () => void }) {
   )
 }
 
-function App() {
+type AppProps = {
+  initialModule?: string | null
+  initialAssetId?: string | null
+}
+
+function resolveModuleId(value?: string | null): ModuleId | null {
+  if (
+    value === 'canvas' ||
+    value === 'assets' ||
+    value === 'workflow' ||
+    value === 'overview' ||
+    value === 'material' ||
+    value === 'floorplan' ||
+    value === 'white'
+  ) {
+    return value
+  }
+  return null
+}
+
+function App({ initialModule = null, initialAssetId = null }: AppProps = {}) {
+  const [bootAssetId] = useState<string | null>(
+    () => initialAssetId?.trim() || null,
+  )
   const [active, setActive] = useState<ModuleId>(() => {
+    // 带 assetId 深链时默认打开资产库
+    if (initialAssetId?.trim()) {
+      return resolveModuleId(initialModule) ?? 'assets'
+    }
+    const fromQuery = resolveModuleId(initialModule)
+    if (fromQuery) return fromQuery
+    // 兼容旧深链：WorkspaceBridge 曾写入 sessionStorage
     const fromSession = sessionStorage.getItem('room_design_workspace_module')
     sessionStorage.removeItem('room_design_workspace_module')
-    if (
-      fromSession === 'canvas' ||
-      fromSession === 'assets' ||
-      fromSession === 'workflow' ||
-      fromSession === 'overview' ||
-      fromSession === 'material'
-    ) {
-      return fromSession
-    }
-    return 'workflow'
+    return resolveModuleId(fromSession) ?? 'workflow'
   })
   const activeModule = useMemo(
     () => modules.find((item) => item.id === active) ?? modules[0],
@@ -1221,7 +1242,9 @@ function App() {
         {active === 'floorplan' && <FloorplanModule />}
         {active === 'white' && <WhiteModelModule />}
         {active === 'material' && <MaterialModule />}
-        {active === 'assets' && <AssetLibrary />}
+        {active === 'assets' && (
+          <AssetLibrary initialAssetId={bootAssetId} />
+        )}
       </main>
     </div>
   )
