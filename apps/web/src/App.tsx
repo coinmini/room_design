@@ -10,11 +10,13 @@ import {
 import AssetLibrary from './AssetLibrary'
 import AiDesignWorkflow from './AiDesignWorkflow'
 import FloorplanModule from './FloorplanModule'
+import { ProjectCanvas } from './canvas'
 import './App.css'
 
 type ModuleId =
   | 'overview'
   | 'workflow'
+  | 'canvas'
   | 'floorplan'
   | 'white'
   | 'material'
@@ -55,6 +57,15 @@ const moduleIcons: Record<ModuleId, React.ReactNode> = {
       <circle cx="5" cy="19" r="2" />
       <path d="M7 5h4a4 4 0 0 1 4 4v0a3 3 0 0 0 3 3" />
       <path d="M7 19h4a4 4 0 0 0 4-4v0a3 3 0 0 1 3-3" />
+    </svg>
+  ),
+  canvas: (
+    <svg {...iconProps}>
+      <rect x="3" y="4" width="18" height="14" rx="2" />
+      <circle cx="8" cy="11" r="1.6" />
+      <circle cx="14" cy="9" r="1.6" />
+      <path d="M9.4 10.4l3.2-1.2" />
+      <path d="M15.4 9.8l2.2 2.4" />
     </svg>
   ),
   floorplan: (
@@ -99,6 +110,13 @@ const navGroups: Array<{ label: string; items: ModuleDef[] }> = [
         number: 'W',
         title: 'AI 设计工作流',
         short: '8-stage Workflow',
+        badge: 'NEW',
+      },
+      {
+        id: 'canvas',
+        number: 'C',
+        title: '无限画布',
+        short: 'Project Canvas',
         badge: 'NEW',
       },
     ],
@@ -1030,8 +1048,111 @@ function MaterialModule() {
   )
 }
 
+function CanvasModule({ onOpenAssets }: { onOpenAssets: () => void }) {
+  const [projectId, setProjectId] = useState(
+    () => localStorage.getItem('room_design_canvas_project_id') ?? '',
+  )
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>(
+    [],
+  )
+  const [bootError, setBootError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const response = await apiFetch('/v1/projects')
+        if (!response.ok) throw new Error(`加载项目失败：${response.status}`)
+        const list = (await response.json()) as Array<{ id: string; name: string }>
+        if (cancelled) return
+        setProjects(list)
+        if (projectId && list.some((item) => item.id === projectId)) return
+        if (list[0]) {
+          setProjectId(list[0].id)
+          localStorage.setItem('room_design_canvas_project_id', list[0].id)
+          return
+        }
+        // 默认项目策略：无项目时自动创建一个本地默认项目
+        const created = await apiFetch('/v1/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: '默认画布项目' }),
+        })
+        if (!created.ok) throw new Error('无法创建默认项目')
+        const project = (await created.json()) as { id: string; name: string }
+        if (cancelled) return
+        setProjects([project])
+        setProjectId(project.id)
+        localStorage.setItem('room_design_canvas_project_id', project.id)
+      } catch (value) {
+        if (!cancelled) {
+          setBootError(value instanceof Error ? value.message : '项目初始化失败')
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
+  return (
+    <div className="page" style={{ height: 'calc(100vh - 88px)', minHeight: 640 }}>
+      <header className="module-header" style={{ marginBottom: 12 }}>
+        <div>
+          <span className="eyebrow">CANVAS</span>
+          <h1>无限画布</h1>
+          <p>
+            按 workflowStage 分列展示项目谱系；支持缩放平移、小地图与节点批准。
+            存量无 project 资产通过 includeOrphans 回退合并。
+          </p>
+        </div>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <span className="eyebrow">PROJECT</span>
+          <select
+            value={projectId}
+            onChange={(event) => {
+              setProjectId(event.target.value)
+              localStorage.setItem(
+                'room_design_canvas_project_id',
+                event.target.value,
+              )
+            }}
+          >
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </header>
+      {bootError ? <div className="notice notice-error">{bootError}</div> : null}
+      {projectId ? (
+        <div style={{ height: 'calc(100% - 110px)' }}>
+          <ProjectCanvas projectId={projectId} onOpenAssets={onOpenAssets} />
+        </div>
+      ) : (
+        <div className="notice">正在准备默认项目…</div>
+      )}
+    </div>
+  )
+}
+
 function App() {
-  const [active, setActive] = useState<ModuleId>('workflow')
+  const [active, setActive] = useState<ModuleId>(() => {
+    const fromSession = sessionStorage.getItem('room_design_workspace_module')
+    sessionStorage.removeItem('room_design_workspace_module')
+    if (
+      fromSession === 'canvas' ||
+      fromSession === 'assets' ||
+      fromSession === 'workflow' ||
+      fromSession === 'overview' ||
+      fromSession === 'material'
+    ) {
+      return fromSession
+    }
+    return 'workflow'
+  })
   const activeModule = useMemo(
     () => modules.find((item) => item.id === active) ?? modules[0],
     [active],
@@ -1094,6 +1215,9 @@ function App() {
         >
           <AiDesignWorkflow />
         </section>
+        {active === 'canvas' && (
+          <CanvasModule onOpenAssets={() => setActive('assets')} />
+        )}
         {active === 'floorplan' && <FloorplanModule />}
         {active === 'white' && <WhiteModelModule />}
         {active === 'material' && <MaterialModule />}

@@ -32,6 +32,7 @@ def init_db() -> None:
     _ensure_job_timing_columns()
     _ensure_job_idempotency_column()
     _ensure_canvas_tables()
+    _ensure_project_home_columns()
 
 
 def _ensure_job_timing_columns() -> None:
@@ -90,6 +91,30 @@ def get_session() -> Generator[Session, None, None]:
     finally:
         session.close()
 
+
+def _ensure_project_home_columns() -> None:
+    """W6-1：projects 表补充 design_prompt / cover_url / updated_at。"""
+    columns = (
+        ("design_prompt", "TEXT", "TEXT"),
+        ("cover_url", "VARCHAR(500)", "VARCHAR(500)"),
+        ("updated_at", "DATETIME", "TIMESTAMPTZ"),
+    )
+    if settings.database_url.startswith("sqlite"):
+        with engine.begin() as conn:
+            existing = {
+                row[1] for row in conn.exec_driver_sql("PRAGMA table_info(projects)")
+            }
+            for name, sqlite_type, _pg_type in columns:
+                if name not in existing:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE projects ADD COLUMN {name} {sqlite_type}"
+                    )
+    else:
+        with engine.begin() as conn:
+            for name, _sqlite_type, pg_type in columns:
+                conn.exec_driver_sql(
+                    f"ALTER TABLE projects ADD COLUMN IF NOT EXISTS {name} {pg_type}"
+                )
 
 
 def _ensure_canvas_tables() -> None:

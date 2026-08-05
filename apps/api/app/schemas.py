@@ -22,11 +22,14 @@ class APIModel(BaseModel):
 class ProjectCreate(APIModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=500)
+    design_prompt: str | None = Field(default=None, max_length=2000)
+    cover_url: str | None = Field(default=None, max_length=500)
 
 
 class ProjectRead(ProjectCreate):
     id: str
     created_at: datetime
+    updated_at: datetime | None = None
 
 
 class JobRead(APIModel):

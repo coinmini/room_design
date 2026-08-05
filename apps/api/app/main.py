@@ -737,16 +737,31 @@ def _validate_parent_approved_space(
     if asset is None:
         raise HTTPException(status_code=404, detail="上游空间资产不存在")
     metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
-    approved_variant_id = metadata.get("approvedVariantId")
-    if not isinstance(approved_variant_id, str) or not approved_variant_id:
+    # W0-X：版本可匹配「当前主批准」或 variantApprovals 中任一已批 variant
+    variant_approvals = metadata.get("variantApprovals")
+    approval_map: dict[str, str] = {}
+    if isinstance(variant_approvals, dict):
+        for key, entry in variant_approvals.items():
+            if isinstance(entry, dict) and isinstance(entry.get("versionId"), str):
+                approval_map[str(key)] = entry["versionId"]
+    primary_variant = metadata.get("approvedVariantId")
+    primary_version = metadata.get("approvedVersionId")
+    if isinstance(primary_variant, str) and isinstance(primary_version, str):
+        approval_map.setdefault(primary_variant, primary_version)
+    if not approval_map:
         raise HTTPException(status_code=409, detail="上游空间资产尚未选择批准方案")
-    approved_version_id = metadata.get("approvedVersionId")
-    if not isinstance(approved_version_id, str) or not approved_version_id:
-        raise HTTPException(status_code=409, detail="上游空间资产缺少批准版本")
-    if source_space_version_id != approved_version_id:
+
+    approved_variant_id: str | None = None
+    approved_version_id: str | None = None
+    for variant_key, version_key in approval_map.items():
+        if source_space_version_id == version_key:
+            approved_variant_id = variant_key
+            approved_version_id = version_key
+            break
+    if approved_variant_id is None or approved_version_id is None:
         raise HTTPException(
             status_code=409,
-            detail="提交的空间图版本不是上游资产当前批准版本，请重新选择基准图",
+            detail="提交的空间图版本不是上游资产的已批准版本，请重新选择基准图",
         )
     job = session.get(Job, asset.job_id)
     result = job.result if job is not None and isinstance(job.result, dict) else {}
@@ -859,7 +874,12 @@ def health() -> dict:
     status_code=status.HTTP_201_CREATED,
 )
 def create_project(payload: ProjectCreate, session: SessionDep) -> Project:
-    project = Project(name=payload.name, description=payload.description)
+    project = Project(
+        name=payload.name,
+        description=payload.description,
+        design_prompt=payload.design_prompt,
+        cover_url=payload.cover_url,
+    )
     session.add(project)
     session.commit()
     session.refresh(project)
@@ -868,7 +888,15 @@ def create_project(payload: ProjectCreate, session: SessionDep) -> Project:
 
 @app.get(f"{settings.api_prefix}/projects", response_model=list[ProjectRead])
 def list_projects(session: SessionDep) -> list[Project]:
-    return list(session.scalars(select(Project).order_by(Project.created_at.desc())))
+    # W6-1：最近项目按 updated_at 优先（无值时回退 created_at）
+    return list(
+        session.scalars(
+            select(Project).order_by(
+                Project.updated_at.desc().nullslast(),
+                Project.created_at.desc(),
+            )
+        )
+    )
 
 
 @app.get(f"{settings.api_prefix}/assets", response_model=list[SceneAssetRead])
@@ -1028,26 +1056,36 @@ def approve_scene_asset_variant(
         raise HTTPException(status_code=422, detail=invalid_variant_detail)
 
     existing_metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    existing_variant_approvals = existing_metadata.get("variantApprovals")
+    variant_approvals: dict[str, Any] = (
+        dict(existing_variant_approvals)
+        if isinstance(existing_variant_approvals, dict)
+        else {}
+    )
+    existing_entry = variant_approvals.get(variant_id)
+    if (
+        isinstance(existing_entry, dict)
+        and isinstance(existing_entry.get("versionId"), str)
+        and existing_entry.get("versionId")
+    ):
+        # W0-X：同一 variant 再次批准幂等，不换 versionId，保护下游谱系
+        return scene_asset_detail(session, asset)
     if (
         existing_metadata.get("approvalStatus") == "approved"
         and existing_metadata.get("approvedVariantId") == variant_id
         and isinstance(existing_metadata.get("approvedVersionId"), str)
     ):
-        # Re-approving the exact same variant is idempotent.  In particular, do
-        # not mint a new version id that would make existing descendants appear
-        # to point at a stale approval.
         return scene_asset_detail(session, asset)
-    downstream_asset = session.scalar(
-        select(SceneAsset).where(SceneAsset.parent_asset_id == asset.id).limit(1)
-    )
-    if downstream_asset is not None and existing_metadata.get("approvalStatus") == "approved":
-        raise HTTPException(
-            status_code=409,
-            detail="该批准版本已有下游资产，不能直接改批；请从新方案创建新的工作流分支",
-        )
 
+    # W0-X：variant 粒度审批——已有下游时仍可批准*其他* variant 以分叉；
+    # 不再对「改批另一张图」返回 409。同一 variant 的 versionId 一经写入不可变。
     approved_at = utc_now().isoformat()
     approved_version_id = f"{asset.id}:{variant_id}:{approved_at}"
+    variant_approvals[variant_id] = {
+        "versionId": approved_version_id,
+        "approvedAt": approved_at,
+        "outputUrl": approved_output_url,
+    }
     metadata = dict(asset.metadata_json or {})
     metadata.update(
         {
@@ -1056,6 +1094,7 @@ def approve_scene_asset_variant(
             "approvedVersionId": approved_version_id,
             "approvedAt": approved_at,
             "approvalComment": payload.comment.strip() if payload.comment else None,
+            "variantApprovals": variant_approvals,
         }
     )
     deliverables = dict(asset.deliverables or {})
@@ -1064,6 +1103,7 @@ def approve_scene_asset_variant(
             "approvedOutputUrl": approved_output_url,
             "approvedVariantId": variant_id,
             "approvedVersionId": approved_version_id,
+            "variantApprovals": variant_approvals,
         }
     )
     asset.metadata_json = metadata
@@ -1917,9 +1957,21 @@ def list_jobs(
 
 
 @app.get(f"{settings.api_prefix}/projects/{{project_id}}/canvas-graph")
-def get_project_canvas_graph(project_id: str, session: SessionDep) -> dict[str, Any]:
-    """W0-e：项目画布图谱——逐图节点 + parent→child 派生连线（逻辑结构，不含坐标）。"""
-    return build_project_canvas_graph(session, project_id)
+def get_project_canvas_graph(
+    project_id: str,
+    session: SessionDep,
+    include_orphans: Annotated[
+        bool,
+        Query(alias="includeOrphans"),
+    ] = False,
+) -> dict[str, Any]:
+    """W0-e：项目画布图谱——逐图节点 + parent→child 派生连线（逻辑结构，不含坐标）。
+
+    includeOrphans：合并 project_id IS NULL 的存量资产（W2-2 默认项目策略回退）。
+    """
+    return build_project_canvas_graph(
+        session, project_id, include_orphans=include_orphans
+    )
 
 
 @app.post(

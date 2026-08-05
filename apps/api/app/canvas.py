@@ -52,6 +52,15 @@ def expand_asset_variants(asset: SceneAsset) -> list[dict[str, Any]]:
     is_approved = metadata.get("approvalStatus") == "approved"
     approved_variant_id = metadata.get("approvedVariantId") if is_approved else None
     approved_version_id = metadata.get("approvedVersionId") if is_approved else None
+    # W0-X：多 variant 可同时处于已批准（分叉）
+    variant_approvals = metadata.get("variantApprovals")
+    approval_versions: dict[str, str] = {}
+    if isinstance(variant_approvals, dict):
+        for key, entry in variant_approvals.items():
+            if isinstance(entry, dict) and isinstance(entry.get("versionId"), str):
+                approval_versions[str(key)] = entry["versionId"]
+    if isinstance(approved_variant_id, str) and isinstance(approved_version_id, str):
+        approval_versions.setdefault(approved_variant_id, approved_version_id)
     full_url = deliverables.get("fullUrl")
 
     def make(
@@ -63,7 +72,7 @@ def expand_asset_variants(asset: SceneAsset) -> list[dict[str, Any]]:
     ) -> dict[str, Any] | None:
         if not isinstance(url, str) or not url:
             return None
-        approved = approved_variant_id is not None and variant_id == approved_variant_id
+        approved = variant_id in approval_versions
         return {
             "assetId": asset.id,
             "variantId": variant_id,
@@ -73,7 +82,7 @@ def expand_asset_variants(asset: SceneAsset) -> list[dict[str, Any]]:
             "label": label or variant_id,
             "status": status,
             "approved": approved,
-            "approvedVersionId": approved_version_id if approved else None,
+            "approvedVersionId": approval_versions.get(variant_id),
         }
 
     variants: list[dict[str, Any]] = []
@@ -275,11 +284,15 @@ def canvas_node_id(asset_id: str, variant_id: str) -> str:
 def build_project_canvas_graph(
     session: Session,
     project_id: str,
+    *,
+    include_orphans: bool = False,
 ) -> dict[str, Any]:
     """组装项目画布图谱：逐图节点 + parent→child 派生连线（逻辑结构，不含坐标）。
 
     坐标与视口状态由 canvas_nodes / canvases 表（W0-d）承载；本图谱是
     只读事实层，前端落位时以节点 id 关联。
+
+    include_orphans=True 时合并 project_id IS NULL 的存量资产（历史前端常空置项目框）。
     """
     assets = list(
         session.scalars(
@@ -288,6 +301,21 @@ def build_project_canvas_graph(
             .order_by(SceneAsset.created_at.asc())
         )
     )
+    included_orphans = False
+    if include_orphans:
+        orphans = list(
+            session.scalars(
+                select(SceneAsset)
+                .where(SceneAsset.project_id.is_(None))
+                .order_by(SceneAsset.created_at.asc())
+            )
+        )
+        if orphans:
+            included_orphans = True
+            seen = {asset.id for asset in assets}
+            for orphan in orphans:
+                if orphan.id not in seen:
+                    assets.append(orphan)
     nodes: list[dict[str, Any]] = []
     edges: list[dict[str, Any]] = []
     for asset in assets:
@@ -380,4 +408,5 @@ def build_project_canvas_graph(
         "nodeCount": len(nodes) + len(partial_nodes),
         "nodes": nodes + partial_nodes,
         "edges": edges,
+        "includedOrphanAssets": included_orphans,
     }

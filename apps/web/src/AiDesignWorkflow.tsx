@@ -10,7 +10,6 @@ import {
 
 import {
   apiFetch,
-  approveWorkflowAsset,
   assetUrl,
   createAxonometricRenders,
   createColorPlanRenders,
@@ -32,6 +31,11 @@ import FloorplanModule, {
 import WorkflowAssetPicker, {
   type WorkflowResumeBundle,
 } from './WorkflowAssetPicker'
+import {
+  approveVariantIdempotent,
+  setBaselineFromOutput,
+  type VisualBaseline as ActionVisualBaseline,
+} from './workflow/actions'
 
 type GenerationStage =
   | 'color_plan'
@@ -1158,14 +1162,21 @@ export default function AiDesignWorkflow() {
   const [styleBaseline, setStyleBaseline] = useState<VisualBaseline | null>(null)
   const [toneBaseline, setToneBaseline] = useState<VisualBaseline | null>(null)
   const localEditAnnotatorRef = useRef<LocalEditAnnotatorHandle | null>(null)
-  const pollAbortRef = useRef<AbortController | null>(null)
+  /** W3-2：AbortController 按 jobId 管理（替代单一 ref，修并发 finally 误清） */
+  const pollAbortMapRef = useRef<Map<string, AbortController>>(new Map())
   const [annotationDirty, setAnnotationDirty] = useState(false)
   const [localEditPrompt, setLocalEditPrompt] = useState('')
+  /** W3-2：保留 stage→Job 供向导 UI；同时 busyJobIds 支持多任务 */
   const [jobs, setJobs] = useState<Partial<Record<GenerationStage, Job>>>({})
+  const [jobByNodeId, setJobByNodeId] = useState<Map<string, Job>>(() => new Map())
   const [errors, setErrors] = useState<Partial<Record<GenerationStage, string>>>(
     {},
   )
+  const [busyJobIds, setBusyJobIds] = useState<Set<string>>(() => new Set())
   const [busyStage, setBusyStage] = useState<GenerationStage | null>(null)
+  // 暴露给调试 / 后续画布并发接线，避免 noUnusedLocals
+  void jobByNodeId
+  void busyJobIds
   const [approvingVariantId, setApprovingVariantId] = useState('')
   const [approvedVariantId, setApprovedVariantId] = useState('')
   const [approvalNotice, setApprovalNotice] = useState('')
@@ -1519,15 +1530,14 @@ export default function AiDesignWorkflow() {
     request: Promise<Response>,
     options?: { mergePrevious?: boolean },
   ) => {
+    // W3-2：busy 以 jobId 集合为准；stage 槽仅用于向导单栏 UI
     setBusyStage(stage)
     setErrors((current) => ({ ...current, [stage]: '' }))
-    // B4：重试失败项时保留上一批已成功输出，合并进新任务的展示
     const previousJob = options?.mergePrevious ? jobs[stage] : undefined
     const present = (nextJob: Job) =>
       options?.mergePrevious ? mergeRetryResult(previousJob, nextJob) : nextJob
-    // B3：本地轮询可随取消按钮中断；服务端任务由 cancel 端点置为 CANCELED
     const abort = new AbortController()
-    pollAbortRef.current = abort
+    let trackedJobId: string | null = null
     try {
       const response = await request
       if (!response.ok) {
@@ -1537,15 +1547,34 @@ export default function AiDesignWorkflow() {
         throw new Error(apiError(payload?.detail, response.status))
       }
       const created = (await response.json()) as Job
+      trackedJobId = created.id
+      pollAbortMapRef.current.set(created.id, abort)
+      setBusyJobIds((current) => new Set(current).add(created.id))
       setJobs((current) => ({ ...current, [stage]: present(created) }))
+      setJobByNodeId((current) => {
+        const next = new Map(current)
+        next.set(`${created.id}:_batch`, present(created))
+        return next
+      })
       const completed = await pollJob(
         created.id,
-        (nextJob) =>
-          setJobs((current) => ({ ...current, [stage]: present(nextJob) })),
+        (nextJob) => {
+          setJobs((current) => ({ ...current, [stage]: present(nextJob) }))
+          setJobByNodeId((current) => {
+            const next = new Map(current)
+            next.set(`${created.id}:_batch`, present(nextJob))
+            return next
+          })
+        },
         undefined,
         abort.signal,
       )
       setJobs((current) => ({ ...current, [stage]: present(completed) }))
+      setJobByNodeId((current) => {
+        const next = new Map(current)
+        next.set(`${created.id}:_batch`, present(completed))
+        return next
+      })
       if (completed.status === 'FAILED') {
         setErrors((current) => ({
           ...current,
@@ -1553,7 +1582,6 @@ export default function AiDesignWorkflow() {
         }))
       }
     } catch (value) {
-      // 用户点取消主动中断本地轮询，不展示为错误
       const intentionalAbort =
         abort.signal.aborted &&
         value instanceof DOMException &&
@@ -1562,8 +1590,17 @@ export default function AiDesignWorkflow() {
         setErrors((current) => ({ ...current, [stage]: errorMessage(value) }))
       }
     } finally {
-      if (pollAbortRef.current === abort) pollAbortRef.current = null
-      setBusyStage(null)
+      // W3-2：只清理本 job 的 abort/busy，避免并发 finally 误清其他任务
+      if (trackedJobId) {
+        const current = pollAbortMapRef.current.get(trackedJobId)
+        if (current === abort) pollAbortMapRef.current.delete(trackedJobId)
+        setBusyJobIds((prev) => {
+          const next = new Set(prev)
+          next.delete(trackedJobId!)
+          return next
+        })
+      }
+      setBusyStage((current) => (current === stage ? null : current))
     }
   }
 
@@ -1581,17 +1618,23 @@ export default function AiDesignWorkflow() {
     } catch {
       // 取消请求失败也要停止本地等待，避免界面卡死
     }
-    pollAbortRef.current?.abort()
+    pollAbortMapRef.current.get(currentJob.id)?.abort()
   }
 
   const resumeWaiting = async (stage: GenerationStage) => {
     const currentJob = jobs[stage]
     if (!currentJob || !['QUEUED', 'RUNNING'].includes(currentJob.status)) return
     setBusyStage(stage)
+    setBusyJobIds((current) => new Set(current).add(currentJob.id))
     setErrors((current) => ({ ...current, [stage]: '' }))
+    const abort = new AbortController()
+    pollAbortMapRef.current.set(currentJob.id, abort)
     try {
-      const completed = await pollJob(currentJob.id, (nextJob) =>
-        setJobs((current) => ({ ...current, [stage]: nextJob })),
+      const completed = await pollJob(
+        currentJob.id,
+        (nextJob) => setJobs((current) => ({ ...current, [stage]: nextJob })),
+        undefined,
+        abort.signal,
       )
       setJobs((current) => ({ ...current, [stage]: completed }))
       if (completed.status === 'FAILED') {
@@ -1603,15 +1646,22 @@ export default function AiDesignWorkflow() {
     } catch (value) {
       setErrors((current) => ({ ...current, [stage]: errorMessage(value) }))
     } finally {
-      setBusyStage(null)
+      pollAbortMapRef.current.delete(currentJob.id)
+      setBusyJobIds((prev) => {
+        const next = new Set(prev)
+        next.delete(currentJob.id)
+        return next
+      })
+      setBusyStage((current) => (current === stage ? null : current))
     }
   }
 
   const submitStage = async (retryIds?: string[]) => {
-    if (!isGenerationStage(activeStage) || busyStage !== null) return
+    // W3-2：允许其他 stage 并行；仅阻止同一 active stage 重入
+    if (!isGenerationStage(activeStage)) return
+    if (busyStage === activeStage) return
     const form = commonForm(activeStage)
     if (!form) return
-    // B4：仅重试失败项时，新任务只包含重跑变体，需合并上一批已成功输出
     const runOptions = retryIds?.length ? { mergePrevious: true } : undefined
     if (activeStage === 'color_plan') {
       form.append('variants', (retryIds ?? colorVariants).join(','))
@@ -1711,17 +1761,14 @@ export default function AiDesignWorkflow() {
         }
       }
       if (!reusedPersistedApproval) {
-        const approvalResponse = await approveWorkflowAsset(resultAssetId, {
+        // W3-1：审批走纯函数模块（显式 assetId/variantId，不依赖 activeStage）
+        const approved = await approveVariantIdempotent({
+          assetId: resultAssetId,
           variantId: output.variantId,
           comment: '阶段 03 彩平图已由用户批准为阶段 04～05 的视觉基准。',
         })
-        if (!approvalResponse.ok) {
-          const payload = (await approvalResponse.json().catch(() => null)) as {
-            detail?: unknown
-          } | null
-          throw new Error(apiError(payload?.detail, approvalResponse.status))
-        }
-        approval = recordValue(await approvalResponse.json())
+        approval = approved.raw
+        reusedPersistedApproval = approved.reused
       }
       const approvedAsset = recordValue(approval.asset)
       const approvedAssetId = String(
@@ -1735,10 +1782,8 @@ export default function AiDesignWorkflow() {
           output.variantId
         }，阶段 04～05 将继承资产 ${approvedAssetId.slice(-8)}。`,
       )
-      setJobs((current) =>
-        current.color_plan ? { color_plan: current.color_plan } : {},
-      )
-      setErrors({ color_plan: '' })
+      // W3-3：批准不再清掉其他阶段 job
+      setErrors((current) => ({ ...current, color_plan: '' }))
     } catch (value) {
       setErrors((current) => ({
         ...current,
@@ -1789,71 +1834,26 @@ export default function AiDesignWorkflow() {
         output.url,
         `${stage}-${inheritedSpaceId}-${output.variantId}`,
       )
-      const approvalResponse = await approveWorkflowAsset(resultAssetId, {
+      // W3-1/W3-3：设基准纯函数；不删下游 job、不自动跳阶段
+      const baseline: ActionVisualBaseline = await setBaselineFromOutput({
+        assetId: resultAssetId,
         variantId: output.variantId,
+        url: output.url,
+        spaceId: inheritedSpaceId,
+        stage,
+        label: output.label,
+        file,
         comment: `阶段 ${stage === 'space_render' ? '05' : stage === 'style' ? '06' : '07'} 已由用户批准为下一阶段视觉基准。`,
       })
-      if (!approvalResponse.ok) {
-        const payload = (await approvalResponse.json().catch(() => null)) as {
-          detail?: unknown
-        } | null
-        throw new Error(apiError(payload?.detail, approvalResponse.status))
-      }
-      const approval = recordValue(await approvalResponse.json())
-      const approvedAsset = recordValue(approval.asset)
-      const approvalMetadata = recordValue(approval.metadata)
-      const approvalDeliverables = recordValue(approval.deliverables)
-      const assetId = String(
-        approval.assetId ?? approval.id ?? approvedAsset.id ?? resultAssetId,
-      )
-      const approvedVersionId = String(
-        approvalMetadata.approvedVersionId ??
-          approvalDeliverables.approvedVersionId ??
-          '',
-      )
-      if (!approvedVersionId) {
-        throw new Error('审批结果缺少 approvedVersionId，无法建立后续谱系。')
-      }
-      const baseline: VisualBaseline = {
-        stage,
-        file,
-        url: output.url,
-        assetId,
-        approvedVersionId,
-        variantId: output.variantId,
-        label: output.label,
-        spaceId: inheritedSpaceId,
-      }
       if (stage === 'space_render') {
         setSpaceBaseline(baseline)
-        setStyleBaseline(null)
-        setToneBaseline(null)
-        localEditAnnotatorRef.current?.clear()
-        setJobs((current) =>
-          withoutStageJobs(current, ['style', 'tone', 'local_edit']),
-        )
-        setErrors((current) =>
-          withoutStageErrors(current, ['style', 'tone', 'local_edit']),
-        )
-        setActiveStage('style')
       } else if (stage === 'style') {
         setStyleBaseline(baseline)
-        setToneBaseline(null)
-        localEditAnnotatorRef.current?.clear()
-        setJobs((current) => withoutStageJobs(current, ['tone', 'local_edit']))
-        setErrors((current) =>
-          withoutStageErrors(current, ['tone', 'local_edit']),
-        )
-        setActiveStage('tone')
       } else {
         setToneBaseline(baseline)
-        localEditAnnotatorRef.current?.clear()
-        setJobs((current) => withoutStageJobs(current, ['local_edit']))
-        setErrors((current) => withoutStageErrors(current, ['local_edit']))
-        setActiveStage('local_edit')
       }
       setApprovalNotice(
-        `已批准「${output.label}」；下一阶段将锁定空间 ${inheritedSpaceId} 并继承该图。`,
+        `已设基准「${output.label}」（空间 ${inheritedSpaceId}）。下游任务保留，可手动切换阶段继续。`,
       )
     } catch (value) {
       setErrors((current) => ({

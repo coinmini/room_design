@@ -231,7 +231,7 @@ def test_stages_6_to_8_require_approved_parent_and_keep_space_lineage(
             },
         )
         assert stale_version.status_code == 409
-        assert "当前批准版本" in stale_version.json()["detail"]
+        assert "已批准版本" in stale_version.json()["detail"]
 
         mismatched_image = client.post(
             "/v1/ai-workflow/style-schemes",
@@ -333,12 +333,16 @@ def test_stages_6_to_8_require_approved_parent_and_keep_space_lineage(
         assert tone_asset["metadata"]["parentApprovedVersionId"] == style_version
         assert tone_asset["metadata"]["parentVariantId"] == "style_modern_minimal"
 
+        # W0-X：已有下游时仍可批准其他 variant 以分叉（不再 409）
         changed_style_approval = client.post(
             f"/v1/assets/{style_asset['id']}/approve",
             json={"variantId": "style_natural_wood"},
         )
-        assert changed_style_approval.status_code == 409
-        assert "已有下游资产" in changed_style_approval.json()["detail"]
+        assert changed_style_approval.status_code == 200, changed_style_approval.text
+        fork_meta = changed_style_approval.json()["metadata"]
+        assert fork_meta["approvedVariantId"] == "style_natural_wood"
+        assert "style_modern_minimal" in fork_meta.get("variantApprovals", {})
+        assert "style_natural_wood" in fork_meta.get("variantApprovals", {})
 
         approved_tone = client.post(
             f"/v1/assets/{tone_asset['id']}/approve",

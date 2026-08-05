@@ -1,0 +1,188 @@
+/**
+ * W1 · 无限画布作用域深色令牌
+ * 仅挂在 .canvas-theme 下，不污染全站（01 编辑器 + AssetLibrary 亮暗接缝登记为已知问题）。
+ */
+
+.canvas-theme {
+  /* 基础 */
+  --canvas-bg: #0a0a0d;
+  --canvas-bg-elevated: #12131a;
+  --canvas-card: #17181c;
+  --canvas-card-hover: #1c1d24;
+  --canvas-border: rgba(255, 255, 255, 0.08);
+  --canvas-border-strong: rgba(255, 255, 255, 0.14);
+  --canvas-divider: rgba(255, 255, 255, 0.06);
+
+  /* 主色 */
+  --canvas-primary: #3b82f6;
+  --canvas-primary-hover: #2563eb;
+  --canvas-primary-muted: rgba(59, 130, 246, 0.16);
+  --canvas-primary-border: rgba(59, 130, 246, 0.45);
+
+  /* 文字 */
+  --canvas-text: rgba(255, 255, 255, 0.92);
+  --canvas-text-secondary: rgba(255, 255, 255, 0.62);
+  --canvas-text-muted: rgba(255, 255, 255, 0.38);
+  --canvas-text-inverse: #0a0a0d;
+
+  /* 状态 */
+  --canvas-success: #22c55e;
+  --canvas-success-muted: rgba(34, 197, 94, 0.16);
+  --canvas-warning: #f59e0b;
+  --canvas-warning-muted: rgba(245, 158, 11, 0.16);
+  --canvas-danger: #ef4444;
+  --canvas-danger-muted: rgba(239, 68, 68, 0.16);
+  --canvas-skeleton: rgba(255, 255, 255, 0.06);
+  --canvas-skeleton-shine: rgba(255, 255, 255, 0.1);
+
+  /* 几何 */
+  --canvas-radius-sm: 8px;
+  --canvas-radius: 12px;
+  --canvas-radius-pill: 999px;
+  --canvas-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  --canvas-shadow-soft: 0 4px 16px rgba(0, 0, 0, 0.28);
+
+  /* 点阵背景 */
+  --canvas-dot-color: rgba(255, 255, 255, 0.09);
+  --canvas-dot-size: 1.5px;
+  --canvas-dot-gap: 22px;
+
+  /* xyflow 覆盖 */
+  --xy-background-color: var(--canvas-bg);
+  --xy-node-background-color: var(--canvas-card);
+  --xy-node-border: 1px solid var(--canvas-border);
+  --xy-node-boxshadow-default: var(--canvas-shadow-soft);
+  --xy-node-boxshadow-selected: 0 0 0 1px var(--canvas-primary),
+    0 8px 24px rgba(59, 130, 246, 0.25);
+  --xy-edge-stroke: rgba(255, 255, 255, 0.22);
+  --xy-edge-stroke-selected: var(--canvas-primary);
+  --xy-connectionline-stroke: var(--canvas-primary);
+  --xy-minimap-background-color: var(--canvas-bg-elevated);
+  --xy-minimap-mask-background-color: rgba(10, 10, 13, 0.55);
+  --xy-minimap-node-background-color: rgba(255, 255, 255, 0.18);
+  --xy-controls-button-background-color: var(--canvas-card);
+  --xy-controls-button-color: var(--canvas-text-secondary);
+  --xy-controls-button-border-color: var(--canvas-border);
+  --xy-controls-box-shadow: var(--canvas-shadow-soft);
+
+  color: var(--canvas-text);
+  background: var(--canvas-bg);
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    Roboto,
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    sans-serif;
+}
+
+.canvas-theme *,
+.canvas-theme *::before,
+.canvas-theme *::after {
+  box-sizing: border-box;
+}
+
+/* 点阵视口背景（可挂在 React Flow 外层或自研视口） */
+.canvas-theme .canvas-dot-bg {
+  background-color: var(--canvas-bg);
+  background-image: radial-gradient(
+    circle,
+    var(--canvas-dot-color) var(--canvas-dot-size),
+    transparent var(--canvas-dot-size)
+  );
+  background-size: var(--canvas-dot-gap) var(--canvas-dot-gap);
+}
+
+/* 通用卡片 / 胶囊 / 按钮（画布与首页共用） */
+.canvas-theme .canvas-card {
+  background: var(--canvas-card);
+  border: 1px solid var(--canvas-border);
+  border-radius: var(--canvas-radius);
+  box-shadow: var(--canvas-shadow-soft);
+}
+
+.canvas-theme .canvas-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--canvas-radius-pill);
+  border: 1px solid var(--canvas-border);
+  background: var(--canvas-card);
+  color: var(--canvas-text-secondary);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.canvas-theme .canvas-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--canvas-radius-pill);
+  border: 1px solid var(--canvas-border);
+  background: var(--canvas-card);
+  color: var(--canvas-text);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.canvas-theme .canvas-btn:hover:not(:disabled) {
+  background: var(--canvas-card-hover);
+  border-color: var(--canvas-border-strong);
+}
+
+.canvas-theme .canvas-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.canvas-theme .canvas-btn-primary {
+  background: var(--canvas-primary);
+  border-color: transparent;
+  color: #fff;
+}
+
+.canvas-theme .canvas-btn-primary:hover:not(:disabled) {
+  background: var(--canvas-primary-hover);
+  border-color: transparent;
+}
+
+.canvas-theme .canvas-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--canvas-radius-pill);
+  background: var(--canvas-card);
+  border: 1px solid var(--canvas-border);
+  box-shadow: var(--canvas-shadow);
+}
+
+.canvas-theme .canvas-muted {
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-secondary {
+  color: var(--canvas-text-secondary);
+}
+
+@keyframes canvas-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
