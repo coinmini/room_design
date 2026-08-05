@@ -238,7 +238,8 @@ def test_ai_workflow_requires_explicit_layout_approval(
             files={"approved_layout_image": ("plan.png", source, "image/png")},
             data={**base_data, "layout_approved": "false", "asset_parent_id": floorplan_asset["id"]},
         )
-        assert rejected.status_code == 422
+        # 显式 layout_approved=false → 409 业务拒绝（不再依赖 pydantic 422）
+        assert rejected.status_code == 409
         assert "已批准" in rejected.json()["detail"]
 
 

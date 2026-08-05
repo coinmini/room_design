@@ -57,8 +57,12 @@ import {
   primarySpawnForNode,
   resolveSpawnSourceNode,
   spawnOptionsForNode,
-  type SpawnTarget,
 } from './spawnDerive'
+import SpawnMenu, { type SpawnMenuState } from './SpawnMenu'
+import {
+  expectedSkeletonSlots,
+  type SkeletonSlot,
+} from './skeletonMath'
 import LayoutDetailDock from './LayoutDetailDock'
 import LocalEditDock, { type LocalEditSession } from './LocalEditDock'
 import StackGallery, { type StackGalleryState } from './StackGallery'
@@ -92,14 +96,6 @@ type ContextMenuState = {
   node: CanvasGraphNode | null
 } | null
 
-/** 拖把线松手：多项下游时的「引用该节点生成」菜单 */
-type SpawnMenuState = {
-  x: number
-  y: number
-  node: CanvasGraphNode
-  options: SpawnTarget[]
-} | null
-
 /** 右键菜单贴边：避免画布底部/右侧被裁切 */
 function clampMenuPosition(
   clientX: number,
@@ -117,146 +113,6 @@ function clampMenuPosition(
   if (x < pad) x = pad
   if (y < pad) y = pad
   return { x, y }
-}
-
-/** 生成中占位：一点击就显示，避免「后台在跑、界面没反应」 */
-type SkeletonSlot = {
-  id: string
-  groupId: string
-  label: string
-  /** 落在哪一列（layout / color_plan …） */
-  workflowStage: string
-  parentAssetId?: string
-  /** 画布父节点 id，用于连线 */
-  parentNodeId?: string
-  /** 绑定到真实 job 后写入 */
-  jobId?: string
-}
-
-function expectedSkeletonSlots(
-  action: string,
-  parent: CanvasGraphNode | null,
-  extras?: {
-    selectedSpaceIds?: string[]
-    selectedStyleVariants?: string[]
-    selectedToneVariants?: string[]
-  },
-): Omit<SkeletonSlot, 'id' | 'groupId'>[] {
-  const parentAssetId = parent?.assetId || undefined
-  const parentNodeId = parent?.id
-  if (action === 'generate_layout') {
-    return [
-      {
-        label: '布局方案 1',
-        workflowStage: 'layout',
-        parentAssetId,
-        parentNodeId,
-      },
-      {
-        label: '布局方案 2',
-        workflowStage: 'layout',
-        parentAssetId,
-        parentNodeId,
-      },
-    ]
-  }
-  if (action === 'generate_color_plan') {
-    return [1, 2, 3, 4].map((n) => ({
-      label: `彩平方案 ${n}`,
-      workflowStage: 'color_plan',
-      parentAssetId,
-      parentNodeId,
-    }))
-  }
-  if (action === 'generate_axonometric') {
-    return [1, 2, 3].map((n) => ({
-      label: `轴侧 ${n}`,
-      workflowStage: 'axonometric',
-      parentAssetId,
-      parentNodeId,
-    }))
-  }
-  if (action === 'generate_style_scheme') {
-    const ids = extras?.selectedStyleVariants
-    if (ids?.length) {
-      return ids.map((id, i) => ({
-        label: `风格 ${i + 1}`,
-        workflowStage: 'style_scheme',
-        parentAssetId,
-        parentNodeId,
-      }))
-    }
-    return [1, 2, 3].map((n) => ({
-      label: `风格 ${n}`,
-      workflowStage: 'style_scheme',
-      parentAssetId,
-      parentNodeId,
-    }))
-  }
-  if (action === 'generate_tone_scheme') {
-    const ids = extras?.selectedToneVariants
-    if (ids?.length) {
-      return ids.map((id, i) => ({
-        label: `色调 ${i + 1}`,
-        workflowStage: 'tone_scheme',
-        parentAssetId,
-        parentNodeId,
-      }))
-    }
-    return [1, 2, 3].map((n) => ({
-      label: `色调 ${n}`,
-      workflowStage: 'tone_scheme',
-      parentAssetId,
-      parentNodeId,
-    }))
-  }
-  if (action === 'generate_space_render') {
-    const ids = extras?.selectedSpaceIds
-    if (ids?.length) {
-      return ids.map((id, i) => ({
-        label: `分空间 ${i + 1}`,
-        workflowStage: 'space_render',
-        parentAssetId,
-        parentNodeId,
-      }))
-    }
-    return [
-      {
-        label: '分空间生成中…',
-        workflowStage: 'space_render',
-        parentAssetId,
-        parentNodeId,
-      },
-    ]
-  }
-  if (action === 'local_edit') {
-    return [
-      {
-        label: '局部修改中…',
-        workflowStage: 'local_edit',
-        parentAssetId,
-        parentNodeId,
-      },
-    ]
-  }
-  if (action === 'upload_floorplan_submit' || action === 'reanalyze') {
-    return [
-      {
-        label: '户型识别中…',
-        workflowStage: 'floorplan',
-        parentAssetId,
-        parentNodeId,
-      },
-    ]
-  }
-  return [
-    {
-      label: '生成中…',
-      workflowStage: 'other',
-      parentAssetId,
-      parentNodeId,
-    },
-  ]
 }
 
 function ProjectCanvasInner({
@@ -309,7 +165,7 @@ function ProjectCanvasInner({
     mode: GenerateDialogMode
   } | null>(null)
   /** 03 彩平等多项派生：拖把线松手菜单 */
-  const [spawnMenu, setSpawnMenu] = useState<SpawnMenuState>(null)
+  const [spawnMenu, setSpawnMenu] = useState<SpawnMenuState | null>(null)
   const connectStartRef = useRef<{
     nodeId: string | null
     handleType: string | null
@@ -2378,94 +2234,17 @@ function ProjectCanvasInner({
         : null}
 
       {/* 拖把线多项派生：引用该节点生成 */}
-      {!inAnyFocus && spawnMenu
-        ? createPortal(
-            <>
-              <div
-                className="canvas-spawn-menu-backdrop"
-                style={{
-                  position: 'fixed',
-                  inset: 0,
-                  zIndex: 10000,
-                  background: 'transparent',
-                }}
-                onClick={() => setSpawnMenu(null)}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  setSpawnMenu(null)
-                }}
-              />
-              <div
-                className="canvas-theme canvas-spawn-menu"
-                style={{
-                  left: spawnMenu.x,
-                  top: spawnMenu.y,
-                }}
-                role="menu"
-                aria-label="引用该节点生成"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="canvas-spawn-menu-title">引用该节点生成</div>
-                {spawnMenu.options.map((opt) => (
-                  <button
-                    key={opt.action}
-                    type="button"
-                    role="menuitem"
-                    className="canvas-spawn-menu-item"
-                    onClick={() => {
-                      const node = spawnMenu.node
-                      setSpawnMenu(null)
-                      if (!tryOpenSpawnFromNode(node, opt.action)) {
-                        setNotice('无法打开生成对话框，请先检查批准状态')
-                      }
-                    }}
-                  >
-                    <span className="canvas-spawn-menu-item-icon" aria-hidden>
-                      {opt.action === 'generate_axonometric' ? (
-                        <svg
-                          width="18"
-                          height="18"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.6"
-                        >
-                          <path d="M12 3 3 8.5v7L12 21l9-5.5v-7L12 3Z" />
-                          <path d="M12 12 3 8.5M12 12l9-3.5M12 12v9" />
-                        </svg>
-                      ) : opt.action === 'generate_space_render' ? (
-                        <svg
-                          width="18"
-                          height="18"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.6"
-                        >
-                          <rect x="3" y="4" width="18" height="14" rx="2" />
-                          <path d="M3 14h18M8 18v2M16 18v2" />
-                        </svg>
-                      ) : (
-                        <svg
-                          width="18"
-                          height="18"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.6"
-                        >
-                          <path d="M12 5v14M5 12h14" />
-                        </svg>
-                      )}
-                    </span>
-                    <span>{opt.label}</span>
-                  </button>
-                ))}
-              </div>
-            </>,
-            document.body,
-          )
-        : null}
+      {!inAnyFocus && spawnMenu ? (
+        <SpawnMenu
+          menu={spawnMenu}
+          onClose={() => setSpawnMenu(null)}
+          onPick={(node, action) => {
+            if (!tryOpenSpawnFromNode(node, action)) {
+              setNotice('无法打开生成对话框，请先检查批准状态')
+            }
+          }}
+        />
+      ) : null}
 
       {generateDialog ? (
         <GenerateLayoutDialog

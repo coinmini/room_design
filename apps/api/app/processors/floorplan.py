@@ -362,8 +362,10 @@ def _detect_walls(image: np.ndarray) -> tuple[dict[str, int], list[dict[str, Any
     if raw is None:
         raise ProcessorError("INPUT_REJECTED", "未检测到可用直墙候选")
 
+    # OpenCV 可能返回 (N,1,4) 或 (N,4)；统一成 (N,4)，避免 raw[:,0] 变成标量列
+    lines = np.asarray(raw).reshape(-1, 4)
     normalized = []
-    for value in raw[:, 0]:
+    for value in lines:
         line = tuple(int(item) for item in value)
         orientation = _orientation(line)
         if orientation:

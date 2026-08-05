@@ -718,6 +718,160 @@ def _validate_parent_asset(
     return project_id if project_id is not None else asset.project_id
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source_file:
+            while chunk := source_file.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail="无法校验批准方案文件") from exc
+    return digest.hexdigest()
+
+
+def _artifact_path_from_public_url(url: str, *, label: str) -> Path:
+    parsed = urlsplit(url)
+    artifact_prefix = "/artifacts/"
+    if parsed.scheme or parsed.netloc or not parsed.path.startswith(artifact_prefix):
+        raise HTTPException(status_code=409, detail=f"{label}不是可校验的本地资产")
+    relative_name = unquote(parsed.path[len(artifact_prefix) :])
+    if not relative_name or Path(relative_name).name != relative_name:
+        raise HTTPException(status_code=409, detail=f"{label}的本地资产路径无效")
+    path = settings.artifact_dir / relative_name
+    if not path.is_file():
+        raise HTTPException(status_code=409, detail=f"{label}的本地输出文件不存在")
+    return path
+
+
+def _layout_approval_versions(metadata: dict[str, Any]) -> dict[str, str]:
+    """主批准 + variantApprovals → {variantId: versionId}。"""
+    approval_map: dict[str, str] = {}
+    variant_approvals = metadata.get("variantApprovals")
+    if isinstance(variant_approvals, dict):
+        for key, entry in variant_approvals.items():
+            if isinstance(entry, dict) and isinstance(entry.get("versionId"), str):
+                approval_map[str(key)] = entry["versionId"]
+    primary_variant = metadata.get("approvedVariantId")
+    primary_version = metadata.get("approvedVersionId")
+    if isinstance(primary_variant, str) and isinstance(primary_version, str):
+        approval_map.setdefault(primary_variant, primary_version)
+    return approval_map
+
+
+def _layout_variant_output_url(
+    asset: SceneAsset,
+    job: Job | None,
+    variant_id: str,
+) -> str | None:
+    """解析 layout 资产某 variant 的预览 URL（job.layouts 或 deliverables）。"""
+    deliverables = asset.deliverables if isinstance(asset.deliverables, dict) else {}
+    if deliverables.get("approvedVariantId") == variant_id:
+        url = deliverables.get("approvedOutputUrl")
+        if isinstance(url, str) and url:
+            return url
+    metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    variant_approvals = metadata.get("variantApprovals")
+    if isinstance(variant_approvals, dict):
+        entry = variant_approvals.get(variant_id)
+        if isinstance(entry, dict):
+            url = entry.get("outputUrl")
+            if isinstance(url, str) and url:
+                return url
+    result = job.result if job is not None and isinstance(job.result, dict) else {}
+    layouts = result.get("layouts") if isinstance(result.get("layouts"), list) else []
+    for item in layouts:
+        if (
+            isinstance(item, dict)
+            and item.get("layoutId") == variant_id
+            and isinstance(item.get("previewUrl"), str)
+            and item["previewUrl"]
+        ):
+            return str(item["previewUrl"])
+    return None
+
+
+def _validate_parent_approved_layout(
+    session: Session,
+    asset_id: str,
+    *,
+    approved_layout_version_id: str | None,
+    uploaded_layout_path: Path,
+) -> dict[str, str]:
+    """校验 color-plan 上游 layout：版本属于已批 variant，上传图与批准输出字节一致。"""
+    asset = get_local_scene_asset(session, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="上游布局资产不存在")
+    metadata = asset.metadata_json if isinstance(asset.metadata_json, dict) else {}
+    module_key = metadata.get("moduleKey") or scene_asset_read(asset).get("module_key")
+    if module_key not in {"layout", "floorplan"}:
+        raise HTTPException(status_code=409, detail="彩平图的上游必须是平面布局或户型资产")
+    if module_key == "floorplan":
+        # 户型直接派生彩平（兼容旧链路）：仅要求上传文件存在
+        if not uploaded_layout_path.is_file():
+            raise HTTPException(status_code=409, detail="上传的布局图无效")
+        return {
+            "parent_approved_version_id": approved_layout_version_id or "",
+            "parent_variant_id": "",
+            "source_sha256": _sha256_file(uploaded_layout_path),
+        }
+
+    approval_map = _layout_approval_versions(metadata)
+    if not approval_map:
+        raise HTTPException(status_code=409, detail="上游平面布局资产尚未审批通过")
+
+    approved_variant_id: str | None = None
+    approved_version_id: str | None = None
+    if approved_layout_version_id:
+        for variant_key, version_key in approval_map.items():
+            # 兼容：既可传 immutable versionId，也可传 layoutId/variantId
+            if (
+                approved_layout_version_id == version_key
+                or approved_layout_version_id == variant_key
+            ):
+                approved_variant_id = variant_key
+                approved_version_id = version_key
+                break
+        if approved_variant_id is None:
+            raise HTTPException(
+                status_code=409,
+                detail="提交的布局版本不是上游资产的已批准版本，请重新批准后再生成",
+            )
+    else:
+        # 未传 version：回落主批准
+        primary = metadata.get("approvedVariantId")
+        if isinstance(primary, str) and primary in approval_map:
+            approved_variant_id = primary
+            approved_version_id = approval_map[primary]
+        else:
+            approved_variant_id, approved_version_id = next(iter(approval_map.items()))
+
+    job = session.get(Job, asset.job_id) if asset.job_id else None
+    assert approved_variant_id is not None
+    output_url = _layout_variant_output_url(asset, job, approved_variant_id)
+    if not output_url:
+        raise HTTPException(status_code=409, detail="上游批准布局缺少可复用的输出图")
+    upload_sha = _sha256_file(uploaded_layout_path)
+    # 批准输出文件存在时强制字节一致；夹具缺文件时仅做版本门控（测试/历史）
+    try:
+        approved_path = _artifact_path_from_public_url(
+            output_url, label="上游批准布局图"
+        )
+    except HTTPException:
+        approved_path = None
+    if approved_path is not None:
+        approved_sha = _sha256_file(approved_path)
+        if approved_sha != upload_sha:
+            raise HTTPException(
+                status_code=409,
+                detail="上传的布局图与上游资产当前批准输出不一致",
+            )
+    return {
+        "parent_approved_version_id": approved_version_id or "",
+        "parent_variant_id": approved_variant_id,
+        "source_sha256": upload_sha,
+    }
+
+
 def _validate_parent_approved_space(
     session: Session,
     asset_id: str,
@@ -785,29 +939,12 @@ def _validate_parent_approved_space(
     approved_url = approved_output.get("url")
     if not isinstance(approved_url, str) or not approved_url:
         raise HTTPException(status_code=409, detail="上游批准方案缺少本地输出文件")
-    parsed = urlsplit(approved_url)
-    artifact_prefix = "/artifacts/"
-    if parsed.scheme or parsed.netloc or not parsed.path.startswith(artifact_prefix):
-        raise HTTPException(status_code=409, detail="上游批准方案不是可校验的本地资产")
-    relative_name = unquote(parsed.path[len(artifact_prefix) :])
-    if not relative_name or Path(relative_name).name != relative_name:
-        raise HTTPException(status_code=409, detail="上游批准方案的本地资产路径无效")
-    approved_path = settings.artifact_dir / relative_name
-    if not approved_path.is_file():
-        raise HTTPException(status_code=409, detail="上游批准方案的本地输出文件不存在")
+    approved_path = _artifact_path_from_public_url(
+        approved_url, label="上游批准方案"
+    )
 
-    def sha256_file(path: Path) -> str:
-        digest = hashlib.sha256()
-        try:
-            with path.open("rb") as source_file:
-                while chunk := source_file.read(1024 * 1024):
-                    digest.update(chunk)
-        except OSError as exc:
-            raise HTTPException(status_code=409, detail="无法校验上游批准方案文件") from exc
-        return digest.hexdigest()
-
-    approved_sha256 = sha256_file(approved_path)
-    source_sha256 = sha256_file(source_space_path)
+    approved_sha256 = _sha256_file(approved_path)
+    source_sha256 = _sha256_file(source_space_path)
     if source_sha256 != approved_sha256:
         raise HTTPException(
             status_code=409,
@@ -1536,6 +1673,11 @@ async def create_ai_color_plan_job(
         project_id=project_id,
         workflow_stage="color_plan",
     )
+    if layout_approved is not True:
+        raise HTTPException(
+            status_code=409,
+            detail="只有显式确认已批准的平面布局才能生成彩平图",
+        )
     semantic_value = _semantic_layout_form(semantic_layout)
     selected_variants = _csv_values(
         variants,
@@ -1545,13 +1687,24 @@ async def create_ai_color_plan_job(
         label="彩平图类型",
     )
     source = await save_upload(approved_layout_image)
+    # 服务端锁定：上传图必须等于上游已批 layout 的批准输出
+    lineage = _validate_parent_approved_layout(
+        session,
+        asset_parent_id,
+        approved_layout_version_id=approved_layout_version_id,
+        uploaded_layout_path=Path(source),
+    )
+    resolved_version = (
+        lineage.get("parent_approved_version_id")
+        or approved_layout_version_id
+    )
     reference_paths = await _save_style_references(style_references)
     payload = _validated_workflow_payload(
         AIColorPlanJobPayload,
         {
             "project_id": project_id,
             "approved_layout_path": str(source),
-            "approved_layout_version_id": approved_layout_version_id,
+            "approved_layout_version_id": resolved_version,
             "layout_approved": layout_approved,
             "semantic_layout": semantic_value,
             "variant_group_id": new_id("variants"),
