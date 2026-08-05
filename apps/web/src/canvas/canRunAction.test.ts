@@ -34,6 +34,22 @@ describe('canRunAction', () => {
     expect(result.enabled).toBe(true)
   })
 
+  it('blocks generate_layout until stage01 is confirmed', () => {
+    const node = baseNode({
+      workflowStage: undefined,
+      moduleKey: 'floorplan',
+      jobId: 'job_1',
+    })
+    const blocked = canRunAction(node, 'generate_layout', {
+      stage01Confirmed: false,
+    })
+    expect(blocked.enabled).toBe(false)
+    const ok = canRunAction(node, 'generate_layout', {
+      stage01Confirmed: true,
+    })
+    expect(ok.enabled).toBe(true)
+  })
+
   it('allows approving another variant when downstream exists (W0-X fork)', () => {
     const result = canRunAction(baseNode({ approved: false }), 'approve', {
       hasDownstream: true,

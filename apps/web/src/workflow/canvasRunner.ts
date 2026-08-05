@@ -59,10 +59,6 @@ async function fetchAsset(assetId: string) {
   return fetchJson(`/v1/assets/${encodeURIComponent(assetId)}`)
 }
 
-async function fetchJob(jobId: string) {
-  return fetchJson(`/v1/jobs/${encodeURIComponent(jobId)}`)
-}
-
 async function fetchResume(assetId: string) {
   return fetchJson(
     `/v1/assets/${encodeURIComponent(assetId)}/workflow-resume`,
@@ -164,62 +160,52 @@ async function runLayoutFromFloorplan(
   projectId: string,
   node: CanvasGraphNode,
   designPrompt: string,
+  stage01Approval: Stage01ApprovalPayload | undefined,
   onJob?: JobListener,
   signal?: AbortSignal,
 ): Promise<Job> {
   if (!node.assetId || !node.jobId) {
     throw new Error('户型节点缺少 assetId/jobId')
   }
-  const asset = await fetchAsset(node.assetId)
-  const job = await fetchJob(node.jobId)
-  const result = recordValue(job.result)
-  const sourceResult = recordValue(asset.sourceResult)
-  const semanticRaw = recordValue(result.semanticLayout)
-  const semantic = Object.keys(semanticRaw).length
-    ? semanticRaw
-    : recordValue(sourceResult.semanticLayout)
-  if (!Object.keys(semantic).length) {
-    throw new Error('户型分析结果缺少 semanticLayout，请重新识别')
+  if (!stage01Approval) {
+    throw new Error('请先双击户型节点，在结构编辑器中确认结构后再生成布局')
   }
-  // 画布确认：写入 human_confirmed，满足 stage02 校验
-  const confirmed: Record<string, unknown> = {
-    ...semantic,
-    validation: {
-      ...recordValue(semantic.validation),
-      status: 'human_confirmed',
-      humanConfirmed: true,
-      approvedAt: new Date().toISOString(),
-    },
+  if (stage01Approval.analysisJobId !== node.jobId) {
+    throw new Error('结构确认与当前节点不匹配，请重新打开编辑器确认')
   }
-  const sourceSha256 = pickString(
-    confirmed.sourceSha256,
-    semantic.sourceSha256,
-  )
+
+  const semanticValue =
+    typeof stage01Approval.semanticLayout === 'string'
+      ? stage01Approval.semanticLayout
+      : JSON.stringify(stage01Approval.semanticLayout)
+  let sourceSha256 = pickString(stage01Approval.sourceSha256)
   if (!sourceSha256 || sourceSha256.length !== 64) {
-    throw new Error('户型结果缺少 sourceSha256，无法生成布局')
+    // 从确认语义中再取
+    try {
+      const parsed = JSON.parse(semanticValue) as Record<string, unknown>
+      sourceSha256 = pickString(parsed.sourceSha256)
+    } catch {
+      /* ignore */
+    }
   }
-  const bounds = recordValue(result.detectedBounds)
-  if (!bounds.width) {
-    throw new Error('户型结果缺少 detectedBounds')
+  if (!sourceSha256 || sourceSha256.length !== 64) {
+    throw new Error('结构确认缺少 sourceSha256，请在编辑器中重新确认')
   }
-  const sourceUrl =
-    pickString(
-      result.sourceImageUrl,
-      sourceResult.sourceImageUrl,
-      node.url,
-      asset.thumbnailUrl as string,
-    ) || ''
-  const sourceFile = await fetchArtifactAsFile(sourceUrl, 'stage01-source')
+  const bounds = stage01Approval.detectedBounds
+  if (!bounds?.width) {
+    throw new Error('结构确认缺少 detectedBounds')
+  }
+
   const form = new FormData()
-  form.append('source_image', sourceFile)
+  form.append('source_image', stage01Approval.approvedLayoutImage)
   form.append('room_type', 'whole_home')
   form.append('count', '2')
   form.append('design_prompt', designPrompt)
-  form.append('semantic_layout', JSON.stringify(confirmed))
-  form.append('stage01_analysis_job_id', node.jobId)
+  form.append('semantic_layout', semanticValue)
+  form.append('stage01_analysis_job_id', stage01Approval.analysisJobId)
   form.append(
     'stage01_approved_version_id',
-    `${node.jobId}:${Date.now()}`,
+    stage01Approval.approvedLayoutVersionId,
   )
   form.append('stage01_source_sha256', sourceSha256.toLowerCase())
   form.append(
@@ -534,6 +520,17 @@ async function runDerivative(
   return postAndPoll(createLocalEditRender(form), onJob, signal)
 }
 
+export type Stage01ApprovalPayload = {
+  approvedLayoutImage: File
+  semanticLayout: Record<string, unknown> | string
+  planWidthMm: number
+  planDepthMm: number
+  analysisJobId: string
+  approvedLayoutVersionId: string
+  sourceSha256?: string
+  detectedBounds: { x: number; y: number; width: number; height: number }
+}
+
 export type CanvasActionExtras = {
   designPrompt?: string
   file?: File
@@ -542,6 +539,8 @@ export type CanvasActionExtras = {
   editPrompt?: string
   planWidthMm?: number
   planDepthMm?: number
+  /** 01 结构编辑器确认结果；生成布局必填 */
+  stage01Approval?: Stage01ApprovalPayload
 }
 
 /**
@@ -616,6 +615,7 @@ export async function executeCanvasAction(params: {
       projectId,
       node,
       extras?.designPrompt || '',
+      extras?.stage01Approval,
       onJob,
       signal,
     )

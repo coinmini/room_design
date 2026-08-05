@@ -17,8 +17,12 @@ import '@xyflow/react/dist/style.css'
 import './theme.css'
 
 import { apiFetch, assetUrl, type Job } from '../api'
+import FloorplanModule, {
+  type FloorplanStage01Approval,
+} from '../FloorplanModule'
 import {
   executeCanvasAction,
+  type Stage01ApprovalPayload,
   type StagePanelRequest,
 } from '../workflow/canvasRunner'
 import { canvasNodeTypes, type CanvasNodeData } from './CanvasNodeCard'
@@ -34,6 +38,7 @@ import {
   zoomPercent,
 } from './layoutMath'
 import type { CanvasGraph, CanvasGraphNode } from './types'
+import { normalizeStage } from './types'
 
 type ContextMenuState = {
   x: number
@@ -65,9 +70,19 @@ function ProjectCanvasInner({
   const [downstreamByAsset, setDownstreamByAsset] = useState<Set<string>>(
     () => new Set(),
   )
+  /** jobId → 01 结构确认（生成布局门禁） */
+  const [stage01ByJob, setStage01ByJob] = useState<
+    Record<string, FloorplanStage01Approval>
+  >({})
+  const [structureEditor, setStructureEditor] = useState<{
+    jobId: string
+    node: CanvasGraphNode
+  } | null>(null)
   const actionRef = useRef<(action: string, node: CanvasGraphNode | null) => void>(
     () => undefined,
   )
+  const stage01ByJobRef = useRef(stage01ByJob)
+  stage01ByJobRef.current = stage01ByJob
   const { fitView, zoomIn, zoomOut } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
@@ -97,14 +112,20 @@ function ProjectCanvasInner({
 
       const laid = layoutGraphByStage(withSkeletons)
       const flowEdges = resolveFlowEdges(body.nodes, body.edges)
+      const confirmedJobs = stage01ByJobRef.current
 
       setNodes(
         laid.map((item) => {
+          const stage = normalizeStage(item)
           const actionCtx: ActionContext = {
             hasDownstream: item.assetId
               ? parentIds.has(item.assetId)
               : false,
             isApprovedVariant: Boolean(item.approved),
+            stage01Confirmed:
+              stage === 'floorplan' && item.jobId
+                ? Boolean(confirmedJobs[item.jobId])
+                : undefined,
           }
           const data: CanvasNodeData = {
             graphNode: item,
@@ -165,30 +186,50 @@ function ProjectCanvasInner({
     void loadGraph()
   }, [projectId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 选中态刷新操作条
+  // 选中态 / 01 确认态刷新操作条
   useEffect(() => {
     setNodes((current) =>
-      current.map((item) => ({
-        ...item,
-        data: {
-          ...(item.data as CanvasNodeData),
-          showActions: item.id === selectedId,
-          onAction: (action: string, node: CanvasGraphNode) =>
-            actionRef.current(action, node),
-          actionCtx: {
-            hasDownstream: (item.data as CanvasNodeData).graphNode.assetId
-              ? downstreamByAsset.has(
-                  (item.data as CanvasNodeData).graphNode.assetId!,
-                )
-              : false,
-            isApprovedVariant: Boolean(
-              (item.data as CanvasNodeData).graphNode.approved,
-            ),
+      current.map((item) => {
+        const graphNode = (item.data as CanvasNodeData).graphNode
+        const stage = normalizeStage(graphNode)
+        return {
+          ...item,
+          data: {
+            ...(item.data as CanvasNodeData),
+            showActions: item.id === selectedId,
+            onAction: (action: string, node: CanvasGraphNode) =>
+              actionRef.current(action, node),
+            actionCtx: {
+              hasDownstream: graphNode.assetId
+                ? downstreamByAsset.has(graphNode.assetId)
+                : false,
+              isApprovedVariant: Boolean(graphNode.approved),
+              stage01Confirmed:
+                stage === 'floorplan' && graphNode.jobId
+                  ? Boolean(stage01ByJob[graphNode.jobId])
+                  : undefined,
+            },
           },
-        },
-      })),
+        }
+      }),
     )
-  }, [selectedId, downstreamByAsset, setNodes])
+  }, [selectedId, downstreamByAsset, stage01ByJob, setNodes])
+
+  const openStructureEditor = useCallback((node: CanvasGraphNode) => {
+    if (!node.jobId) {
+      setNotice('该节点缺少分析任务 ID，无法打开结构编辑器')
+      return
+    }
+    if (normalizeStage(node) !== 'floorplan' && node.moduleKey !== 'floorplan') {
+      // 仍允许带 job 的 floorplan 分析节点
+      if (!node.jobId.startsWith('job_') && !node.assetType?.includes('floorplan')) {
+        setNotice('仅户型识别节点可打开结构编辑器')
+        return
+      }
+    }
+    setContextMenu(null)
+    setStructureEditor({ jobId: node.jobId, node })
+  }, [])
 
   const trackJob = useCallback((job: Job, label: string, parentId?: string) => {
     if (['QUEUED', 'RUNNING'].includes(job.status)) {
@@ -227,6 +268,28 @@ function ProjectCanvasInner({
           return
         }
 
+        // 01 结构：打开全屏 FloorplanModule（图1），不再只打开静态 overlay
+        if (
+          (action === 'view_structure' || action === 'edit_structure') &&
+          node
+        ) {
+          openStructureEditor(node)
+          return
+        }
+
+        if (action === 'generate_layout' && node?.jobId) {
+          const approval = stage01ByJobRef.current[node.jobId]
+          if (!approval) {
+            setNotice('请先双击节点，在结构编辑器中确认结构后再生成布局')
+            openStructureEditor(node)
+            return
+          }
+          extras = {
+            ...extras,
+            stage01Approval: toStage01Payload(approval),
+          }
+        }
+
         const result = await executeCanvasAction({
           projectId,
           node,
@@ -253,21 +316,40 @@ function ProjectCanvasInner({
           return
         }
 
-        if (result.message === 'view_structure' && node?.url) {
-          window.open(assetUrl(node.url), '_blank', 'noopener,noreferrer')
-          setNotice('已在新窗口打开结构图（完整结构编辑器可后续全屏接入）')
-          return
-        }
-
         setNotice(result.message)
         setPanel(null)
         setPanelNode(null)
         await loadGraph({ fit: false })
+
+        // 01 识别成功后自动打开结构编辑器（图1）
+        if (
+          (action === 'upload_floorplan_submit' || action === 'reanalyze') &&
+          result.job?.id &&
+          result.job.type === 'FLOORPLAN_ANALYZE' &&
+          result.job.status === 'SUCCEEDED'
+        ) {
+          setStructureEditor({
+            jobId: result.job.id,
+            node: {
+              id: `pending:${result.job.id}`,
+              jobId: result.job.id,
+              variantId: 'analysis',
+              moduleKey: 'floorplan',
+              workflowStage: 'floorplan',
+            },
+          })
+          setNotice('识别完成：请在结构编辑器中核对房间参数并确认')
+        }
       } catch (value) {
         const message = value instanceof Error ? value.message : '操作失败'
         setNotice(message)
+        if (
+          message.includes('结构编辑器') ||
+          message.includes('确认结构')
+        ) {
+          if (node) openStructureEditor(node)
+        }
         if (message.includes('下游') || message.includes('版本')) {
-          // 409 类：标记重绑定
           if (node) {
             setNodes((current) =>
               current.map((item) =>
@@ -288,7 +370,14 @@ function ProjectCanvasInner({
         setBusy(false)
       }
     },
-    [projectId, designPrompt, trackJob, loadGraph, setNodes],
+    [
+      projectId,
+      designPrompt,
+      trackJob,
+      loadGraph,
+      setNodes,
+      openStructureEditor,
+    ],
   )
 
   actionRef.current = (action, node) => {
@@ -299,6 +388,22 @@ function ProjectCanvasInner({
     setSelectedId(node.id)
     setContextMenu(null)
   }, [])
+
+  const onNodeDoubleClick: NodeMouseHandler = useCallback(
+    (_event, node) => {
+      const graphNode = (node.data as CanvasNodeData).graphNode
+      setSelectedId(node.id)
+      const stage = normalizeStage(graphNode)
+      if (
+        stage === 'floorplan' ||
+        graphNode.moduleKey === 'floorplan' ||
+        graphNode.assetType?.includes('floorplan')
+      ) {
+        openStructureEditor(graphNode)
+      }
+    },
+    [openStructureEditor],
+  )
 
   const onNodeContextMenu: NodeMouseHandler = useCallback((event, node) => {
     event.preventDefault()
@@ -360,14 +465,19 @@ function ProjectCanvasInner({
         },
       ]
     }
+    const stage = normalizeStage(contextMenu.node)
     const ctx: ActionContext = {
       hasDownstream: contextMenu.node.assetId
         ? downstreamByAsset.has(contextMenu.node.assetId)
         : false,
       isApprovedVariant: Boolean(contextMenu.node.approved),
+      stage01Confirmed:
+        stage === 'floorplan' && contextMenu.node.jobId
+          ? Boolean(stage01ByJob[contextMenu.node.jobId])
+          : undefined,
     }
     return listNodeActions(contextMenu.node, ctx)
-  }, [contextMenu, downstreamByAsset])
+  }, [contextMenu, downstreamByAsset, stage01ByJob])
 
   const selectedNode = graph?.nodes.find((n) => n.id === selectedId) ?? null
 
@@ -428,6 +538,7 @@ function ProjectCanvasInner({
         onEdgesChange={onEdgesChange}
         nodeTypes={canvasNodeTypes}
         onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
         onNodeContextMenu={onNodeContextMenu}
         onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
@@ -571,8 +682,56 @@ function ProjectCanvasInner({
           }}
         />
       ) : null}
+
+      {/* 01 全屏结构编辑器 = 原 FloorplanModule（图1） */}
+      {structureEditor ? (
+        <div className="canvas-structure-editor-overlay">
+          <div className="canvas-structure-editor-shell">
+            <FloorplanModule
+              key={structureEditor.jobId}
+              presentation="workflow-stage-01"
+              resumeAnalysisJobId={structureEditor.jobId}
+              onRequestClose={() => setStructureEditor(null)}
+              onApproved={(approval) => {
+                setStage01ByJob((current) => ({
+                  ...current,
+                  [approval.analysisJobId]: approval,
+                }))
+                setStructureEditor(null)
+                setNotice(
+                  '结构已确认。可在该户型节点上点击「生成布局」进入 02。',
+                )
+              }}
+              onApprovalInvalidated={() => {
+                if (structureEditor.jobId) {
+                  setStage01ByJob((current) => {
+                    const next = { ...current }
+                    delete next[structureEditor.jobId]
+                    return next
+                  })
+                }
+              }}
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   )
+}
+
+function toStage01Payload(
+  approval: FloorplanStage01Approval,
+): Stage01ApprovalPayload {
+  return {
+    approvedLayoutImage: approval.approvedLayoutImage,
+    semanticLayout: approval.semanticLayout as unknown as Record<string, unknown>,
+    planWidthMm: approval.planWidthMm,
+    planDepthMm: approval.planDepthMm,
+    analysisJobId: approval.analysisJobId,
+    approvedLayoutVersionId: approval.approvedLayoutVersionId,
+    sourceSha256: approval.sourceSha256,
+    detectedBounds: approval.detectedBounds,
+  }
 }
 
 function actionLabel(action: string): string {

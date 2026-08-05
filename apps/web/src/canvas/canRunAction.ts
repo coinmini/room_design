@@ -16,6 +16,8 @@ export type ActionContext = {
   /** 当前批准 variant 是否就是本节点 */
   isApprovedVariant?: boolean
   isEditableTarget?: boolean
+  /** 01 结构是否已在 FloorplanModule 中人工确认 */
+  stage01Confirmed?: boolean
 }
 
 const STAGE_ACTIONS: Record<string, CanvasAction[]> = {
@@ -54,7 +56,7 @@ const LABELS: Record<CanvasAction, string> = {
   duplicate: '创建副本',
   delete: '删除',
   rebind_baseline: '重新绑定基准',
-  view_structure: '查看结构标注',
+  view_structure: '打开结构编辑器',
   reanalyze: '重新识别',
 }
 
@@ -173,6 +175,15 @@ export function canRunAction(
         enabled: false,
         reason: '需先批准本节点，才能派生下游',
       }
+    }
+  }
+
+  // 01→02：必须先在结构编辑器中确认（未传或 false 均不可生成）
+  if (action === 'generate_layout' && ctx.stage01Confirmed !== true) {
+    return {
+      ...base,
+      enabled: false,
+      reason: '请先双击节点打开结构编辑器并确认结构',
     }
   }
 

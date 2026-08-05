@@ -137,6 +137,12 @@ export type FloorplanModuleProps = {
   onApprovalInvalidated?: (
     reason: FloorplanApprovalInvalidationReason,
   ) => void
+  /**
+   * 画布回放：加载已有 FLOORPLAN_ANALYZE job，进入结构编辑（图1）而非仅看 overlay。
+   */
+  resumeAnalysisJobId?: string | null
+  /** 画布全屏壳关闭回调（可选） */
+  onRequestClose?: () => void
 }
 
 type SelectedSemanticEntity = {
@@ -466,6 +472,21 @@ function useFloorplanJob() {
     return completed
   }
 
+  /** 回放已成功的分析任务（画布双击 01 节点）。 */
+  const loadExisting = async (jobId: string) => {
+    setBusy(true)
+    setError('')
+    try {
+      return await waitForCompletion(jobId)
+    } catch (value) {
+      const message = value instanceof Error ? value.message : '未知错误'
+      setError(message)
+      return null
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const run = async (request: Promise<Response>) => {
     setBusy(true)
     setError('')
@@ -505,7 +526,7 @@ function useFloorplanJob() {
     }
   }
 
-  return { job, busy, error, run, resume }
+  return { job, busy, error, run, resume, loadExisting }
 }
 
 function roomFromBounds(bounds: PixelBounds): PixelBounds {
@@ -868,9 +889,15 @@ export default function FloorplanModule({
   presentation = 'standalone',
   onApproved,
   onApprovalInvalidated,
+  resumeAnalysisJobId = null,
+  onRequestClose,
 }: FloorplanModuleProps = {}) {
   const isWorkflowStage01 = presentation === 'workflow-stage-01'
   const runner = useFloorplanJob()
+  const [resumeStatus, setResumeStatus] = useState<
+    'idle' | 'loading' | 'ready' | 'error'
+  >('idle')
+  const [resumeError, setResumeError] = useState('')
   const [apiCompatibility, setApiCompatibility] = useState<ApiCompatibility>({
     state: 'checking',
   })
@@ -938,6 +965,69 @@ export default function FloorplanModule({
       active = false
     }
   }, [])
+
+  // 画布回放：加载已有 FLOORPLAN_ANALYZE，进入完整结构编辑器（图1）
+  useEffect(() => {
+    if (!resumeAnalysisJobId) {
+      setResumeStatus('idle')
+      setResumeError('')
+      return
+    }
+    let cancelled = false
+    setResumeStatus('loading')
+    setResumeError('')
+    ;(async () => {
+      try {
+        const completed = await runner.loadExisting(resumeAnalysisJobId)
+        if (cancelled) return
+        if (!completed || completed.type !== 'FLOORPLAN_ANALYZE') {
+          throw new Error('不是成功的户型分析任务，无法打开结构编辑器')
+        }
+        const result = completed.result as FloorplanAnalysis | null
+        if (!result?.sourceImageUrl) {
+          throw new Error('分析结果缺少原图，无法打开结构编辑器')
+        }
+        // 批准阶段需要 File：从 artifacts 拉取原图
+        const separator = result.sourceImageUrl.includes('?') ? '&' : '?'
+        const imageResponse = await apiFetch(
+          `${result.sourceImageUrl}${separator}stage01_resume=${Date.now()}`,
+          { cache: 'no-store' },
+        )
+        if (!imageResponse.ok) {
+          throw new Error(`读取原图失败：${imageResponse.status}`)
+        }
+        const blob = await imageResponse.blob()
+        if (!blob.size) throw new Error('原图为空')
+        const ext = blob.type.includes('jpeg')
+          ? 'jpg'
+          : blob.type.includes('webp')
+            ? 'webp'
+            : 'png'
+        const resumedFile = new File([blob], `stage01-source.${ext}`, {
+          type: blob.type || 'image/png',
+        })
+        if (cancelled) return
+        setFile(resumedFile)
+        applyAnalysisResult(completed)
+        setResumeStatus('ready')
+        // 滚到编辑区
+        window.setTimeout(() => {
+          semanticEditorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }, 120)
+      } catch (value) {
+        if (cancelled) return
+        setResumeStatus('error')
+        setResumeError(
+          value instanceof Error ? value.message : '加载结构编辑器失败',
+        )
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // 仅在 jobId 变化时回放；runner/apply 稳定足够
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeAnalysisJobId])
 
   const planDimensionsValid =
     integerInRange(planWidth, 2400, 30000) &&
@@ -2096,6 +2186,39 @@ export default function FloorplanModule({
           : 'page floorplan-page'
       }
     >
+      {(isWorkflowStage01 || resumeAnalysisJobId) && onRequestClose ? (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+            marginBottom: 12,
+            padding: '10px 12px',
+            borderRadius: 12,
+            border: '1px solid rgba(0,0,0,.08)',
+            background: 'rgba(255,255,255,.92)',
+          }}
+        >
+          <div>
+            <strong>01 结构标注编辑器</strong>
+            <div style={{ fontSize: 13, opacity: 0.7, marginTop: 2 }}>
+              确认房间/墙体参数后点击「确认结构」；确认后才能在画布生成布局。
+            </div>
+          </div>
+          <button type="button" className="ghost-button" onClick={onRequestClose}>
+            关闭
+          </button>
+        </div>
+      ) : null}
+
+      {resumeStatus === 'loading' && (
+        <div className="notice">正在加载结构识别结果到编辑器…</div>
+      )}
+      {resumeStatus === 'error' && (
+        <div className="notice notice-error">{resumeError || '加载失败'}</div>
+      )}
+
       {!isWorkflowStage01 && (
         <header className="module-header">
           <div>

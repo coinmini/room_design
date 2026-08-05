@@ -22,9 +22,18 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
   const actions = listNodeActions(node, payload.actionCtx ?? {})
   const primary = actions.filter(
     (a) =>
-      ['approve', 'set_baseline', 'generate_style_scheme', 'generate_tone_scheme', 'local_edit', 'generate_color_plan', 'generate_space_render', 'generate_axonometric'].includes(
-        a.action,
-      ),
+      [
+        'view_structure',
+        'generate_layout',
+        'approve',
+        'set_baseline',
+        'generate_style_scheme',
+        'generate_tone_scheme',
+        'local_edit',
+        'generate_color_plan',
+        'generate_space_render',
+        'generate_axonometric',
+      ].includes(a.action),
   )
 
   const cardStyle: CSSProperties = {
@@ -76,7 +85,21 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
             {(node.label || node.variantId || '').replaceAll('_', ' ')}
           </div>
         </div>
-        {node.approved || node.approvalStatus === 'approved' ? (
+        {payload.actionCtx?.stage01Confirmed ? (
+          <span
+            className="canvas-pill"
+            style={{
+              background: 'var(--canvas-success-muted)',
+              borderColor: 'transparent',
+              color: 'var(--canvas-success)',
+              height: 22,
+              padding: '0 8px',
+            }}
+            title="结构已确认，可生成布局"
+          >
+            ✓ 结构已确认
+          </span>
+        ) : node.approved || node.approvalStatus === 'approved' ? (
           <span
             className="canvas-pill"
             style={{
