@@ -298,26 +298,112 @@
   color: var(--canvas-text-muted);
 }
 
-/* 01 全屏结构编辑器（FloorplanModule） */
-.canvas-structure-editor-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  background: rgba(8, 8, 12, 0.72);
-  display: grid;
-  place-items: stretch;
-  padding: 16px;
-}
-
-.canvas-structure-editor-shell {
-  background: #f6f7fb;
-  border-radius: 16px;
-  overflow: auto;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+/* —— 画布体：图谱 / 结构 focus 坞 —— */
+.canvas-theme .canvas-body {
+  position: absolute;
+  inset: 56px 0 0 0;
   min-height: 0;
 }
 
-.canvas-structure-editor-shell .floorplan-page {
+.canvas-theme .canvas-graph-pane {
+  position: absolute;
+  inset: 0;
+  transition: opacity 0.2s ease;
+}
+
+.canvas-theme .canvas-graph-pane.is-parked {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.canvas-theme.canvas-shell.is-structure-focus .canvas-bottombar {
+  display: none;
+}
+
+/* 01 结构专注坞：深色壳 + 左侧上下文 + 亮色编辑主区 */
+.canvas-theme .canvas-structure-dock {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: 0;
+  background:
+    radial-gradient(ellipse 70% 40% at 50% 0%, rgba(59, 130, 246, 0.08), transparent 55%),
+    var(--canvas-bg);
+  animation: canvas-dock-in 0.22s ease;
+}
+
+@keyframes canvas-dock-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.canvas-theme .canvas-structure-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 14px;
+  border-right: 1px solid var(--canvas-border);
+  background: var(--canvas-bg-elevated);
+  overflow-y: auto;
+}
+
+.canvas-theme .canvas-structure-rail-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--canvas-text-muted);
+}
+
+.canvas-theme .canvas-structure-thumb {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid var(--canvas-border);
+  background: var(--canvas-card);
+}
+
+.canvas-theme .canvas-structure-main {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  background: transparent;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-page {
+  width: 100%;
+  max-width: none;
   min-height: 100%;
+  background: #f6f7fb;
+  border-radius: 14px;
+  border: 1px solid var(--canvas-border-strong);
+  box-shadow: var(--canvas-shadow);
+  overflow: hidden;
+}
+
+.canvas-theme .canvas-structure-main .floorplan-workspace {
+  min-height: calc(100vh - 140px);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.canvas-theme .canvas-focus-editor-hint {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #334155;
+  background: #eef2ff;
+  border-bottom: 1px solid #e2e8f0;
 }

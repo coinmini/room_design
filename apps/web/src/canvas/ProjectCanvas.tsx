@@ -83,9 +83,36 @@ function ProjectCanvasInner({
   )
   const stage01ByJobRef = useRef(stage01ByJob)
   stage01ByJobRef.current = stage01ByJob
-  const { fitView, zoomIn, zoomOut } = useReactFlow()
+  const structureEditorRef = useRef(structureEditor)
+  structureEditorRef.current = structureEditor
+  const { fitView, zoomIn, zoomOut, setCenter, getNode } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
+  const inStructureFocus = Boolean(structureEditor)
+
+  const exitStructureFocus = useCallback(
+    (opts?: { focusNodeId?: string; notice?: string }) => {
+      const focusNodeId =
+        opts?.focusNodeId ?? structureEditorRef.current?.node.id
+      setStructureEditor(null)
+      if (opts?.notice) setNotice(opts.notice)
+      requestAnimationFrame(() => {
+        if (focusNodeId) {
+          const n = getNode(focusNodeId)
+          if (n) {
+            setCenter(n.position.x + 110, n.position.y + 120, {
+              zoom: 1,
+              duration: 280,
+            })
+            setSelectedId(focusNodeId)
+            return
+          }
+        }
+        fitView({ padding: 0.18, duration: 280 })
+      })
+    },
+    [fitView, getNode, setCenter],
+  )
 
   const applyGraph = useCallback(
     (body: CanvasGraph, selected: string | null) => {
@@ -428,6 +455,22 @@ function ProjectCanvasInner({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        if (structureEditorRef.current) {
+          exitStructureFocus({
+            notice: stage01ByJobRef.current[structureEditorRef.current.jobId]
+              ? undefined
+              : '已返回图谱（结构尚未确认，生成布局前请先确认）',
+          })
+          return
+        }
+        setContextMenu(null)
+        setPanel(null)
+        setSelectedId(null)
+        return
+      }
+      if (structureEditorRef.current) return
       if (!selectedId || !graph) return
       const node = graph.nodes.find((item) => item.id === selectedId)
       if (!node) return
@@ -444,15 +487,11 @@ function ProjectCanvasInner({
       } else if (event.key === 'Enter') {
         event.preventDefault()
         void runAction('open_full', node)
-      } else if (event.key === 'Escape') {
-        setContextMenu(null)
-        setPanel(null)
-        setSelectedId(null)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, graph, runAction])
+  }, [selectedId, graph, runAction, exitStructureFocus])
 
   const contextActions = useMemo(() => {
     if (!contextMenu) return []
@@ -480,10 +519,13 @@ function ProjectCanvasInner({
   }, [contextMenu, downstreamByAsset, stage01ByJob])
 
   const selectedNode = graph?.nodes.find((n) => n.id === selectedId) ?? null
+  const focusConfirmed = structureEditor
+    ? Boolean(stage01ByJob[structureEditor.jobId])
+    : false
 
   return (
     <div
-      className="canvas-theme canvas-shell"
+      className={`canvas-theme canvas-shell${inStructureFocus ? ' is-structure-focus' : ''}`}
       style={{
         position: 'relative',
         width: '100%',
@@ -494,140 +536,287 @@ function ProjectCanvasInner({
         border: '1px solid var(--canvas-border)',
       }}
     >
-      {/* 顶栏胶囊 */}
+      {/* 顶栏：图谱 / 结构 focus 共用，保持项目语境 */}
       <div className="canvas-topbar">
         <div className="canvas-toolbar">
-          <span className="canvas-pill">项目 · {projectId.slice(0, 10)}</span>
-          <span className="canvas-pill">
-            {loading ? '同步中…' : `${graph?.nodeCount ?? 0} 节点`}
-          </span>
-          {graph?.includedOrphanAssets ? (
-            <span className="canvas-pill">含无项目资产</span>
+          {inStructureFocus ? (
+            <>
+              <button
+                type="button"
+                className="canvas-btn"
+                onClick={() =>
+                  exitStructureFocus({
+                    notice: focusConfirmed
+                      ? undefined
+                      : '已返回图谱（结构尚未确认）',
+                  })
+                }
+              >
+                ← 返回图谱
+              </button>
+              <span className="canvas-pill">01 结构确认</span>
+              <span className="canvas-pill">
+                {structureEditor?.node.title ||
+                  structureEditor?.node.label ||
+                  '户型分析'}
+              </span>
+              {focusConfirmed ? (
+                <span className="canvas-pill" style={{ color: 'var(--canvas-success)' }}>
+                  ✓ 已确认
+                </span>
+              ) : (
+                <span className="canvas-pill canvas-muted-pill">编辑中</span>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="canvas-pill">项目 · {projectId.slice(0, 10)}</span>
+              <span className="canvas-pill">
+                {loading ? '同步中…' : `${graph?.nodeCount ?? 0} 节点`}
+              </span>
+              {graph?.includedOrphanAssets ? (
+                <span className="canvas-pill">含无项目资产</span>
+              ) : null}
+            </>
+          )}
+        </div>
+        {!inStructureFocus ? (
+          <div className="canvas-toolbar">
+            <input
+              className="canvas-prompt-inline"
+              value={designPrompt}
+              onChange={(e) => setDesignPrompt(e.target.value)}
+              placeholder="设计意向（生成时携带）"
+            />
+            <button
+              type="button"
+              className="canvas-btn canvas-btn-primary"
+              disabled={busy}
+              onClick={() => void runAction('upload_floorplan', null)}
+            >
+              + 户型
+            </button>
+            <button
+              type="button"
+              className="canvas-btn"
+              onClick={() => void loadGraph()}
+              disabled={busy}
+            >
+              刷新
+            </button>
+          </div>
+        ) : (
+          <div className="canvas-toolbar">
+            <span className="canvas-pill canvas-muted-pill">
+              同一项目画布 · 不离开本页
+            </span>
+            <button
+              type="button"
+              className="canvas-btn canvas-btn-primary"
+              onClick={() =>
+                exitStructureFocus({
+                  notice: focusConfirmed
+                    ? '已返回图谱'
+                    : '已返回图谱（结构尚未确认）',
+                })
+              }
+            >
+              完成并返回
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="canvas-body">
+        {/* 图谱常驻挂载，focus 时仅隐藏，保留视口 */}
+        <div
+          className={`canvas-graph-pane${inStructureFocus ? ' is-parked' : ''}`}
+          aria-hidden={inStructureFocus}
+        >
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            nodeTypes={canvasNodeTypes}
+            onNodeClick={onNodeClick}
+            onNodeDoubleClick={onNodeDoubleClick}
+            onNodeContextMenu={onNodeContextMenu}
+            onPaneClick={onPaneClick}
+            onPaneContextMenu={onPaneContextMenu}
+            onMove={(_, viewport) => setZoom(viewport.zoom)}
+            minZoom={0.15}
+            maxZoom={2}
+            proOptions={{ hideAttribution: true }}
+            style={{ width: '100%', height: '100%' }}
+          >
+            <Background
+              id="dots"
+              variant={BackgroundVariant.Dots}
+              gap={22}
+              size={1.4}
+              color="rgba(255,255,255,0.09)"
+              bgColor="#0a0a0d"
+            />
+            <MiniMap
+              pannable
+              zoomable
+              style={{
+                background: '#12131a',
+                border: '1px solid rgba(255,255,255,0.08)',
+                borderRadius: 12,
+              }}
+              maskColor="rgba(10,10,13,0.55)"
+              nodeColor={() => 'rgba(255,255,255,0.22)'}
+            />
+            <Controls showInteractive={false} />
+          </ReactFlow>
+
+          <div className="canvas-bottombar">
+            <div className="canvas-toolbar">
+              <button
+                type="button"
+                className="canvas-btn"
+                onClick={() => onOpenAssets?.()}
+              >
+                资产管理
+              </button>
+              <button type="button" className="canvas-btn" onClick={() => zoomOut()}>
+                −
+              </button>
+              <button
+                type="button"
+                className="canvas-btn"
+                onClick={() => fitView({ padding: 0.18 })}
+              >
+                {zoomPercent(zoom)}%
+              </button>
+              <button type="button" className="canvas-btn" onClick={() => zoomIn()}>
+                +
+              </button>
+              {selectedNode ? (
+                <span className="canvas-pill">
+                  已选{' '}
+                  {(selectedNode.label || selectedNode.variantId || '').replaceAll(
+                    '_',
+                    ' ',
+                  )}
+                </span>
+              ) : (
+                <span className="canvas-pill canvas-muted-pill">
+                  右键空白处上传户型 · 双击 01 编辑结构
+                </span>
+              )}
+              {busy ? <span className="canvas-pill">执行中…</span> : null}
+            </div>
+          </div>
+
+          {!loading && graph && graph.nodeCount === 0 && !skeletonJobs.length ? (
+            <div className="canvas-empty">
+              <div className="canvas-card" style={{ padding: 28, textAlign: 'center' }}>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>从户型开始</div>
+                <div
+                  className="canvas-secondary"
+                  style={{ fontSize: 13, marginBottom: 16 }}
+                >
+                  上传户型图完成 01 识别，在画布内确认结构后再生成 02→08
+                </div>
+                <button
+                  type="button"
+                  className="canvas-btn canvas-btn-primary"
+                  onClick={() => void runAction('upload_floorplan', null)}
+                >
+                  上传户型图
+                </button>
+              </div>
+            </div>
           ) : null}
         </div>
-        <div className="canvas-toolbar">
-          <input
-            className="canvas-prompt-inline"
-            value={designPrompt}
-            onChange={(e) => setDesignPrompt(e.target.value)}
-            placeholder="设计意向（生成时携带）"
-          />
-          <button
-            type="button"
-            className="canvas-btn canvas-btn-primary"
-            disabled={busy}
-            onClick={() => void runAction('upload_floorplan', null)}
-          >
-            + 户型
-          </button>
-          <button
-            type="button"
-            className="canvas-btn"
-            onClick={() => void loadGraph()}
-            disabled={busy}
-          >
-            刷新
-          </button>
-        </div>
+
+        {/* 01 结构专注坞：深色壳 + 亮色绘图区，不跳路由 */}
+        {structureEditor ? (
+          <div className="canvas-structure-dock">
+            <aside className="canvas-structure-rail">
+              <div className="canvas-structure-rail-title">画布上下文</div>
+              <div className="canvas-pill" style={{ width: '100%', justifyContent: 'center' }}>
+                阶段 01
+              </div>
+              <p className="canvas-secondary" style={{ fontSize: 12, lineHeight: 1.5 }}>
+                正在编辑节点结构，确认后返回同一图谱继续生成布局。
+              </p>
+              {structureEditor.node.url || structureEditor.node.thumbnailUrl ? (
+                <img
+                  className="canvas-structure-thumb"
+                  src={assetUrl(
+                    structureEditor.node.thumbnailUrl ||
+                      structureEditor.node.url ||
+                      undefined,
+                  )}
+                  alt=""
+                />
+              ) : null}
+              <button
+                type="button"
+                className="canvas-btn"
+                style={{ width: '100%' }}
+                onClick={() =>
+                  exitStructureFocus({
+                    notice: focusConfirmed
+                      ? undefined
+                      : '已返回图谱（结构尚未确认）',
+                  })
+                }
+              >
+                ← 返回图谱
+              </button>
+              <p className="canvas-muted" style={{ fontSize: 11 }}>
+                Esc 也可返回
+              </p>
+            </aside>
+            <div className="canvas-structure-main">
+              <FloorplanModule
+                key={structureEditor.jobId}
+                presentation="canvas-focus"
+                resumeAnalysisJobId={structureEditor.jobId}
+                onRequestClose={() =>
+                  exitStructureFocus({
+                    notice: focusConfirmed
+                      ? undefined
+                      : '已返回图谱（结构尚未确认）',
+                  })
+                }
+                onApproved={(approval) => {
+                  setStage01ByJob((current) => ({
+                    ...current,
+                    [approval.analysisJobId]: approval,
+                  }))
+                  exitStructureFocus({
+                    focusNodeId: structureEditor.node.id,
+                    notice:
+                      '结构已确认。可在该户型节点上点击「生成布局」进入 02。',
+                  })
+                }}
+                onApprovalInvalidated={() => {
+                  if (structureEditor.jobId) {
+                    setStage01ByJob((current) => {
+                      const next = { ...current }
+                      delete next[structureEditor.jobId]
+                      return next
+                    })
+                  }
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        nodeTypes={canvasNodeTypes}
-        onNodeClick={onNodeClick}
-        onNodeDoubleClick={onNodeDoubleClick}
-        onNodeContextMenu={onNodeContextMenu}
-        onPaneClick={onPaneClick}
-        onPaneContextMenu={onPaneContextMenu}
-        onMove={(_, viewport) => setZoom(viewport.zoom)}
-        minZoom={0.15}
-        maxZoom={2}
-        proOptions={{ hideAttribution: true }}
-        style={{ width: '100%', height: '100%' }}
-      >
-        <Background
-          id="dots"
-          variant={BackgroundVariant.Dots}
-          gap={22}
-          size={1.4}
-          color="rgba(255,255,255,0.09)"
-          bgColor="#0a0a0d"
-        />
-        <MiniMap
-          pannable
-          zoomable
-          style={{
-            background: '#12131a',
-            border: '1px solid rgba(255,255,255,0.08)',
-            borderRadius: 12,
-          }}
-          maskColor="rgba(10,10,13,0.55)"
-          nodeColor={() => 'rgba(255,255,255,0.22)'}
-        />
-        <Controls showInteractive={false} />
-      </ReactFlow>
-
-      {/* 底栏胶囊 */}
-      <div className="canvas-bottombar">
-        <div className="canvas-toolbar">
-          <button
-            type="button"
-            className="canvas-btn"
-            onClick={() => onOpenAssets?.()}
-          >
-            资产管理
-          </button>
-          <button type="button" className="canvas-btn" onClick={() => zoomOut()}>
-            −
-          </button>
-          <button
-            type="button"
-            className="canvas-btn"
-            onClick={() => fitView({ padding: 0.18 })}
-          >
-            {zoomPercent(zoom)}%
-          </button>
-          <button type="button" className="canvas-btn" onClick={() => zoomIn()}>
-            +
-          </button>
-          {selectedNode ? (
-            <span className="canvas-pill">
-              已选 {(selectedNode.label || selectedNode.variantId || '').replaceAll('_', ' ')}
-            </span>
-          ) : (
-            <span className="canvas-pill canvas-muted-pill">右键空白处上传户型</span>
-          )}
-          {busy ? <span className="canvas-pill">执行中…</span> : null}
-        </div>
-      </div>
-
-      {error ? (
+      {error && !inStructureFocus ? (
         <div className="canvas-toast canvas-toast-error">{error}</div>
       ) : null}
       {notice ? <div className="canvas-toast">{notice}</div> : null}
 
-      {!loading && graph && graph.nodeCount === 0 && !skeletonJobs.length ? (
-        <div className="canvas-empty">
-          <div className="canvas-card" style={{ padding: 28, textAlign: 'center' }}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>从户型开始</div>
-            <div className="canvas-secondary" style={{ fontSize: 13, marginBottom: 16 }}>
-              上传户型图完成 01 识别，再沿节点批准并生成 02→08
-            </div>
-            <button
-              type="button"
-              className="canvas-btn canvas-btn-primary"
-              onClick={() => void runAction('upload_floorplan', null)}
-            >
-              上传户型图
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      {contextMenu ? (
+      {!inStructureFocus && contextMenu ? (
         <div
           className="canvas-card canvas-context-menu"
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -639,9 +828,7 @@ function ProjectCanvasInner({
               type="button"
               disabled={'enabled' in item ? !item.enabled : false}
               title={'reason' in item ? item.reason : undefined}
-              onClick={() =>
-                void runAction(item.action, contextMenu.node)
-              }
+              onClick={() => void runAction(item.action, contextMenu.node)}
               className="canvas-context-item"
             >
               <span>{item.label}</span>
@@ -681,39 +868,6 @@ function ProjectCanvasInner({
             void runAction('local_edit', panelNode, { markFile, editPrompt })
           }}
         />
-      ) : null}
-
-      {/* 01 全屏结构编辑器 = 原 FloorplanModule（图1） */}
-      {structureEditor ? (
-        <div className="canvas-structure-editor-overlay">
-          <div className="canvas-structure-editor-shell">
-            <FloorplanModule
-              key={structureEditor.jobId}
-              presentation="workflow-stage-01"
-              resumeAnalysisJobId={structureEditor.jobId}
-              onRequestClose={() => setStructureEditor(null)}
-              onApproved={(approval) => {
-                setStage01ByJob((current) => ({
-                  ...current,
-                  [approval.analysisJobId]: approval,
-                }))
-                setStructureEditor(null)
-                setNotice(
-                  '结构已确认。可在该户型节点上点击「生成布局」进入 02。',
-                )
-              }}
-              onApprovalInvalidated={() => {
-                if (structureEditor.jobId) {
-                  setStage01ByJob((current) => {
-                    const next = { ...current }
-                    delete next[structureEditor.jobId]
-                    return next
-                  })
-                }
-              }}
-            />
-          </div>
-        </div>
       ) : null}
     </div>
   )

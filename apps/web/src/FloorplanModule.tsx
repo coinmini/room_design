@@ -132,7 +132,12 @@ export type FloorplanStage01Approval = {
 }
 
 export type FloorplanModuleProps = {
-  presentation?: 'standalone' | 'workflow-stage-01'
+  /**
+   * - standalone: 独立模块页
+   * - workflow-stage-01: 向导内嵌
+   * - canvas-focus: 画布壳内专注坞（深色壳外框，不跳路由）
+   */
+  presentation?: 'standalone' | 'workflow-stage-01' | 'canvas-focus'
   onApproved?: (approval: FloorplanStage01Approval) => void
   onApprovalInvalidated?: (
     reason: FloorplanApprovalInvalidationReason,
@@ -141,7 +146,7 @@ export type FloorplanModuleProps = {
    * 画布回放：加载已有 FLOORPLAN_ANALYZE job，进入结构编辑（图1）而非仅看 overlay。
    */
   resumeAnalysisJobId?: string | null
-  /** 画布全屏壳关闭回调（可选） */
+  /** 画布返回图谱（未确认离开） */
   onRequestClose?: () => void
 }
 
@@ -892,7 +897,10 @@ export default function FloorplanModule({
   resumeAnalysisJobId = null,
   onRequestClose,
 }: FloorplanModuleProps = {}) {
-  const isWorkflowStage01 = presentation === 'workflow-stage-01'
+  const isCanvasFocus = presentation === 'canvas-focus'
+  // 业务门禁与 stage01 一致；canvas-focus 只换外壳
+  const isWorkflowStage01 =
+    presentation === 'workflow-stage-01' || isCanvasFocus
   const runner = useFloorplanJob()
   const [resumeStatus, setResumeStatus] = useState<
     'idle' | 'loading' | 'ready' | 'error'
@@ -2181,12 +2189,15 @@ export default function FloorplanModule({
   return (
     <div
       className={
-        isWorkflowStage01
-          ? 'floorplan-page floorplan-stage01-embedded'
-          : 'page floorplan-page'
+        isCanvasFocus
+          ? 'floorplan-page floorplan-stage01-embedded floorplan-stage01-canvas-focus'
+          : isWorkflowStage01
+            ? 'floorplan-page floorplan-stage01-embedded'
+            : 'page floorplan-page'
       }
     >
-      {(isWorkflowStage01 || resumeAnalysisJobId) && onRequestClose ? (
+      {/* 向导内嵌仍显示轻提示；画布 focus 的返回由画布顶栏提供，避免双层关闭 */}
+      {isWorkflowStage01 && !isCanvasFocus && onRequestClose ? (
         <div
           style={{
             display: 'flex',
@@ -2209,6 +2220,13 @@ export default function FloorplanModule({
           <button type="button" className="ghost-button" onClick={onRequestClose}>
             关闭
           </button>
+        </div>
+      ) : null}
+
+      {isCanvasFocus ? (
+        <div className="canvas-focus-editor-hint">
+          在下方编辑房间与墙线 → 勾选「我已核对语义布局」→{' '}
+          <strong>确认结构并返回画布</strong>
         </div>
       ) : null}
 
@@ -2535,8 +2553,12 @@ export default function FloorplanModule({
                     onClick={approveStage01}
                   >
                     {stage01ApprovalSubmitted
-                      ? '✓ Stage 01 已批准'
-                      : '批准 Stage 01 并进入 AI 平面布局'}
+                      ? isCanvasFocus
+                        ? '✓ 结构已确认'
+                        : '✓ Stage 01 已批准'
+                      : isCanvasFocus
+                        ? '确认结构并返回画布'
+                        : '批准 Stage 01 并进入 AI 平面布局'}
                   </button>
                 )}
                 <button

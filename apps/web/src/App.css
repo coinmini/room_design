@@ -1934,6 +1934,22 @@ textarea {
   width: min(1640px, 100%);
 }
 
+.floorplan-page.floorplan-stage01-canvas-focus {
+  width: 100%;
+  max-width: none;
+}
+
+.floorplan-page.floorplan-stage01-canvas-focus .floorplan-workspace {
+  min-height: min(820px, calc(100vh - 160px));
+}
+
+.canvas-focus-editor-hint {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .api-version-notice {
   display: flex;
   align-items: center;
