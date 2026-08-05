@@ -19,7 +19,7 @@ import FloorplanModule from './FloorplanModule'
 import { ProjectCanvas } from './canvas'
 import './App.css'
 
-const AiDesignWorkflow = lazy(() => import('./AiDesignWorkflow'))
+const AiDesignWorkflow = lazy(() => import('./legacy/AiDesignWorkflow'))
 
 type ModuleId =
   | 'overview'

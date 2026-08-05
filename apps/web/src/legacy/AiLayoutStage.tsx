@@ -7,9 +7,9 @@ import {
   pollJob,
   type Job,
   type SceneAssetDetail,
-} from './api'
-import { BatchProgress } from './BatchProgress'
-import type { FloorplanStage01Approval } from './FloorplanModule'
+} from '../api'
+import { BatchProgress } from '../BatchProgress'
+import type { FloorplanStage01Approval } from '../FloorplanModule'
 
 type AiLayoutItem = {
   layoutId: string

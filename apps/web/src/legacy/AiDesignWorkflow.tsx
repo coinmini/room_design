@@ -21,13 +21,13 @@ import {
   pollJob,
   retryJob,
   type Job,
-} from './api'
-import { BatchProgress, expectedBatchCount } from './BatchProgress'
+} from '../api'
+import { BatchProgress, expectedBatchCount } from '../BatchProgress'
 import AiLayoutStage, { type ApprovedLayoutSelection } from './AiLayoutStage'
 import FloorplanModule, {
   type FloorplanStage01Approval,
   type SemanticLayout,
-} from './FloorplanModule'
+} from '../FloorplanModule'
 import WorkflowAssetPicker, {
   type WorkflowResumeBundle,
 } from './WorkflowAssetPicker'
@@ -35,7 +35,7 @@ import {
   approveVariantIdempotent,
   setBaselineFromOutput,
   type VisualBaseline as ActionVisualBaseline,
-} from './workflow/actions'
+} from '../workflow/actions'
 
 type GenerationStage =
   | 'color_plan'

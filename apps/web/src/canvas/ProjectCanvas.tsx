@@ -22,9 +22,8 @@ import {
 import '@xyflow/react/dist/style.css'
 import './theme.css'
 
-import { apiFetch, assetUrl, pollJob, type Job } from '../api'
+import { apiFetch, assetUrl, pollJob } from '../api'
 import {
-  actionFromJobType,
   removeActiveCanvasJob,
   upsertActiveCanvasJob,
 } from './activeJobs'
@@ -57,6 +56,7 @@ import {
   expectedSkeletonSlots,
   type SkeletonSlot,
 } from './skeletonMath'
+import { useCanvasSkeletons } from './useCanvasSkeletons'
 import { clampMenuPosition } from './menuMath'
 import LayoutDetailDock from './LayoutDetailDock'
 import LocalEditDock, { type LocalEditSession } from './LocalEditDock'
@@ -119,7 +119,6 @@ function ProjectCanvasInner({
   const [designPrompt, setDesignPrompt] = useState('')
   const [panel, setPanel] = useState<StagePanelRequest | null>(null)
   const [panelNode, setPanelNode] = useState<CanvasGraphNode | null>(null)
-  const [skeletonSlots, setSkeletonSlots] = useState<SkeletonSlot[]>([])
   const [downstreamByAsset, setDownstreamByAsset] = useState<Set<string>>(
     () => new Set(),
   )
@@ -165,13 +164,28 @@ function ProjectCanvasInner({
   layoutDetailRef.current = layoutDetail
   const localEditRef = useRef(localEdit)
   localEditRef.current = localEdit
-  /** 始终读最新骨架，避免 loadGraph 闭包把占位框冲掉 */
-  const skeletonSlotsRef = useRef<SkeletonSlot[]>([])
-  skeletonSlotsRef.current = skeletonSlots
   const expandedStacksRef = useRef(expandedStacks)
   expandedStacksRef.current = expandedStacks
   const graphRef = useRef<CanvasGraph | null>(null)
   graphRef.current = graph
+  /** 打破 useCanvasSkeletons ↔ applyGraph 循环依赖 */
+  const applyGraphRef = useRef<
+    (body: CanvasGraph, selected: string | null) => void
+  >(() => undefined)
+  const {
+    skeletonSlots,
+    skeletonSlotsRef,
+    clearSkeletonGroup,
+    spawnSkeletons,
+    bindSkeletonsToJob,
+    resetSkeletonsForRetry,
+    mergeRestoredSkeletons,
+  } = useCanvasSkeletons({
+    projectId,
+    graphRef,
+    selectedId,
+    applyGraph: (body, selected) => applyGraphRef.current(body, selected),
+  })
   const loadSeqRef = useRef(0)
   const { fitView, zoomIn, zoomOut, setCenter, getNode } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
@@ -366,6 +380,7 @@ function ProjectCanvasInner({
     },
     [setNodes, setEdges, collapseStack],
   )
+  applyGraphRef.current = applyGraph
 
   // 骨架 / 堆叠展开态变化时重排；**不要** fitView，否则会打断用户缩放/平移
   useEffect(() => {
@@ -655,154 +670,6 @@ function ProjectCanvasInner({
     }
   }, [])
 
-  const clearSkeletonGroup = useCallback(
-    (groupId: string) => {
-      setSkeletonSlots((current) => {
-        const removed = current.filter((s) => s.groupId === groupId)
-        const next = current.filter((s) => s.groupId !== groupId)
-        skeletonSlotsRef.current = next
-        for (const slot of removed) {
-          removeActiveCanvasJob(projectId, {
-            groupId: slot.groupId,
-            jobId: slot.jobId,
-          })
-        }
-        return next
-      })
-    },
-    [projectId],
-  )
-
-  const spawnSkeletons = useCallback(
-    (
-      action: string,
-      parent: CanvasGraphNode | null,
-      extras?: {
-        selectedSpaceIds?: string[]
-        selectedStyleVariants?: string[]
-        selectedToneVariants?: string[]
-        selectedAxonometricVariants?: string[]
-      },
-    ): string => {
-      const groupId = `gen-${action}-${Date.now()}`
-      const slots = expectedSkeletonSlots(action, parent, extras).map(
-        (slot, index) => ({
-          ...slot,
-          id: `${groupId}-${index + 1}`,
-          groupId,
-        }),
-      )
-      setSkeletonSlots((current) => {
-        const next = [...current, ...slots]
-        skeletonSlotsRef.current = next
-        return next
-      })
-      // 同步立即上屏（不等 useEffect），避免被异步 load 抢先
-      const body = graphRef.current
-      if (body) {
-        // 微任务后 apply：等 ref 写入
-        queueMicrotask(() => {
-          applyGraph(body, parent?.id ?? null)
-        })
-      }
-      return groupId
-    },
-    [applyGraph],
-  )
-
-  /** 绑定 jobId，并据 result 刷新进度 / partial 预览 / 失败态 */
-  const bindSkeletonsToJob = useCallback(
-    (groupId: string, job: Job) => {
-      setSkeletonSlots((current) => {
-        const group = current.filter((s) => s.groupId === groupId)
-        const total = group.length || 1
-        const result = (job.result || {}) as Record<string, unknown>
-        const outputs = Array.isArray(result.outputs)
-          ? (result.outputs as Array<Record<string, unknown>>)
-          : Array.isArray(result.layouts)
-            ? (result.layouts as Array<Record<string, unknown>>)
-            : []
-        const succeededFromResult =
-          typeof result.succeededCount === 'number'
-            ? result.succeededCount
-            : outputs.filter(
-                (o) =>
-                  o &&
-                  (o.status === 'succeeded' ||
-                    typeof o.url === 'string' ||
-                    typeof o.previewUrl === 'string'),
-              ).length
-        const next = current.map((slot) => {
-          if (slot.groupId !== groupId) return slot
-          // 按槽位顺序映射 partial 输出
-          const groupIndex = group.findIndex((s) => s.id === slot.id)
-          const out =
-            groupIndex >= 0 && groupIndex < outputs.length
-              ? outputs[groupIndex]
-              : null
-          const outUrl =
-            out && typeof out === 'object'
-              ? String(out.url || out.previewUrl || '')
-              : ''
-          const outOk =
-            Boolean(outUrl) &&
-            (!out?.status || out.status === 'succeeded')
-          return {
-            ...slot,
-            jobId: job.id,
-            jobStatus: job.status,
-            totalCount: total,
-            succeededCount: succeededFromResult,
-            url: outOk ? outUrl : slot.url,
-            errorMessage:
-              job.status === 'FAILED'
-                ? job.errorMessage || '生成失败'
-                : job.status === 'CANCELED'
-                  ? '已取消'
-                  : null,
-            label:
-              job.status === 'FAILED'
-                ? `${slot.label.replace(/（.*?）$/, '')}（失败）`
-                : outOk
-                  ? slot.label.replace(/（.*?）$/, '').replace(/…$/, '') +
-                    '（已出图）'
-                  : slot.label,
-          }
-        })
-        skeletonSlotsRef.current = next
-        const groupSlots = next.filter((s) => s.groupId === groupId)
-        if (groupSlots.length) {
-          const action =
-            actionFromJobType(job.type) ||
-            (groupSlots[0].workflowStage === 'layout'
-              ? 'generate_layout'
-              : groupSlots[0].workflowStage)
-          upsertActiveCanvasJob(projectId, {
-            jobId: job.id,
-            action,
-            groupId,
-            parentAssetId: groupSlots[0].parentAssetId,
-            parentNodeId: groupSlots[0].parentNodeId,
-            slots: groupSlots.map((s) => ({
-              id: s.id,
-              label: s.label,
-              workflowStage: s.workflowStage,
-            })),
-            updatedAt: Date.now(),
-          })
-        }
-        // 立刻把进度画上
-        if (graphRef.current) {
-          queueMicrotask(() => {
-            if (graphRef.current) applyGraph(graphRef.current, selectedId)
-          })
-        }
-        return next
-      })
-    },
-    [projectId, applyGraph, selectedId],
-  )
-
   /** 离开再进入：恢复进行中任务的占位框并继续轮询 */
   const resumeActiveJobs = useCallback(
     async (signal?: AbortSignal) => {
@@ -826,17 +693,7 @@ function ProjectCanvasInner({
         }
         upsertActiveCanvasJob(projectId, item)
       }
-      setSkeletonSlots((current) => {
-        const existingJobIds = new Set(
-          current.map((s) => s.jobId).filter(Boolean),
-        )
-        const merged = [
-          ...current,
-          ...restored.filter((s) => !existingJobIds.has(s.jobId)),
-        ]
-        skeletonSlotsRef.current = merged
-        return merged
-      })
+      mergeRestoredSkeletons(restored)
       if (graphRef.current) {
         applyGraph(graphRef.current, selectedId)
       }
@@ -902,6 +759,7 @@ function ProjectCanvasInner({
       clearSkeletonGroup,
       loadGraph,
       bindSkeletonsToJob,
+      mergeRestoredSkeletons,
     ],
   )
 
@@ -1027,23 +885,7 @@ function ProjectCanvasInner({
           setNotice('正在重试生成…')
           // 重置该组骨架为生成中
           if (groupId) {
-            setSkeletonSlots((current) => {
-              const next = current.map((s) =>
-                s.groupId === groupId
-                  ? {
-                      ...s,
-                      jobStatus: 'QUEUED',
-                      errorMessage: null,
-                      label: s.label
-                        .replace(/（失败）$/, '')
-                        .replace(/（已出图）$/, ''),
-                      url: undefined,
-                    }
-                  : s,
-              )
-              skeletonSlotsRef.current = next
-              return next
-            })
+            resetSkeletonsForRetry(groupId)
             if (graphRef.current) applyGraph(graphRef.current, selectedId)
           }
           try {
@@ -1511,6 +1353,7 @@ function ProjectCanvasInner({
       spawnSkeletons,
       bindSkeletonsToJob,
       clearSkeletonGroup,
+      resetSkeletonsForRetry,
       applyGraph,
       selectedId,
     ],

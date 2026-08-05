@@ -6,7 +6,7 @@ import {
   assetUrl,
   type SceneAsset,
   type SceneAssetDetail,
-} from './api'
+} from '../api'
 
 export type WorkflowAssetPickerStage =
   | 'color_plan'
