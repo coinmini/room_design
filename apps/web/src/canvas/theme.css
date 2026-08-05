@@ -186,3 +186,114 @@
     background-position: -200% 0;
   }
 }
+
+/* —— 观感 A：画布壳 —— */
+.canvas-theme.canvas-shell {
+  background: var(--canvas-bg);
+}
+
+.canvas-theme .canvas-topbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.canvas-theme .canvas-topbar > * {
+  pointer-events: auto;
+}
+
+.canvas-theme .canvas-bottombar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 6;
+}
+
+.canvas-theme .canvas-prompt-inline {
+  height: 32px;
+  min-width: 180px;
+  max-width: 280px;
+  padding: 0 12px;
+  border-radius: var(--canvas-radius-pill);
+  border: 1px solid var(--canvas-border);
+  background: var(--canvas-bg);
+  color: var(--canvas-text);
+  font-size: 12px;
+}
+
+.canvas-theme .canvas-toast {
+  position: absolute;
+  top: 64px;
+  right: 16px;
+  z-index: 7;
+  max-width: 360px;
+  padding: 10px 14px;
+  border-radius: var(--canvas-radius);
+  background: var(--canvas-card);
+  border: 1px solid var(--canvas-border);
+  box-shadow: var(--canvas-shadow);
+  font-size: 13px;
+}
+
+.canvas-theme .canvas-toast-error {
+  color: var(--canvas-danger);
+  left: 16px;
+  right: auto;
+}
+
+.canvas-theme .canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.canvas-theme .canvas-empty .canvas-card {
+  pointer-events: auto;
+}
+
+.canvas-theme .canvas-context-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 220px;
+  padding: 6px;
+  box-shadow: var(--canvas-shadow);
+}
+
+.canvas-theme .canvas-context-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--canvas-text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.canvas-theme .canvas-context-item:hover:not(:disabled) {
+  background: var(--canvas-card-hover);
+}
+
+.canvas-theme .canvas-context-item:disabled {
+  color: var(--canvas-text-muted);
+  cursor: not-allowed;
+}
+
+.canvas-theme .canvas-muted-pill {
+  color: var(--canvas-text-muted);
+}

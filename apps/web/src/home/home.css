@@ -2,8 +2,30 @@
   min-height: 100vh;
   display: grid;
   grid-template-columns: 56px 1fr;
-  background: var(--canvas-bg);
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(59, 130, 246, 0.12), transparent 55%),
+    radial-gradient(circle at 20% 80%, rgba(255, 255, 255, 0.03), transparent 40%),
+    var(--canvas-bg);
   color: var(--canvas-text);
+  position: relative;
+}
+
+.home-page::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(1px 1px at 20px 30px, rgba(255, 255, 255, 0.35), transparent),
+    radial-gradient(1px 1px at 80px 120px, rgba(255, 255, 255, 0.25), transparent),
+    radial-gradient(1px 1px at 160px 60px, rgba(255, 255, 255, 0.2), transparent);
+  background-size: 200px 200px;
+  opacity: 0.35;
+  z-index: 0;
+}
+
+.home-page > * {
+  position: relative;
+  z-index: 1;
 }
 
 .home-rail {

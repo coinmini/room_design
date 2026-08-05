@@ -151,6 +151,20 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   return xhrRequest(url, finalInit)
 }
 
+export function createFloorplanAnalyze(form: FormData) {
+  return apiFetch('/v1/floorplans/analyze', {
+    method: 'POST',
+    body: form,
+  })
+}
+
+export function createAiLayout(form: FormData) {
+  return apiFetch('/v1/layouts/ai', {
+    method: 'POST',
+    body: form,
+  })
+}
+
 export function createColorPlanRenders(form: FormData) {
   return apiFetch('/v1/ai-workflow/color-plans', {
     method: 'POST',
