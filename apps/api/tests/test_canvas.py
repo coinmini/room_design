@@ -12,7 +12,11 @@ from app.assets import ensure_scene_asset
 from app.database import SessionLocal, init_db
 from app.jobs import create_job
 from app.main import app
-from app.models import Project, SceneAsset
+from app.models import Job, Project, SceneAsset
+
+# 本文件不依赖其他测试的执行顺序：自行确保测试库建表 + 轻量迁移
+from app.models import Job, Project, SceneAsset
+from app.canvas import build_project_canvas_graph, canvas_node_id, expand_asset_variants, partial_node_id
 
 # 本文件不依赖其他测试的执行顺序：自行确保测试库建表 + 轻量迁移
 init_db()
@@ -257,3 +261,134 @@ def test_canvas_graph_nodes_edges_and_endpoint() -> None:
         assert body["projectId"] == project_id
         assert body["nodeCount"] == len(body["nodes"])
         assert {e["id"] for e in body["edges"]} >= {f"{parent.id}->{child.id}"}
+
+
+
+def _make_cancelled_job_with_partial_outputs(
+    job_type: str,
+    payload: dict[str, Any],
+    result: dict[str, Any],
+    *,
+    project_id: str | None = None,
+) -> str:
+    """Create a cancelled job that has partial outputs in result. Returns job_id."""
+    with SessionLocal() as session:
+        job = create_job(
+            session,
+            job_type=job_type,
+            payload=payload,
+            project_id=project_id,
+        )
+        job.status = "CANCELED"
+        job.result = result
+        session.commit()
+        return job.id
+
+
+def test_cancelled_job_partial_outputs_appear_as_temporary_nodes() -> None:
+    """W0-f：取消 job 的 partial outputs 作为临时节点出现在画布图谱中。"""
+    project_id = _project("project_partial_test")
+    # 先建一个成功资产作为父节点
+    parent = _make_asset(
+        "AI_COLOR_PLAN",
+        {"variant_group_id": "vg-parent"},
+        {
+            "workflowStage": "color_plan",
+            "outputs": [
+                {"variantId": "warm", "url": "/artifacts/parent.png", "status": "succeeded"},
+            ],
+        },
+        project_id=project_id,
+    )
+    # 再建一个取消 job，带 partial outputs
+    cancelled_job_id = _make_cancelled_job_with_partial_outputs(
+        "AI_STYLE_SCHEME",
+        {
+            "variant_group_id": "vg-cancelled",
+            "asset_parent_id": parent.id,
+            "parent_variant_id": "warm",
+        },
+        {
+            "workflowStage": "style_scheme",
+            "batchStatus": "canceled",
+            "outputs": [
+                {"variantId": "wabi_sabi", "url": "/artifacts/c-1.png", "status": "succeeded"},
+                {"variantId": "industrial", "url": "/artifacts/c-2.png", "status": "succeeded"},
+            ],
+        },
+        project_id=project_id,
+    )
+
+    with SessionLocal() as session:
+        graph = build_project_canvas_graph(session, project_id)
+
+    # 应包含成功资产节点 + 2 个临时节点
+    node_ids = {node["id"] for node in graph["nodes"]}
+    assert canvas_node_id(parent.id, "warm") in node_ids
+    from app.canvas import partial_node_id
+    assert partial_node_id(cancelled_job_id, "wabi_sabi") in node_ids
+    assert partial_node_id(cancelled_job_id, "industrial") in node_ids
+
+    # 临时节点标记
+    temp_nodes = [n for n in graph["nodes"] if n.get("isTemporary")]
+    assert len(temp_nodes) == 2
+    for node in temp_nodes:
+        assert node["jobStatus"] == "CANCELED"
+        assert node["approved"] is False
+        assert node["status"] == "partial"
+        assert node["assetType"] == "partial_output"
+
+    # 端点验证
+    with TestClient(app) as client:
+        response = client.get(f"/v1/projects/{project_id}/canvas-graph")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["partialJobCount"] == 1
+        assert body["nodeCount"] == 3  # 1 成功 + 2 临时
+
+
+def test_failed_job_partial_outputs_appear_as_temporary_nodes() -> None:
+    """W0-f：失败 job 的 partial outputs 也作为临时节点出现。"""
+    project_id = _project("project_failed_test")
+    failed_job_id = _make_cancelled_job_with_partial_outputs(
+        "WHITE_MODEL_RENDER",
+        {"source_path": "/tmp/room.png"},
+        {
+            "outputs": [
+                {"variantId": "modern", "url": "/artifacts/wm-1.png"},
+            ],
+            "error": "partial failure",
+        },
+        project_id=project_id,
+    )
+    # 把状态改成 FAILED（_make_cancelled_job_with_partial_outputs 默认 CANCELED）
+    with SessionLocal() as session:
+        job = session.get(Job, failed_job_id)
+        job.status = "FAILED"
+        session.commit()
+
+    with SessionLocal() as session:
+        graph = build_project_canvas_graph(session, project_id)
+
+    from app.canvas import partial_node_id
+    assert partial_node_id(failed_job_id, "modern") in {n["id"] for n in graph["nodes"]}
+    temp_node = next(n for n in graph["nodes"] if n.get("isTemporary"))
+    assert temp_node["jobStatus"] == "FAILED"
+
+
+def test_cancelled_job_without_outputs_does_not_create_nodes() -> None:
+    """W0-f：取消 job 若无任何输出，不应产生临时节点。"""
+    project_id = _project("project_empty_cancel_test")
+    _make_cancelled_job_with_partial_outputs(
+        "AI_COLOR_PLAN",
+        {"variant_group_id": "vg-empty"},
+        {"batchStatus": "canceled", "outputs": []},
+        project_id=project_id,
+    )
+
+    with SessionLocal() as session:
+        graph = build_project_canvas_graph(session, project_id)
+
+    assert all(not n.get("isTemporary") for n in graph["nodes"])
+    assert graph["partialJobCount"] == 1  # job 被计数
+    assert graph["nodeCount"] == 0
