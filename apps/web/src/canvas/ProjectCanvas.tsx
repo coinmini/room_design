@@ -192,6 +192,12 @@ function ProjectCanvasInner({
   stage01ByJobRef.current = stage01ByJob
   const structureEditorRef = useRef(structureEditor)
   structureEditorRef.current = structureEditor
+  /** 始终读最新骨架，避免 loadGraph 闭包把占位框冲掉 */
+  const skeletonSlotsRef = useRef<SkeletonSlot[]>([])
+  skeletonSlotsRef.current = skeletonSlots
+  const graphRef = useRef<CanvasGraph | null>(null)
+  graphRef.current = graph
+  const loadSeqRef = useRef(0)
   const { fitView, zoomIn, zoomOut, setCenter, getNode } = useReactFlow()
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
@@ -222,12 +228,11 @@ function ProjectCanvasInner({
   )
 
   const applyGraph = useCallback(
-    (
-      body: CanvasGraph,
-      selected: string | null,
-      skeletons: SkeletonSlot[] = skeletonSlots,
-    ) => {
+    (body: CanvasGraph, selected: string | null) => {
+      // 永远合并 ref 里的最新骨架，防止异步 loadGraph 用空闭包冲掉占位框
+      const skeletons = skeletonSlotsRef.current
       setGraph(body)
+      graphRef.current = body
       const parentIds = new Set<string>()
       for (const edge of body.edges) {
         if (edge.sourceAssetId) parentIds.add(edge.sourceAssetId)
@@ -256,9 +261,9 @@ function ProjectCanvasInner({
       const flowEdges = resolveFlowEdges(body.nodes, body.edges)
       const confirmedJobs = stage01ByJobRef.current
 
-      // 父节点 → 骨架占位连线
+      const parentIdSet = new Set(body.nodes.map((n) => n.id))
       const skeletonEdges = skeletons
-        .filter((s) => s.parentNodeId)
+        .filter((s) => s.parentNodeId && parentIdSet.has(s.parentNodeId))
         .map((s) => ({
           id: `sk-edge:${s.id}`,
           source: s.parentNodeId!,
@@ -295,43 +300,47 @@ function ProjectCanvasInner({
           }
         }),
       )
-      setEdges(
-        [
-          ...flowEdges.map((edge) => ({
-            id: edge.id,
-            source: edge.source,
-            target: edge.target,
-            type: 'default' as const,
-            style: { stroke: 'rgba(255,255,255,0.22)', strokeWidth: 1.5 },
-          })),
-          ...skeletonEdges.map((edge) => ({
-            id: edge.id,
-            source: edge.source,
-            target: edge.target,
-            type: 'default' as const,
-            animated: true,
-            style: {
-              stroke: 'rgba(59,130,246,0.55)',
-              strokeWidth: 1.5,
-              strokeDasharray: '6 4',
-            },
-          })),
-        ],
-      )
+      setEdges([
+        ...flowEdges.map((edge) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          type: 'default' as const,
+          style: { stroke: 'rgba(255,255,255,0.22)', strokeWidth: 1.5 },
+        })),
+        ...skeletonEdges.map((edge) => ({
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          type: 'default' as const,
+          animated: true,
+          style: {
+            stroke: 'rgba(59,130,246,0.55)',
+            strokeWidth: 1.5,
+            strokeDasharray: '6 4',
+          },
+        })),
+      ])
     },
-    [setNodes, setEdges, skeletonSlots],
+    [setNodes, setEdges],
   )
 
-  // 骨架一更新就重排节点（不必等 loadGraph）
+  // 骨架一更新就重排（读 ref 合并进当前 graph）
   useEffect(() => {
-    if (!graph) return
-    applyGraph(graph, selectedId, skeletonSlots)
+    const body = graphRef.current
+    if (!body) return
+    applyGraph(body, selectedId)
+    // 占位出现后轻微适配，避免在视口外
+    if (skeletonSlots.length > 0) {
+      requestAnimationFrame(() => fitView({ padding: 0.2, duration: 200 }))
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [skeletonSlots])
 
   const loadGraph = useCallback(
     async (opts?: { fit?: boolean }) => {
       if (!projectId) return
+      const seq = ++loadSeqRef.current
       setLoading(true)
       setError('')
       try {
@@ -342,14 +351,17 @@ function ProjectCanvasInner({
           throw new Error(`加载画布图谱失败：${response.status}`)
         }
         const body = (await response.json()) as CanvasGraph
+        // 丢弃过期响应，避免冲掉更新的骨架
+        if (seq !== loadSeqRef.current) return
         applyGraph(body, selectedId)
         if (opts?.fit !== false) {
           requestAnimationFrame(() => fitView({ padding: 0.18, duration: 200 }))
         }
       } catch (value) {
+        if (seq !== loadSeqRef.current) return
         setError(value instanceof Error ? value.message : '加载失败')
       } finally {
-        setLoading(false)
+        if (seq === loadSeqRef.current) setLoading(false)
       }
     },
     [projectId, applyGraph, selectedId, fitView],
@@ -405,7 +417,11 @@ function ProjectCanvasInner({
   }, [])
 
   const clearSkeletonGroup = useCallback((groupId: string) => {
-    setSkeletonSlots((current) => current.filter((s) => s.groupId !== groupId))
+    setSkeletonSlots((current) => {
+      const next = current.filter((s) => s.groupId !== groupId)
+      skeletonSlotsRef.current = next
+      return next
+    })
   }, [])
 
   const spawnSkeletons = useCallback(
@@ -416,19 +432,36 @@ function ProjectCanvasInner({
         id: `${groupId}-${index + 1}`,
         groupId,
       }))
-      setSkeletonSlots((current) => [...current, ...slots])
+      setSkeletonSlots((current) => {
+        const next = [...current, ...slots]
+        skeletonSlotsRef.current = next
+        return next
+      })
+      // 同步立即上屏（不等 useEffect），避免被异步 load 抢先
+      const body = graphRef.current
+      if (body) {
+        // 微任务后 apply：等 ref 写入
+        queueMicrotask(() => {
+          applyGraph(body, parent?.id ?? null)
+        })
+      }
       return groupId
+    },
+    [applyGraph],
+  )
+
+  const bindSkeletonsToJob = useCallback(
+    (groupId: string, job: Job) => {
+      setSkeletonSlots((current) => {
+        const next = current.map((slot) =>
+          slot.groupId === groupId ? { ...slot, jobId: job.id } : slot,
+        )
+        skeletonSlotsRef.current = next
+        return next
+      })
     },
     [],
   )
-
-  const bindSkeletonsToJob = useCallback((groupId: string, job: Job) => {
-    setSkeletonSlots((current) =>
-      current.map((slot) =>
-        slot.groupId === groupId ? { ...slot, jobId: job.id } : slot,
-      ),
-    )
-  }, [])
 
   const runAction = useCallback(
     async (
@@ -439,7 +472,7 @@ function ProjectCanvasInner({
       setContextMenu(null)
       setNotice('')
 
-      // 防连点：同一生成动作进行中直接提示
+      // 防连点：同一生成动作进行中直接提示（不拆掉已有占位框）
       if (
         busy &&
         [
@@ -477,7 +510,6 @@ function ProjectCanvasInner({
           return
         }
 
-        // 01 结构：打开全屏 FloorplanModule（图1），不再只打开静态 overlay
         if (
           (action === 'view_structure' || action === 'edit_structure') &&
           node
@@ -499,7 +531,6 @@ function ProjectCanvasInner({
           }
         }
 
-        // 点击即出占位框图（布局固定 2 个方案框）
         const needsSkeleton = [
           'generate_layout',
           'generate_color_plan',
@@ -517,11 +548,13 @@ function ProjectCanvasInner({
           const n = expectedSkeletonSlots(action, node).length
           setNotice(
             action === 'generate_layout'
-              ? `正在生成 ${n} 个布局方案…（图中已显示占位框）`
+              ? `正在生成 ${n} 个布局方案…右侧/下一列已显示占位框`
               : `正在${actionLabel(action)}…`,
           )
-          // 让出一帧，确保骨架先上屏
-          await new Promise((r) => requestAnimationFrame(() => r(undefined)))
+          // 等 React 提交骨架 state + 一帧绘制
+          await new Promise<void>((resolve) => {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+          })
         }
 
         const result = await executeCanvasAction({
@@ -533,13 +566,16 @@ function ProjectCanvasInner({
             ...extras,
           },
           onJob: (job) => {
-            if (skeletonGroupId) bindSkeletonsToJob(skeletonGroupId, job)
-            if (['SUCCEEDED', 'FAILED', 'CANCELED'].includes(job.status)) {
-              if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
+            // 进行中只绑定 jobId，**不要**在 SUCCEEDED 时立刻清骨架
+            // （清早了会出现「闪一下就没了」，真实节点还在 loadGraph 路上）
+            if (
+              skeletonGroupId &&
+              ['QUEUED', 'RUNNING'].includes(job.status)
+            ) {
+              bindSkeletonsToJob(skeletonGroupId, job)
             }
           },
           onNeedPanel: (next) => {
-            // 需要弹窗时先清占位（用户还在填参数）
             if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
             skeletonGroupId = null
             setPanel(next)
@@ -554,13 +590,15 @@ function ProjectCanvasInner({
           return
         }
 
-        if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
         setNotice(result.message)
         setPanel(null)
         setPanelNode(null)
+        // 先拉真实图谱，再拆占位，避免空白闪断
         await loadGraph({ fit: false })
+        if (skeletonGroupId) clearSkeletonGroup(skeletonGroupId)
+        // 再 apply 一次确保骨架已从 ref 去掉
+        if (graphRef.current) applyGraph(graphRef.current, selectedId)
 
-        // 01 识别成功后自动打开结构编辑器（图1）
         if (
           (action === 'upload_floorplan_submit' || action === 'reanalyze') &&
           result.job?.id &&
@@ -622,6 +660,8 @@ function ProjectCanvasInner({
       spawnSkeletons,
       bindSkeletonsToJob,
       clearSkeletonGroup,
+      applyGraph,
+      selectedId,
     ],
   )
 
