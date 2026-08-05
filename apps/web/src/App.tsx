@@ -106,18 +106,11 @@ const navGroups: Array<{ label: string; items: ModuleDef[] }> = [
     items: [
       { id: 'overview', number: '00', title: '项目总览', short: 'Overview' },
       {
-        id: 'workflow',
-        number: 'W',
-        title: 'AI 设计工作流',
-        short: '8-stage Workflow',
-        badge: 'NEW',
-      },
-      {
         id: 'canvas',
         number: 'C',
         title: '无限画布',
         short: 'Project Canvas',
-        badge: 'NEW',
+        badge: '主路径',
       },
     ],
   },
@@ -137,6 +130,13 @@ const navGroups: Array<{ label: string; items: ModuleDef[] }> = [
         {
           label: '历史实验能力',
           items: [
+            {
+              id: 'workflow' as const,
+              number: 'H0',
+              title: '旧版 8 阶段向导',
+              short: 'Legacy Workflow',
+              badge: '废弃',
+            },
             {
               id: 'floorplan' as const,
               number: 'H1',
@@ -1168,11 +1168,17 @@ function App({ initialModule = null, initialAssetId = null }: AppProps = {}) {
       return resolveModuleId(initialModule) ?? 'assets'
     }
     const fromQuery = resolveModuleId(initialModule)
+    // 旧向导仅在显式 legacy 开关时允许；否则落到画布
+    if (fromQuery === 'workflow' && !showLegacyTools) {
+      return 'canvas'
+    }
     if (fromQuery) return fromQuery
     // 兼容旧深链：WorkspaceBridge 曾写入 sessionStorage
     const fromSession = sessionStorage.getItem('room_design_workspace_module')
     sessionStorage.removeItem('room_design_workspace_module')
-    return resolveModuleId(fromSession) ?? 'workflow'
+    const resolved = resolveModuleId(fromSession)
+    if (resolved === 'workflow' && !showLegacyTools) return 'canvas'
+    return resolved ?? 'canvas'
   })
   const activeModule = useMemo(
     () => modules.find((item) => item.id === active) ?? modules[0],

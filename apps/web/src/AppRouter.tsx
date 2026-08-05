@@ -6,16 +6,24 @@ import ProjectCanvasPage from './home/ProjectCanvasPage'
 import ProjectsPage from './home/ProjectsPage'
 import './home/home.css'
 
-/** 兼容 workspace?module=&assetId=；资产模块改走独立深色全页（无旧侧栏）。 */
+/**
+ * 兼容旧 /workspace 深链。
+ * - assets → 独立资产页
+ * - 其余默认导向首页（画布主路径）；legacy 向导仅 VITE_SHOW_LEGACY_TOOLS=true 时保留
+ */
 function WorkspaceBridge() {
   const [params] = useSearchParams()
   const module = params.get('module')
   const assetId = params.get('assetId')
+  const showLegacy = import.meta.env.VITE_SHOW_LEGACY_TOOLS === 'true'
   if (module === 'assets') {
     const qs = assetId
       ? `?assetId=${encodeURIComponent(assetId)}`
       : ''
     return <Navigate to={`/assets${qs}`} replace />
+  }
+  if (!showLegacy) {
+    return <Navigate to="/" replace />
   }
   return (
     <App

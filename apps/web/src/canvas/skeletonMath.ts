@@ -15,12 +15,21 @@ export type SkeletonSlot = {
   parentNodeId?: string
   /** 绑定到真实 job 后写入 */
   jobId?: string
+  /** QUEUED | RUNNING | FAILED | CANCELED */
+  jobStatus?: string
+  /** 已完成张数 / 总张数（进度文案） */
+  succeededCount?: number
+  totalCount?: number
+  /** partial 已出图时的预览 URL */
+  url?: string | null
+  errorMessage?: string | null
 }
 
 export type SkeletonExtras = {
   selectedSpaceIds?: string[]
   selectedStyleVariants?: string[]
   selectedToneVariants?: string[]
+  selectedAxonometricVariants?: string[]
 }
 
 export function expectedSkeletonSlots(
@@ -55,6 +64,15 @@ export function expectedSkeletonSlots(
     }))
   }
   if (action === 'generate_axonometric') {
+    const ids = extras?.selectedAxonometricVariants
+    if (ids?.length) {
+      return ids.map((_id, i) => ({
+        label: `轴侧 ${i + 1}`,
+        workflowStage: 'axonometric',
+        parentAssetId,
+        parentNodeId,
+      }))
+    }
     return [1, 2, 3].map((n) => ({
       label: `轴侧 ${n}`,
       workflowStage: 'axonometric',

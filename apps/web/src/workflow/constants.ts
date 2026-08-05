@@ -11,6 +11,16 @@ export const AXONOMETRIC_VARIANTS = [
   'alternate_angle',
 ] as const
 
+/** 轴侧方案中文名 */
+export const AXONOMETRIC_VARIANT_LABELS: Record<
+  (typeof AXONOMETRIC_VARIANTS)[number],
+  string
+> = {
+  isometric_day: '日景轴侧',
+  isometric_night: '夜景轴侧',
+  alternate_angle: '替代角度',
+}
+
 export const STYLE_SCHEME_VARIANTS = [
   'modern_minimal',
   'natural_wood',

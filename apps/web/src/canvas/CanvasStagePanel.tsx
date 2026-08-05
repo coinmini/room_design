@@ -15,6 +15,8 @@ type Props = {
   onSubmitStyles?: (variantIds: string[]) => void
   /** 色调方案：勾选的 variant id */
   onSubmitTones?: (variantIds: string[]) => void
+  /** 轴侧方案：勾选的 variant id */
+  onSubmitAxonometrics?: (variantIds: string[]) => void
   onSubmitLocalEdit: (markFile: File, editPrompt: string) => void
 }
 
@@ -22,7 +24,11 @@ const MARK_COLOR = '#FF3B30'
 
 function defaultSelectedIds(panel: StagePanelRequest): string[] {
   if (panel.kind === 'space_select') return panel.rooms.map((r) => r.id)
-  if (panel.kind === 'style_select' || panel.kind === 'tone_select') {
+  if (
+    panel.kind === 'style_select' ||
+    panel.kind === 'tone_select' ||
+    panel.kind === 'axonometric_select'
+  ) {
     return panel.options.map((o) => o.id)
   }
   return []
@@ -38,6 +44,7 @@ export default function CanvasStagePanel({
   onSubmitSpaces,
   onSubmitStyles,
   onSubmitTones,
+  onSubmitAxonometrics,
   onSubmitLocalEdit,
 }: Props) {
   const [file, setFile] = useState<File | null>(null)
@@ -129,7 +136,9 @@ export default function CanvasStagePanel({
   const selectOptions =
     panel.kind === 'space_select'
       ? panel.rooms.map((r) => ({ id: r.id, name: r.name, sub: r.id }))
-      : panel.kind === 'style_select' || panel.kind === 'tone_select'
+      : panel.kind === 'style_select' ||
+          panel.kind === 'tone_select' ||
+          panel.kind === 'axonometric_select'
         ? panel.options.map((o) => ({ id: o.id, name: o.name, sub: o.id }))
         : []
   const allSelectIds = selectOptions.map((o) => o.id)
@@ -139,8 +148,9 @@ export default function CanvasStagePanel({
   const isMultiSelectPanel =
     panel.kind === 'space_select' ||
     panel.kind === 'style_select' ||
-    panel.kind === 'tone_select'
-  /** 05/06/07 选择面板统一紧凑胶囊，不拉成大框 */
+    panel.kind === 'tone_select' ||
+    panel.kind === 'axonometric_select'
+  /** 选择面板统一紧凑胶囊，不拉成大框 */
   const isChipSelect = isMultiSelectPanel
 
   const selectCopy =
@@ -162,14 +172,23 @@ export default function CanvasStagePanel({
             placeholder: '材质偏好、软装方向、色调氛围…',
             submit: (n: number) => `生成 ${n} 种风格`,
           }
-        : {
-            kicker: '引用上游 · 生成 05 分空间',
-            title: '选择要生成的分空间',
-            desc: '勾选需要出效果图的房间。默认全选，可按需只生成客厅、主卧等特定空间。',
-            unit: '个空间',
-            placeholder: '现代原木、暖光、简洁收纳…',
-            submit: (n: number) => `生成 ${n} 个空间`,
-          }
+        : panel.kind === 'axonometric_select'
+          ? {
+              kicker: '引用 03 彩平 · 生成 04 轴侧',
+              title: '选择要生成的轴侧方案',
+              desc: '勾选需要生成的轴侧角度。默认 3 种全选，可只生成其中 1～2 种。',
+              unit: '种轴侧',
+              placeholder: '日景、夜景、观察角度…',
+              submit: (n: number) => `生成 ${n} 种轴侧`,
+            }
+          : {
+              kicker: '引用上游 · 生成 05 分空间',
+              title: '选择要生成的分空间',
+              desc: '勾选需要出效果图的房间。默认全选，可按需只生成客厅、主卧等特定空间。',
+              unit: '个空间',
+              placeholder: '现代原木、暖光、简洁收纳…',
+              submit: (n: number) => `生成 ${n} 个空间`,
+            }
 
   return (
     <div
@@ -370,6 +389,8 @@ export default function CanvasStagePanel({
                     onSubmitStyles?.(selected)
                   } else if (panel.kind === 'tone_select') {
                     onSubmitTones?.(selected)
+                  } else if (panel.kind === 'axonometric_select') {
+                    onSubmitAxonometrics?.(selected)
                   } else {
                     onSubmitSpaces(selected)
                   }

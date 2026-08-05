@@ -34,6 +34,10 @@ export type CanvasGraphNode = {
   isTemporary?: boolean
   jobStatus?: string | null
   isSkeleton?: boolean
+  /** 生成进度：已完成 / 总数（骨架节点） */
+  progressSucceeded?: number | null
+  progressTotal?: number | null
+  errorMessage?: string | null
   /** 分空间等多图堆叠：折叠态代表节点 */
   isStack?: boolean
   /** 堆叠分组 key（asset / job） */

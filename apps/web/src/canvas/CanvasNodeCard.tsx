@@ -198,9 +198,32 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
         ) : node.isSkeleton ? (
           <span
             className="canvas-pill"
-            style={{ height: 22, padding: '0 8px' }}
+            style={{
+              height: 22,
+              padding: '0 8px',
+              ...(node.jobStatus === 'FAILED'
+                ? {
+                    background: 'var(--canvas-danger-muted)',
+                    borderColor: 'transparent',
+                    color: 'var(--canvas-danger)',
+                  }
+                : node.jobStatus === 'CANCELED'
+                  ? {
+                      background: 'var(--canvas-warning-muted)',
+                      borderColor: 'transparent',
+                      color: 'var(--canvas-warning)',
+                    }
+                  : {}),
+            }}
+            title={node.errorMessage || undefined}
           >
-            生成中
+            {node.jobStatus === 'FAILED'
+              ? '失败'
+              : node.jobStatus === 'CANCELED'
+                ? '已取消'
+                : node.progressSucceeded != null && node.progressTotal
+                  ? `${node.progressSucceeded}/${node.progressTotal}`
+                  : '生成中'}
           </span>
         ) : null}
       </header>
@@ -252,26 +275,87 @@ export function CanvasNodeCard({ data, selected }: NodeProps) {
               </div>
             </div>
           </div>
+        ) : node.isSkeleton && thumb ? (
+          <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+            <img
+              src={thumb}
+              alt={node.label || 'partial'}
+              draggable={false}
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                opacity: node.jobStatus === 'FAILED' ? 0.55 : 0.92,
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                left: 8,
+                bottom: 8,
+                padding: '2px 8px',
+                borderRadius: 999,
+                fontSize: 10,
+                background: 'rgba(0,0,0,0.55)',
+                color: '#fff',
+              }}
+            >
+              {node.jobStatus === 'FAILED'
+                ? '失败 · 可重试'
+                : node.jobStatus === 'CANCELED'
+                  ? '已取消'
+                  : '部分已出图'}
+            </div>
+          </div>
         ) : node.isSkeleton ? (
           <div
             style={{
               width: '86%',
               height: '78%',
               borderRadius: 8,
-              border: '1px dashed rgba(59,130,246,0.45)',
+              border:
+                node.jobStatus === 'FAILED'
+                  ? '1px dashed rgba(239,68,68,0.55)'
+                  : '1px dashed rgba(59,130,246,0.45)',
               background:
-                'linear-gradient(90deg, var(--canvas-skeleton), var(--canvas-skeleton-shine), var(--canvas-skeleton))',
+                node.jobStatus === 'FAILED'
+                  ? 'rgba(239,68,68,0.08)'
+                  : 'linear-gradient(90deg, var(--canvas-skeleton), var(--canvas-skeleton-shine), var(--canvas-skeleton))',
               backgroundSize: '200% 100%',
-              animation: 'canvas-shimmer 1.2s ease-in-out infinite',
+              animation:
+                node.jobStatus === 'FAILED' || node.jobStatus === 'CANCELED'
+                  ? undefined
+                  : 'canvas-shimmer 1.2s ease-in-out infinite',
               display: 'grid',
               placeItems: 'center',
               color: 'var(--canvas-text-muted)',
               fontSize: 11,
               gap: 6,
+              padding: 8,
+              textAlign: 'center',
             }}
           >
-            <span style={{ opacity: 0.85 }}>生成中…</span>
-            <span style={{ fontSize: 10, opacity: 0.55 }}>请稍候</span>
+            {node.jobStatus === 'FAILED' ? (
+              <>
+                <span style={{ color: 'var(--canvas-danger)', opacity: 0.9 }}>
+                  生成失败
+                </span>
+                <span style={{ fontSize: 10, opacity: 0.65 }}>
+                  {node.errorMessage?.slice(0, 48) || '请重试或检查上游'}
+                </span>
+              </>
+            ) : node.jobStatus === 'CANCELED' ? (
+              <span style={{ opacity: 0.85 }}>已取消</span>
+            ) : (
+              <>
+                <span style={{ opacity: 0.85 }}>
+                  {node.progressSucceeded != null && node.progressTotal
+                    ? `生成中 ${node.progressSucceeded}/${node.progressTotal}`
+                    : '生成中…'}
+                </span>
+                <span style={{ fontSize: 10, opacity: 0.55 }}>请稍候</span>
+              </>
+            )}
           </div>
         ) : thumb ? (
           <img

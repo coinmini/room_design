@@ -21,6 +21,7 @@ import type { CanvasGraphNode } from '../canvas/types'
 import { normalizeStage } from '../canvas/types'
 import { approveVariantIdempotent, unapproveVariant } from './actions'
 import {
+  AXONOMETRIC_VARIANT_LABELS,
   AXONOMETRIC_VARIANTS,
   COLOR_PLAN_VARIANTS,
   STYLE_SCHEME_VARIANT_LABELS,
@@ -42,6 +43,10 @@ export type StagePanelRequest =
     }
   | {
       kind: 'tone_select'
+      options: Array<{ id: string; name: string }>
+    }
+  | {
+      kind: 'axonometric_select'
       options: Array<{ id: string; name: string }>
     }
   | {
@@ -428,6 +433,7 @@ async function runAxonometricOrSpace(
   selectedSpaceIds: string[] | undefined,
   onJob?: JobListener,
   signal?: AbortSignal,
+  selectedAxonometricVariants?: string[],
 ): Promise<Job> {
   if (!node.assetId) throw new Error('缺少上游资产')
   const asset = await fetchAsset(node.assetId)
@@ -471,7 +477,14 @@ async function runAxonometricOrSpace(
   if (designPrompt) form.append('design_prompt', designPrompt)
 
   if (kind === 'axonometric') {
-    form.append('variants', AXONOMETRIC_VARIANTS.join(','))
+    const allowed = new Set<string>(AXONOMETRIC_VARIANTS)
+    const picked = (selectedAxonometricVariants || []).filter((id) =>
+      allowed.has(id),
+    )
+    form.append(
+      'variants',
+      (picked.length ? picked : [...AXONOMETRIC_VARIANTS]).join(','),
+    )
     return postAndPoll(createAxonometricRenders(form), onJob, signal)
   }
   form.append(
@@ -599,6 +612,8 @@ export type CanvasActionExtras = {
   selectedStyleVariants?: string[]
   /** 色调方案勾选的 variant id */
   selectedToneVariants?: string[]
+  /** 轴侧方案勾选的 variant id */
+  selectedAxonometricVariants?: string[]
   markFile?: File
   editPrompt?: string
   planWidthMm?: number
@@ -717,6 +732,17 @@ export async function executeCanvasAction(params: {
   }
 
   if (action === 'generate_axonometric') {
+    if (!extras?.selectedAxonometricVariants?.length) {
+      const panel: StagePanelRequest = {
+        kind: 'axonometric_select',
+        options: AXONOMETRIC_VARIANTS.map((id) => ({
+          id,
+          name: AXONOMETRIC_VARIANT_LABELS[id] || id,
+        })),
+      }
+      onNeedPanel?.(panel)
+      return { ok: false, needPanel: panel }
+    }
     const job = await runAxonometricOrSpace(
       projectId,
       node,
@@ -725,6 +751,7 @@ export async function executeCanvasAction(params: {
       undefined,
       onJob,
       signal,
+      extras.selectedAxonometricVariants,
     )
     return { ok: true, message: '轴侧生成完成', job }
   }

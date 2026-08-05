@@ -281,7 +281,13 @@ function ProjectCanvasInner({
         variantId: item.id,
         label: item.label,
         title: item.label,
+        url: item.url || undefined,
+        thumbnailUrl: item.url || undefined,
         isSkeleton: true,
+        jobStatus: item.jobStatus || undefined,
+        progressSucceeded: item.succeededCount ?? undefined,
+        progressTotal: item.totalCount ?? undefined,
+        errorMessage: item.errorMessage || undefined,
         workflowStage: item.workflowStage,
         parentAssetId: item.parentAssetId,
         moduleKey:
@@ -696,6 +702,7 @@ function ProjectCanvasInner({
         selectedSpaceIds?: string[]
         selectedStyleVariants?: string[]
         selectedToneVariants?: string[]
+        selectedAxonometricVariants?: string[]
       },
     ): string => {
       const groupId = `gen-${action}-${Date.now()}`
@@ -724,12 +731,65 @@ function ProjectCanvasInner({
     [applyGraph],
   )
 
+  /** 绑定 jobId，并据 result 刷新进度 / partial 预览 / 失败态 */
   const bindSkeletonsToJob = useCallback(
     (groupId: string, job: Job) => {
       setSkeletonSlots((current) => {
-        const next = current.map((slot) =>
-          slot.groupId === groupId ? { ...slot, jobId: job.id } : slot,
-        )
+        const group = current.filter((s) => s.groupId === groupId)
+        const total = group.length || 1
+        const result = (job.result || {}) as Record<string, unknown>
+        const outputs = Array.isArray(result.outputs)
+          ? (result.outputs as Array<Record<string, unknown>>)
+          : Array.isArray(result.layouts)
+            ? (result.layouts as Array<Record<string, unknown>>)
+            : []
+        const succeededFromResult =
+          typeof result.succeededCount === 'number'
+            ? result.succeededCount
+            : outputs.filter(
+                (o) =>
+                  o &&
+                  (o.status === 'succeeded' ||
+                    typeof o.url === 'string' ||
+                    typeof o.previewUrl === 'string'),
+              ).length
+        const next = current.map((slot) => {
+          if (slot.groupId !== groupId) return slot
+          // 按槽位顺序映射 partial 输出
+          const groupIndex = group.findIndex((s) => s.id === slot.id)
+          const out =
+            groupIndex >= 0 && groupIndex < outputs.length
+              ? outputs[groupIndex]
+              : null
+          const outUrl =
+            out && typeof out === 'object'
+              ? String(out.url || out.previewUrl || '')
+              : ''
+          const outOk =
+            Boolean(outUrl) &&
+            (!out?.status || out.status === 'succeeded')
+          return {
+            ...slot,
+            jobId: job.id,
+            jobStatus: job.status,
+            totalCount: total,
+            succeededCount: succeededFromResult,
+            url: outOk ? outUrl : slot.url,
+            errorMessage:
+              job.status === 'FAILED'
+                ? job.errorMessage || '生成失败'
+                : job.status === 'CANCELED'
+                  ? '已取消'
+                  : null,
+            label:
+              job.status === 'FAILED'
+                ? `${slot.label.replace(/（.*?）$/, '')}（失败）`
+                : outOk
+                  ? slot.label.replace(/（.*?）$/, '').replace(/…$/, '') +
+                    '（已出图）'
+                  : slot.label,
+          }
+        })
         skeletonSlotsRef.current = next
         const groupSlots = next.filter((s) => s.groupId === groupId)
         if (groupSlots.length) {
@@ -752,10 +812,16 @@ function ProjectCanvasInner({
             updatedAt: Date.now(),
           })
         }
+        // 立刻把进度画上
+        if (graphRef.current) {
+          queueMicrotask(() => {
+            if (graphRef.current) applyGraph(graphRef.current, selectedId)
+          })
+        }
         return next
       })
     },
-    [projectId],
+    [projectId, applyGraph, selectedId],
   )
 
   /** 离开再进入：恢复进行中任务的占位框并继续轮询 */
@@ -994,6 +1060,8 @@ function ProjectCanvasInner({
           (action === 'generate_style_scheme' &&
             extras?.selectedStyleVariants) ||
           (action === 'generate_tone_scheme' && extras?.selectedToneVariants) ||
+          (action === 'generate_axonometric' &&
+            extras?.selectedAxonometricVariants) ||
           (action === 'local_edit' && extras?.markFile) ||
           (action === 'upload_floorplan_submit' && extras?.file)
         ) {
@@ -1150,13 +1218,51 @@ function ProjectCanvasInner({
           return
         }
 
-        // 拖把线/生成按钮：先弹生成意向对话框（布局/彩平/轴侧）
-        // 分空间 / 风格 / 色调 已单独走选择面板
+        // 04 轴侧：必须先勾选要生成的角度
+        if (
+          action === 'generate_axonometric' &&
+          node &&
+          !extras?.selectedAxonometricVariants?.length
+        ) {
+          busyRef.current = false
+          setBusy(false)
+          if (!isVariantApproved(node) && !nodeHasApprovedSpawnSource(node)) {
+            setNotice('请先批准当前方案后再生成轴侧')
+            return
+          }
+          const source = resolveSpawnSourceNode(node) ?? node
+          setSelectedId(node.id)
+          setGenerateDialog(null)
+          setSpawnMenu(null)
+          try {
+            const panelResult = await executeCanvasAction({
+              projectId,
+              node: source,
+              action: 'generate_axonometric',
+              extras: { designPrompt, ...extras },
+            })
+            if (!panelResult.ok && panelResult.needPanel) {
+              setPanel(panelResult.needPanel)
+              setPanelNode(source)
+              setNotice('勾选要生成的轴侧方案，可多选')
+              return
+            }
+          } catch (value) {
+            setNotice(
+              value instanceof Error ? value.message : '无法打开轴侧选择',
+            )
+          }
+          return
+        }
+
+        // 拖把线/生成按钮：先弹生成意向对话框（布局/彩平）
+        // 轴侧 / 分空间 / 风格 / 色调 已单独走选择面板
         if (
           isSpawnDialogAction(action) &&
           action !== 'generate_space_render' &&
           action !== 'generate_style_scheme' &&
           action !== 'generate_tone_scheme' &&
+          action !== 'generate_axonometric' &&
           node &&
           !dialogConfirmed
         ) {
@@ -1230,6 +1336,10 @@ function ProjectCanvasInner({
             action === 'generate_tone_scheme' &&
             !extras?.selectedToneVariants?.length
           ) &&
+          !(
+            action === 'generate_axonometric' &&
+            !extras?.selectedAxonometricVariants?.length
+          ) &&
           !(action === 'local_edit' && !extras?.markFile)
         if (needsSkeleton) {
           busyActionRef.current = action
@@ -1237,11 +1347,13 @@ function ProjectCanvasInner({
             selectedSpaceIds: extras?.selectedSpaceIds,
             selectedStyleVariants: extras?.selectedStyleVariants,
             selectedToneVariants: extras?.selectedToneVariants,
+            selectedAxonometricVariants: extras?.selectedAxonometricVariants,
           })
           const n = expectedSkeletonSlots(action, node, {
             selectedSpaceIds: extras?.selectedSpaceIds,
             selectedStyleVariants: extras?.selectedStyleVariants,
             selectedToneVariants: extras?.selectedToneVariants,
+            selectedAxonometricVariants: extras?.selectedAxonometricVariants,
           }).length
           setNotice(
             action === 'generate_layout'
@@ -1252,7 +1364,9 @@ function ProjectCanvasInner({
                   ? `正在生成 ${n} 种风格方案…`
                   : action === 'generate_tone_scheme'
                     ? `正在生成 ${n} 种色调方案…`
-                    : `正在${actionLabel(action)}…`,
+                    : action === 'generate_axonometric'
+                      ? `正在生成 ${n} 种轴侧…`
+                      : `正在${actionLabel(action)}…`,
           )
           // 等 React 提交骨架 state + 一帧绘制
           await new Promise<void>((resolve) => {
@@ -1269,13 +1383,46 @@ function ProjectCanvasInner({
             ...extras,
           },
           onJob: (job) => {
-            // 进行中只绑定 jobId，**不要**在 SUCCEEDED 时立刻清骨架
-            // （清早了会出现「闪一下就没了」，真实节点还在 loadGraph 路上）
+            // 进行中 / 失败：刷新骨架进度与 partial 预览
+            // SUCCEEDED 时不要清骨架（等 loadGraph 后再清，避免闪断）
+            if (!skeletonGroupId) return
             if (
-              skeletonGroupId &&
-              ['QUEUED', 'RUNNING'].includes(job.status)
+              ['QUEUED', 'RUNNING', 'FAILED', 'CANCELED'].includes(job.status)
             ) {
               bindSkeletonsToJob(skeletonGroupId, job)
+              const result = (job.result || {}) as Record<string, unknown>
+              const total =
+                skeletonSlotsRef.current.filter(
+                  (s) => s.groupId === skeletonGroupId,
+                ).length || 1
+              const done =
+                typeof result.succeededCount === 'number'
+                  ? result.succeededCount
+                  : Array.isArray(result.outputs)
+                    ? (result.outputs as unknown[]).filter((o) => {
+                        const rec = o as Record<string, unknown>
+                        return (
+                          rec &&
+                          (rec.status === 'succeeded' ||
+                            typeof rec.url === 'string')
+                        )
+                      }).length
+                    : 0
+              if (job.status === 'RUNNING' || job.status === 'QUEUED') {
+                setNotice(
+                  done > 0
+                    ? `生成中 ${done}/${total}…已出图可先预览`
+                    : `生成中 0/${total}…`,
+                )
+              } else if (job.status === 'FAILED') {
+                setNotice(
+                  job.errorMessage
+                    ? `生成失败：${job.errorMessage}`
+                    : `生成失败（${done}/${total} 已出图可保留）`,
+                )
+              } else if (job.status === 'CANCELED') {
+                setNotice(`已取消（${done}/${total} 已出图）`)
+              }
             }
           },
           onNeedPanel: (next) => {
@@ -1439,8 +1586,9 @@ function ProjectCanvasInner({
         return true
       }
 
-      // 05 分空间 / 06 风格 / 07 色调：走勾选面板
+      // 04 轴侧 / 05 分空间 / 06 风格 / 07 色调：走勾选面板
       if (
+        action === 'generate_axonometric' ||
         action === 'generate_space_render' ||
         action === 'generate_style_scheme' ||
         action === 'generate_tone_scheme'
@@ -2321,6 +2469,15 @@ function ProjectCanvasInner({
             setPanelNode(null)
             void runAction('generate_tone_scheme', node, {
               selectedToneVariants: variantIds,
+              spawnDialogConfirmed: true,
+            })
+          }}
+          onSubmitAxonometrics={(variantIds) => {
+            const node = panelNode
+            setPanel(null)
+            setPanelNode(null)
+            void runAction('generate_axonometric', node, {
+              selectedAxonometricVariants: variantIds,
               spawnDialogConfirmed: true,
             })
           }}
